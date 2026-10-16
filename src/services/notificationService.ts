@@ -315,6 +315,51 @@ class NotificationService {
     }
     return null;
   }
+
+  async createNotification(
+    title: string,
+    message: string,
+    type: string = 'SYSTEM',
+    stockSymbol?: string,
+    uid?: string,
+    stockName?: string
+  ): Promise<AppNotification> {
+    const targetUid = uid || auth.currentUser?.uid || 'demo-user-1';
+    const newNotif: AppNotification = {
+      id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      uid: targetUid,
+      type: type as any,
+      title,
+      message,
+      stockSymbol,
+      stockName,
+      targetType: stockSymbol ? 'stock' : 'general',
+      read: false,
+      createdAt: new Date().toISOString(),
+      timestamp: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    // 1. Sync to server in-memory store
+    try {
+      await fetch('/api/notifications', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newNotif),
+      });
+    } catch {}
+
+    // 2. Sync to Firestore if authenticated
+    try {
+      if (auth.currentUser) {
+        const notifDocRef = doc(collection(db, 'notifications'), newNotif.id);
+        await setDoc(notifDocRef, newNotif);
+      }
+    } catch (err) {
+      console.warn('[NotificationService] Firestore save error:', err);
+    }
+
+    return newNotif;
+  }
 }
 
 export const notificationService = new NotificationService();

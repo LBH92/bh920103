@@ -24,7 +24,8 @@ import {
   Menu,
   X,
   MoreHorizontal,
-  Briefcase
+  Briefcase,
+  Calendar
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ViewTab } from '../../types';
@@ -145,6 +146,7 @@ export const Navbar: React.FC = () => {
     { tab: 'insight', label: 'Stock Insight', icon: <Activity className="w-3.5 h-3.5 text-rose-500 shrink-0" />, badge: 'LIVE' },
     { tab: 'portfolio', label: '모의투자', icon: <Briefcase className="w-3.5 h-3.5 text-emerald-500 shrink-0" /> },
     { tab: 'watchlist', label: '관심종목', icon: <Bookmark className="w-3.5 h-3.5 shrink-0" /> },
+    { tab: 'calendar', label: '증시 캘린더', icon: <Calendar className="w-3.5 h-3.5 text-indigo-500 shrink-0" /> },
     { tab: 'community', label: '커뮤니티', icon: <Layers className="w-3.5 h-3.5 shrink-0" /> },
   ];
 

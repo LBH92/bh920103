@@ -23,6 +23,7 @@ import { NewsView } from './components/news/NewsView';
 import { StockRankingView } from './components/stocks/StockRankingView';
 import { IndexDetailView } from './components/indices/IndexDetailView';
 import { PortfolioView } from './components/portfolio/PortfolioView';
+import { CalendarView } from './components/calendar/CalendarView';
 import { SideChatPanel } from './components/chat/SideChatPanel';
 
 const MainLayout: React.FC = () => {
@@ -96,6 +97,8 @@ const MainLayout: React.FC = () => {
         return <StockInsightView />;
       case 'watchlist':
         return <WatchlistView />;
+      case 'calendar':
+        return <CalendarView />;
       case 'portfolio':
         return <PortfolioView />;
       case 'community':

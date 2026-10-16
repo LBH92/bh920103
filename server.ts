@@ -11,6 +11,7 @@ import {
   fetchRealIndices, 
   fetchRealIndicesWithSource,
   fetchRealExchangeRate,
+  fetchUnifiedStockChart,
   TRACKED_STOCKS
 } from './server/stockApiService';
 import { Stock, AppNotification, MarketFilterType, RankingSortType, KiwoomChartResponse } from './src/types';
@@ -38,6 +39,7 @@ import {
   updateUserAlertRule,
   deleteUserAlertRule,
   getNotifications,
+  addServerNotification,
   markNotificationAsRead,
   markAllNotificationsAsRead,
   deleteNotification,
@@ -70,6 +72,11 @@ import { createAdminRouter } from './server/adminServerService';
 import { fcmServerService } from './server/fcmServerService';
 import { getGlobalMarketSummary } from './server/globalMarketService';
 import { userAiVaultService } from './server/userAiVaultService';
+import { marketCalendarService } from './server/marketCalendarService';
+import { calendarAlertService } from './server/calendarAlertService';
+import { marketHeatmapService } from './server/marketHeatmapService';
+import { chatImageUploadService } from './server/chatImageUploadService';
+import multer from 'multer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -183,9 +190,14 @@ setInterval(async () => {
   }
 }, 8000);
 
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+});
+
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '10mb' }));
 
   // -------------------------------------------------------------
   // Request ID Tracing & Sanitized Logger Middleware
@@ -754,11 +766,25 @@ async function startServer() {
       }
     }
 
-    // 2. Prioritize Kiwoom full master stocks search if loaded
-    const masterStocks = kiwoomApiService.getMasterStocks();
-    if (masterStocks && masterStocks.length > 0) {
-      let matched = masterStocks.filter(s => {
-        if (market && market !== 'ALL' && s.market !== market) {
+    // 2. Search Domestic Korean Stocks (KOSPI, KOSDAQ, ETF/ETN via Kiwoom master or TRACKED_STOCKS)
+    let domesticResults: any[] = [];
+    const shouldSearchKR = !market || market === 'ALL' || market === 'KR' || market === 'KOSPI' || market === 'KOSDAQ';
+
+    if (shouldSearchKR) {
+      const masterStocks = kiwoomApiService.getMasterStocks();
+      const baseStockList = masterStocks && masterStocks.length > 0
+        ? masterStocks
+        : TRACKED_STOCKS.map(t => ({
+            code: t.symbol,
+            name: t.name,
+            market: t.market,
+            sector: t.sector,
+            lastPrice: 0,
+            marketCap: 0,
+          }));
+
+      const matched = baseStockList.filter(s => {
+        if (market && market !== 'ALL' && market !== 'KR' && s.market !== market) {
           return false;
         }
         return (
@@ -769,7 +795,7 @@ async function startServer() {
         );
       });
 
-      // Priority ranking: Exact > StartsWith > Major Market Cap > Shorter Name
+      // Priority ranking: Exact > StartsWith > Blue-chip > Shorter Name
       const majorCodes = new Set([
         '005930', '000660', '373220', '207940', '005380', '000270', '068270', 
         '005490', '105560', '035420', '051910', '035720', '028260', '196170', 
@@ -777,77 +803,73 @@ async function startServer() {
       ]);
 
       matched.sort((a, b) => {
-        // 1. Exact code match
         if (a.code.toLowerCase() === q) return -1;
         if (b.code.toLowerCase() === q) return 1;
-        // 2. Exact name match
         if (a.name === query) return -1;
         if (b.name === query) return 1;
-        // 3. Starts with code
         if (a.code.toLowerCase().startsWith(q) && !b.code.toLowerCase().startsWith(q)) return -1;
         if (!a.code.toLowerCase().startsWith(q) && b.code.toLowerCase().startsWith(q)) return 1;
-        // 4. Starts with name
         if (a.name.startsWith(query) && !b.name.startsWith(query)) return -1;
         if (!a.name.startsWith(query) && b.name.startsWith(query)) return 1;
-        // 5. Major blue-chip codes
         const aMajor = majorCodes.has(a.code) ? 1 : 0;
         const bMajor = majorCodes.has(b.code) ? 1 : 0;
         if (aMajor !== bMajor) return bMajor - aMajor;
-        // 6. Shorter name length
         return a.name.length - b.name.length;
       });
 
-      const domesticResults = matched.map(m => ({
-        symbol: m.code,
-        name: m.name,
-        market: m.market,
-        sector: m.sector,
-        price: m.lastPrice || 0,
-        change: 0,
-        changePercent: 0,
-        marketCap: m.marketCap || 0,
-        currency: 'KRW' as const,
-      }));
-
-      let combined = [...usMatches, ...domesticResults];
-      if (limit > 0) {
-        combined = combined.slice(0, limit);
-      }
-
-      res.setHeader('X-Data-Source', 'combined');
-      res.setHeader('Cache-Control', 'no-cache');
-      return res.json(combined);
-    }
-
-    // 2. Fallback to INITIAL_STOCKS
-    const stockMap = new Map<string, any>();
-    for (const s of INITIAL_STOCKS) {
-      stockMap.set(s.symbol, s);
-    }
-    for (const s of mockServerStocks) {
-      stockMap.set(s.symbol, { ...stockMap.get(s.symbol), ...s });
-    }
-
-    const allStocks = Array.from(stockMap.values());
-
-    let results = allStocks.filter(s => {
-      if (market && market !== 'ALL' && s.market !== market) {
-        return false;
-      }
-      return (
-        s.name.toLowerCase().includes(q) ||
-        s.symbol.toLowerCase().includes(q) ||
-        s.sector.toLowerCase().includes(q) ||
-        matchHangulSearch(s.name, q)
+      domesticResults = await Promise.all(
+        matched.slice(0, limit).map(async m => {
+          let price = m.lastPrice || 0;
+          let change = 0;
+          let changePercent = 0;
+          try {
+            const quoteRes = await fetchRealStockDataWithSource(m.code);
+            if (quoteRes.stock) {
+              price = quoteRes.stock.price;
+              change = quoteRes.stock.change;
+              changePercent = quoteRes.stock.changePercent;
+            }
+          } catch {}
+          return {
+            symbol: m.code,
+            name: m.name,
+            market: m.market,
+            sector: m.sector,
+            price,
+            change,
+            changePercent,
+            marketCap: m.marketCap || 0,
+            currency: 'KRW' as const,
+          };
+        })
       );
+    }
+
+    // 3. Smart Merge & Exact Priority Ranking (US + KR)
+    let combined = [...usMatches, ...domesticResults];
+
+    // Boost exact ticker/symbol or exact Korean name matches to the very top
+    combined.sort((a, b) => {
+      const aExactSym = a.symbol.toLowerCase() === q;
+      const bExactSym = b.symbol.toLowerCase() === q;
+      if (aExactSym && !bExactSym) return -1;
+      if (!aExactSym && bExactSym) return 1;
+
+      const aExactName = a.name.toLowerCase() === q || a.name === query;
+      const bExactName = b.name.toLowerCase() === q || b.name === query;
+      if (aExactName && !bExactName) return -1;
+      if (!aExactName && bExactName) return 1;
+
+      return 0;
     });
 
     if (limit > 0) {
-      results = results.slice(0, limit);
+      combined = combined.slice(0, limit);
     }
 
+    res.setHeader('X-Data-Source', 'combined');
     res.setHeader('Cache-Control', 'no-cache');
-    res.json(results);
+    return res.json(combined);
   });
 
   // 1-3. Batch Stock Quotes (for Watchlist & multiple symbols)
@@ -952,17 +974,32 @@ async function startServer() {
     res.status(404).json({ error: `종목 코드 ${symbol}을(를) 찾을 수 없습니다.` });
   });
 
-  // 3-0. Stock Real-Time OHLCV Chart (Kiwoom Open API REST: ka10080 분봉 / ka10081 일봉)
+  // 3-0. Stock Real-Time OHLCV Chart (Kiwoom + Unified Multi-period & Historical Date Navigation)
   app.get('/api/stocks/:symbol/chart', async (req, res) => {
     const symbol = req.params.symbol;
     if (!isValidStockSymbol(symbol)) {
       return res.status(400).json({ error: '올바르지 않은 종목 코드 형식입니다.' });
     }
 
-    const period = sanitizeInputText(req.query.period as string, 10) || '1m';
+    const period = sanitizeInputText(req.query.period as string, 10) || '1d';
+    const date = sanitizeInputText(req.query.date as string, 20);
+    const startDate = sanitizeInputText(req.query.startDate as string, 20);
+    const endDate = sanitizeInputText(req.query.endDate as string, 20);
 
     try {
-      // Find current live price if available for alignment
+      const isHistorical = Boolean(date || startDate);
+      const isMultiPeriod = ['1d', '1w', '1m', '1mo', '3m', '3mo', '6m', '6mo', 'ytd', '1y', '5y', 'all'].includes(period.toLowerCase());
+      const isUS = /^[A-Z]{1,5}$/.test(symbol.toUpperCase());
+
+      // If historical date navigation, multi-period query, or US stock: use unified chart fetcher
+      if (isHistorical || isMultiPeriod || isUS) {
+        const chartData = await fetchUnifiedStockChart(symbol, { period, date, startDate, endDate });
+        res.setHeader('X-Data-Source', chartData.source);
+        res.setHeader('X-Cache', chartData.cached ? 'HIT' : 'MISS');
+        return res.json(chartData);
+      }
+
+      // Default minute period for Korean stocks with Kiwoom Open API
       let currentPrice: number | undefined;
       let liveStockObj: any = null;
       try {
@@ -973,46 +1010,21 @@ async function startServer() {
         }
       } catch {}
 
-      // If this is a US stock, return candles directly from liveStock (from Yahoo Finance / global provider)
-      if (liveStockObj?.market === 'US' || /^[A-Z]{1,5}$/.test(symbol.toUpperCase())) {
-        const candles = liveStockObj?.candles || [];
-        const chartData: KiwoomChartResponse = {
-          symbol: symbol.toUpperCase(),
-          period: (period as any) || 'day',
-          periodLabel: '일봉',
-          trId: 'GLOBAL_US',
-          supported: true,
-          candles,
-          currentPrice: currentPrice || liveStockObj?.price,
-          lastCandleClose: candles.length > 0 ? candles[candles.length - 1].close : currentPrice,
-          source: 'yahoo',
-          cached: true,
-          timestamp: Date.now(),
-          currency: 'USD',
-          error: null,
-        };
-        res.setHeader('X-Data-Source', 'yahoo');
-        res.setHeader('X-Cache', 'HIT');
-        return res.json(chartData);
+      let chartData = await kiwoomApiService.fetchStockChart(symbol, period as any, currentPrice);
+      // Fallback to unified chart if Kiwoom returned 0 candles
+      if (!chartData.candles || chartData.candles.length === 0) {
+        chartData = await fetchUnifiedStockChart(symbol, { period, date, startDate, endDate });
       }
 
-      let chartData = await kiwoomApiService.fetchStockChart(symbol, period, currentPrice);
-
-      // If Kiwoom returns 0 candles (e.g. IP unregistered) and real daily candles exist, fallback to liveStock.candles
-      if ((!chartData.candles || chartData.candles.length === 0) && liveStockObj?.candles?.length > 0) {
-        chartData = {
-          ...chartData,
-          candles: liveStockObj.candles,
-          source: (liveStockObj.dataSource || 'yahoo') as any,
-          supported: true,
-          error: null,
-        };
+      chartData.currency = chartData.currency || 'KRW';
+      chartData.currentPrice = chartData.currentPrice || currentPrice || liveStockObj?.price;
+      if (chartData.candles && chartData.candles.length > 0 && !chartData.lastCandleClose) {
+        chartData.lastCandleClose = chartData.candles[chartData.candles.length - 1].close;
       }
 
       res.setHeader('X-Data-Source', chartData.source);
       res.setHeader('X-Cache', chartData.cached ? 'HIT' : 'MISS');
       res.setHeader('X-Kiwoom-TR', chartData.trId);
-
       return res.json(chartData);
     } catch (err: any) {
       console.error(`[Server] Chart inquiry error for ${symbol}:`, err.message);
@@ -1021,7 +1033,7 @@ async function startServer() {
         period,
         supported: false,
         candles: [],
-        source: 'kiwoom',
+        source: 'yahoo',
         cached: false,
         timestamp: Date.now(),
         error: err.message || '차트 조회 중 오류가 발생했습니다.',
@@ -1327,6 +1339,136 @@ async function startServer() {
   });
 
   // -------------------------------------------------------------
+  // 6-2. Market Calendar & Advance Alert System Endpoints
+  // -------------------------------------------------------------
+  // Get all calendar events with filters (year, month, market, type, symbol)
+  app.get('/api/calendar/events', (req, res) => {
+    try {
+      const year = req.query.year ? parseInt(req.query.year as string, 10) : undefined;
+      const month = req.query.month ? parseInt(req.query.month as string, 10) : undefined;
+      const market = req.query.market as any;
+      const type = req.query.type as any;
+      const symbol = req.query.symbol as string;
+
+      const result = marketCalendarService.getEvents({ year, month, market, type, symbol });
+      res.setHeader('Cache-Control', 'public, max-age=60');
+      res.json(result);
+    } catch (err: any) {
+      console.error('[Server] Calendar events fetch error:', err.message);
+      res.status(500).json({ error: '증시 캘린더 일정을 불러오지 못했습니다.', details: err.message });
+    }
+  });
+
+  // Get calendar summary (today & this week highlights)
+  app.get('/api/calendar/summary', (req, res) => {
+    try {
+      const summary = marketCalendarService.getSummary();
+      res.setHeader('Cache-Control', 'public, max-age=60');
+      res.json(summary);
+    } catch (err: any) {
+      console.error('[Server] Calendar summary fetch error:', err.message);
+      res.status(500).json({ error: '캘린더 요약 정보를 불러오지 못했습니다.', details: err.message });
+    }
+  });
+
+  // Get single calendar event by ID
+  app.get('/api/calendar/events/:id', (req, res) => {
+    const event = marketCalendarService.getEventById(req.params.id);
+    if (!event) {
+      return res.status(404).json({ error: '해당 캘린더 일정을 찾을 수 없습니다.' });
+    }
+    res.json(event);
+  });
+
+  // Get calendar alert settings for user
+  app.get('/api/calendar/alerts/settings', (req, res) => {
+    const uid = (req.query.uid as string) || 'default-user';
+    const settings = calendarAlertService.getSettings(uid);
+    res.json(settings);
+  });
+
+  // Save calendar alert settings for user
+  app.post('/api/calendar/alerts/settings', (req, res) => {
+    const uid = (req.body.uid as string) || 'default-user';
+    const settings = req.body.settings || req.body;
+    const updated = calendarAlertService.saveSettings(uid, settings);
+    res.json({ success: true, settings: updated });
+  });
+
+  // Evaluate and check upcoming advance alerts for user
+  app.post('/api/calendar/alerts/check', (req, res) => {
+    const uid = (req.body.uid as string) || 'default-user';
+    const watchlist = Array.isArray(req.body.watchlist) ? req.body.watchlist : [];
+    const notifications = calendarAlertService.checkAdvanceAlerts(uid, watchlist);
+    res.json({ notifications, count: notifications.length });
+  });
+
+  // -------------------------------------------------------------
+  // 6-3. Market Heatmap System Endpoints (KR/US, 1D/1M/1Y returns)
+  // -------------------------------------------------------------
+  app.get('/api/market/heatmap', async (req, res) => {
+    try {
+      const market = (req.query.market as any) || 'ALL';
+      const period = (req.query.period as any) || '1D';
+      const result = await marketHeatmapService.getHeatmap(market, period);
+      res.setHeader('Cache-Control', 'public, max-age=30');
+      res.json(result);
+    } catch (err: any) {
+      console.error('[Server] Heatmap fetch error:', err.message);
+      res.status(500).json({ error: '시장 히트맵 데이터를 불러오지 못했습니다.', details: err.message });
+    }
+  });
+
+  // -------------------------------------------------------------
+  // 6-4. Chat Image Upload & File Safety Endpoints (Magic bytes & 5MB limit)
+  // -------------------------------------------------------------
+  app.post('/api/chat/upload', upload.single('image'), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: '업로드할 이미지 파일이 누락되었습니다.' });
+      }
+
+      const uploaderUid = (req.body.uid as string) || (req.headers['x-user-uid'] as string) || '';
+      if (!uploaderUid || uploaderUid === 'anonymous') {
+        return res.status(401).json({ error: '인증된 사용자만 이미지를 업로드할 수 있습니다.' });
+      }
+
+      const originalName = req.file.originalname || 'chat_image.png';
+      const meta = await chatImageUploadService.saveImage(req.file.buffer, originalName, uploaderUid);
+
+      return res.status(201).json({
+        success: true,
+        meta,
+        url: meta.url,
+      });
+    } catch (err: any) {
+      console.warn('[Server] Chat image upload failed:', err.message);
+      return res.status(400).json({ error: err.message || '이미지 업로드 처리 실패' });
+    }
+  });
+
+  // Delete chat image (only uploader or admin)
+  app.delete('/api/chat/upload/:fileId', async (req, res) => {
+    try {
+      const fileId = req.params.fileId;
+      const requesterUid = (req.query.uid as string) || (req.headers['x-user-uid'] as string) || '';
+      const isAdmin = req.headers['x-user-role'] === 'admin' || req.query.role === 'admin';
+
+      if (!requesterUid) {
+        return res.status(401).json({ error: '인증 정보가 필요합니다.' });
+      }
+
+      const deleted = await chatImageUploadService.deleteImage(fileId, requesterUid, Boolean(isAdmin));
+      if (!deleted) {
+        return res.status(404).json({ error: '해당 이미지를 찾을 수 없습니다.' });
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message || '이미지 삭제 권한이 없습니다.' });
+    }
+  });
+
+  // -------------------------------------------------------------
   // 7. Market Monitoring System Endpoints
   // -------------------------------------------------------------
 
@@ -1448,6 +1590,16 @@ async function startServer() {
   app.get('/api/notifications', (req, res) => {
     const uid = req.query.uid as string;
     res.json(getNotifications(uid));
+  });
+
+  // Create/Save notification (e.g. from calendar alert or system)
+  app.post('/api/notifications', (req, res) => {
+    const notif = req.body;
+    if (notif && notif.title && notif.message) {
+      const saved = addServerNotification(notif);
+      return res.json(saved);
+    }
+    res.status(400).json({ error: '유효하지 않은 알림 페이로드입니다.' });
   });
 
   // Mark notification as read

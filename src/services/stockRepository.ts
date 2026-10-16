@@ -30,30 +30,16 @@ class StockRepositoryDelegator implements IStockRepository {
   private activeSource: StockDataSourceType;
 
   constructor() {
-    // In Google AI Studio preview or sandbox environment (run.app, localhost, webcontainer),
-    // default automatically to MOCK mode for smooth testing without Kiwoom IP blocks
-    const isPreview = isPreviewEnvironment();
+    // Default strictly to REAL data repository (server API -> Live Exchange & Yahoo Finance feeds)
+    this.activeSource = 'REAL';
 
-    if (isPreview) {
-      this.activeSource = 'MOCK';
-    } else {
-      const envSource = import.meta.env.VITE_STOCK_DATA_SOURCE as string | undefined;
-      const isProd = import.meta.env.PROD;
-
-      if (envSource === 'REAL' || isProd) {
-        this.activeSource = 'REAL';
-      } else {
-        this.activeSource = 'MOCK';
+    // Respect user's explicit preference if saved in localStorage
+    try {
+      const saved = localStorage.getItem('bd_stock_data_source') as StockDataSourceType | null;
+      if (saved === 'MOCK' || saved === 'REAL') {
+        this.activeSource = saved;
       }
-
-      // Check localStorage override if user changed it in settings
-      try {
-        const saved = localStorage.getItem('bd_stock_data_source') as StockDataSourceType | null;
-        if (saved === 'MOCK' || saved === 'REAL') {
-          this.activeSource = saved;
-        }
-      } catch {}
-    }
+    } catch {}
   }
 
   public isPreview(): boolean {

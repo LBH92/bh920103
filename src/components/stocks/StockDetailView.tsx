@@ -28,7 +28,7 @@ import { StockCommunitySection } from './StockCommunitySection';
 import { StockSmartAlertWidget } from './StockSmartAlertWidget';
 import { storageService } from '../../services/storageService';
 import { isSurgeGain, isSurgeLoss, isVolumeSurge } from '../../utils/marketThresholds';
-import { getKRXMarketStatus, MarketStatusInfo } from '../../utils/marketHours';
+import { getKRXMarketStatus, getUSMarketStatus, MarketStatusInfo } from '../../utils/marketHours';
 import { MockTradeModal } from '../portfolio/MockTradeModal';
 import { VirtualHoldingModal } from '../portfolio/VirtualHoldingModal';
 import { HistoricalTradingSimulatorModal } from './HistoricalTradingSimulatorModal';
@@ -52,14 +52,18 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
   const [stockDetail, setStockDetail] = useState<Stock | null>(initialStock || null);
   const [isLoadingDetail, setIsLoadingDetail] = useState<boolean>(!initialStock);
   const [liveTick, setLiveTick] = useState<Partial<Stock> | null>(null);
-  const [marketStatus, setMarketStatus] = useState<MarketStatusInfo>(() => getKRXMarketStatus());
+
+  const isUS = stockDetail?.market === 'US' || /^[A-Z]{1,5}$/.test(symbol);
+  const [marketStatus, setMarketStatus] = useState<MarketStatusInfo>(() => 
+    isUS ? getUSMarketStatus() : getKRXMarketStatus()
+  );
 
   useEffect(() => {
-    const updateMarket = () => setMarketStatus(getKRXMarketStatus());
+    const updateMarket = () => setMarketStatus(isUS ? getUSMarketStatus() : getKRXMarketStatus());
     updateMarket();
     const timer = setInterval(updateMarket, 10000);
     return () => clearInterval(timer);
-  }, []);
+  }, [isUS]);
 
   // Fetch full live stock data from Kiwoom REST API
   useEffect(() => {
@@ -323,11 +327,15 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
             {/* Market Status (KRX or US Session) */}
             {stock.market === 'US' ? (
               <div 
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-sans font-bold shadow-sm bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30"
-                title="미국 정규장 23:30 ~ 익일 06:00 (한국 시간 KST 기준)"
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-sans font-bold shadow-sm ${
+                  marketStatus.isOpen
+                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300/60 dark:border-slate-700'
+                }`}
+                title={`미국 뉴욕(EDT/EST) ${marketStatus.timeStringKST} (${marketStatus.detailLabel})`}
               >
-                <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-                <span>미국 나스닥/NYSE {stock.delayLabel || '15분 지연 시세'}</span>
+                <span className={`w-2 h-2 rounded-full ${marketStatus.isOpen ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                <span>미국장 {marketStatus.statusLabel} {stock.delayLabel ? `(${stock.delayLabel})` : ''}</span>
               </div>
             ) : (
               <div 

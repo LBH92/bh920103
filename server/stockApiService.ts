@@ -6,7 +6,7 @@
  * - All external API calls, keys, rate limiting, and caching live here on the server.
  */
 
-import { CandleData, Stock, StockIndex, ExchangeRate } from '../src/types';
+import { CandleData, Stock, StockIndex, ExchangeRate, KiwoomChartResponse } from '../src/types';
 import { kiwoomApiService } from './kiwoomApiService';
 import { serverResilienceService } from './serverResilienceService';
 
@@ -564,4 +564,285 @@ export async function fetchRealExchangeRate(): Promise<ExchangeRate> {
   };
   setInCache(cacheKey, fallback, 15000);
   return fallback;
+}
+
+export interface FetchStockChartOptions {
+  period?: string;
+  date?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+export async function fetchUnifiedStockChart(
+  symbol: string,
+  options: FetchStockChartOptions = {}
+): Promise<KiwoomChartResponse> {
+  const cleanSymbol = symbol.toUpperCase().trim();
+  const rawPeriod = (options.period || '1d').toLowerCase().trim();
+  const targetDate = options.date?.trim() || null;
+  const isUS = /^[A-Z]{1,5}$/.test(cleanSymbol);
+
+  // Cache key per symbol, period, and target date - strictly isolated
+  const cacheKey = `chart_unified_${cleanSymbol}_${rawPeriod}_${targetDate || 'latest'}`;
+  const cached = getFromCache<KiwoomChartResponse>(cacheKey);
+  if (cached) return cached;
+
+  // Determine Yahoo ticker
+  let yahooTicker = cleanSymbol;
+  if (!isUS) {
+    const isKosdaq =
+      cleanSymbol.startsWith('2') ||
+      cleanSymbol.startsWith('08') ||
+      cleanSymbol.startsWith('19') ||
+      cleanSymbol.startsWith('02') ||
+      cleanSymbol.startsWith('27') ||
+      cleanSymbol.startsWith('039') ||
+      cleanSymbol.startsWith('058');
+    yahooTicker = `${cleanSymbol}.${isKosdaq ? 'KQ' : 'KS'}`;
+  }
+
+  // Interval & Range Mapping
+  let interval = '1d';
+  let rangeParam = '1mo';
+  let periodLabel = '1개월';
+
+  switch (rawPeriod) {
+    case '1d':
+    case 'day':
+      interval = '5m';
+      rangeParam = '1d';
+      periodLabel = '1일';
+      break;
+    case '1w':
+    case '1week':
+      interval = '15m';
+      rangeParam = '5d';
+      periodLabel = '1주';
+      break;
+    case '1m':
+    case '1mo':
+    case '1month':
+      interval = '1d';
+      rangeParam = '1mo';
+      periodLabel = '1개월';
+      break;
+    case '3m':
+    case '3mo':
+    case '3months':
+      interval = '1d';
+      rangeParam = '3mo';
+      periodLabel = '3개월';
+      break;
+    case '6m':
+    case '6mo':
+    case '6months':
+      interval = '1d';
+      rangeParam = '6mo';
+      periodLabel = '6개월';
+      break;
+    case 'ytd':
+      interval = '1d';
+      rangeParam = 'ytd';
+      periodLabel = '연간(YTD)';
+      break;
+    case '1y':
+    case '1year':
+      interval = '1d';
+      rangeParam = '1y';
+      periodLabel = '1년';
+      break;
+    case '5y':
+    case '5years':
+      interval = '1wk';
+      rangeParam = '5y';
+      periodLabel = '5년';
+      break;
+    case 'all':
+    case 'max':
+      interval = '1mo';
+      rangeParam = 'max';
+      periodLabel = '전체';
+      break;
+    case '5min':
+    case '5m':
+      interval = '5m';
+      rangeParam = '1d';
+      periodLabel = '5분';
+      break;
+    case '15min':
+    case '15m':
+      interval = '15m';
+      rangeParam = '5d';
+      periodLabel = '15분';
+      break;
+    case '30min':
+    case '30m':
+      interval = '30m';
+      rangeParam = '5d';
+      periodLabel = '30분';
+      break;
+    case '60min':
+    case '1h':
+      interval = '60m';
+      rangeParam = '1mo';
+      periodLabel = '60분';
+      break;
+    default:
+      interval = '1d';
+      rangeParam = '1mo';
+      periodLabel = '1개월';
+  }
+
+  // Handle custom date navigation (과거 날짜 이동)
+  let url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?interval=${interval}&range=${rangeParam}`;
+
+  let isHistoricalView = false;
+  let targetDateClose: number | undefined;
+
+  if (targetDate) {
+    const targetDt = new Date(targetDate);
+    if (!isNaN(targetDt.getTime())) {
+      isHistoricalView = true;
+      const now = new Date();
+      const diffDays = Math.floor((now.getTime() - targetDt.getTime()) / (1000 * 3600 * 24));
+
+      // Yahoo Finance only retains minute intervals (<1d) for the last 55 days
+      if (diffDays > 50 && (interval.includes('m') || interval === '1h')) {
+        interval = '1d';
+      }
+
+      // Query around target date: span depends on period
+      let spanDays = 30;
+      if (rawPeriod === '1d') spanDays = 5;
+      else if (rawPeriod === '1w') spanDays = 14;
+      else if (rawPeriod === '3m' || rawPeriod === '6m') spanDays = 180;
+      else if (rawPeriod === '1y' || rawPeriod === '5y' || rawPeriod === 'all') spanDays = 365;
+
+      const p1 = Math.floor((targetDt.getTime() - spanDays * 24 * 3600 * 1000) / 1000);
+      const p2 = Math.floor((targetDt.getTime() + 2 * 24 * 3600 * 1000) / 1000);
+
+      url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?period1=${p1}&period2=${p2}&interval=${interval}`;
+    }
+  }
+
+  try {
+    const res = await serverResilienceService.resilientFetch(
+      url,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
+          Accept: 'application/json',
+        },
+      },
+      {
+        maxRetries: 2,
+        baseDelayMs: 250,
+        timeoutMs: 4000,
+        serviceName: `Chart(${cleanSymbol})`,
+      }
+    );
+
+    if (res.ok) {
+      const json = await res.json();
+      const result = json.chart?.result?.[0];
+      if (result) {
+        const meta = result.meta || {};
+        const timestamps = result.timestamp || [];
+        const quotes = result.indicators?.quote?.[0] || {};
+        const opens = quotes.open || [];
+        const highs = quotes.high || [];
+        const lows = quotes.low || [];
+        const closes = quotes.close || [];
+        const volumes = quotes.volume || [];
+
+        const candles: CandleData[] = [];
+        for (let i = 0; i < timestamps.length; i++) {
+          const c = closes[i];
+          if (c !== null && typeof c === 'number' && !isNaN(c)) {
+            const dt = new Date(timestamps[i] * 1000);
+            const timeStr =
+              interval.includes('m') || interval === '1h'
+                ? `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
+                : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+
+            candles.push({
+              time: timeStr,
+              open: Number((opens[i] ?? c).toFixed(2)),
+              high: Number((highs[i] ?? c).toFixed(2)),
+              low: Number((lows[i] ?? c).toFixed(2)),
+              close: Number(c.toFixed(2)),
+              volume: Math.round(volumes[i] ?? 0),
+            });
+          }
+        }
+
+        // If targetDate specified, locate closest candle
+        if (targetDate && candles.length > 0) {
+          const matched = candles.filter(c => c.time.startsWith(targetDate));
+          if (matched.length > 0) {
+            targetDateClose = matched[matched.length - 1].close;
+          } else {
+            const preceding = candles.filter(c => c.time <= targetDate);
+            if (preceding.length > 0) {
+              targetDateClose = preceding[preceding.length - 1].close;
+            }
+          }
+        }
+
+        // Determine current market status
+        const isKr = !isUS;
+        const now = new Date();
+        const kstHours = (now.getUTCHours() + 9) % 24;
+        const kstMins = now.getUTCMinutes();
+        const kstTime = kstHours * 100 + kstMins;
+        const kstDay = (now.getUTCDay() + (now.getUTCHours() + 9 >= 24 ? 1 : 0)) % 7;
+        const isKrOpen = kstDay >= 1 && kstDay <= 5 && kstTime >= 900 && kstTime <= 1530;
+
+        const currentPrice = Number(
+          (meta.regularMarketPrice || (candles.length > 0 ? candles[candles.length - 1].close : 0)).toFixed(2)
+        );
+
+        const chartResponse: KiwoomChartResponse = {
+          symbol: cleanSymbol,
+          period: rawPeriod,
+          periodLabel,
+          trId: isUS ? 'GLOBAL_US' : 'YAHOO_KR',
+          supported: true,
+          candles,
+          currentPrice,
+          lastCandleClose: candles.length > 0 ? candles[candles.length - 1].close : currentPrice,
+          selectedDateClose: targetDateClose,
+          selectedDate: targetDate || undefined,
+          isHistoricalView,
+          source: 'yahoo',
+          cached: false,
+          timestamp: Date.now(),
+          currency: isUS ? 'USD' : 'KRW',
+          marketStatus: (isKr ? isKrOpen : true) ? 'OPEN' : 'CLOSED',
+          error: null,
+        };
+
+        const ttl = isHistoricalView ? 3600000 : rawPeriod === '1d' ? 15000 : 120000;
+        setInCache(cacheKey, { ...chartResponse, cached: true }, ttl);
+        return chartResponse;
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[StockAPI] Chart fetch error for ${cleanSymbol}:`, err.message);
+  }
+
+  // Graceful empty response with honest error (no fake candles)
+  return {
+    symbol: cleanSymbol,
+    period: rawPeriod,
+    periodLabel,
+    trId: 'ERROR',
+    supported: false,
+    candles: [],
+    source: 'yahoo',
+    cached: false,
+    timestamp: Date.now(),
+    currency: isUS ? 'USD' : 'KRW',
+    error: `${cleanSymbol}의 해당 기간(${periodLabel}) 실제 캔들 데이터를 불러올 수 없습니다.`,
+  };
 }

@@ -20,7 +20,10 @@ import {
   ChevronDown,
   Activity,
   Compass,
-  Check
+  Check,
+  Calendar,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { 
   IndicatorSettings, 
@@ -52,20 +55,34 @@ interface InteractiveStockChartProps {
 interface PeriodConfig {
   id: KiwoomChartPeriod;
   label: string;
-  trId: 'ka10080' | 'ka10081';
+  trId: string;
   ticScope?: string;
   description: string;
   supported: boolean;
+  category: 'primary' | 'minute';
 }
 
-const KIWOOM_PERIODS: PeriodConfig[] = [
-  { id: '1m', label: '1분', trId: 'ka10080', ticScope: '1', description: '1분봉 (TR ka10080)', supported: true },
-  { id: '5m', label: '5분', trId: 'ka10080', ticScope: '5', description: '5분봉 (TR ka10080)', supported: true },
-  { id: '15m', label: '15분', trId: 'ka10080', ticScope: '15', description: '15분봉 (TR ka10080)', supported: true },
-  { id: '30m', label: '30분', trId: 'ka10080', ticScope: '30', description: '30분봉 (TR ka10080)', supported: true },
-  { id: '1h', label: '60분', trId: 'ka10080', ticScope: '60', description: '60분봉 (TR ka10080)', supported: true },
-  { id: 'day', label: '일봉', trId: 'ka10081', description: '일봉 (TR ka10081)', supported: true },
+const PRIMARY_PERIODS: PeriodConfig[] = [
+  { id: '1d', label: '1일', trId: 'REAL_1D', description: '1일 실시간/당일 캔들', supported: true, category: 'primary' },
+  { id: '1w', label: '1주', trId: 'REAL_1W', description: '최근 1주일', supported: true, category: 'primary' },
+  { id: '1mo', label: '1개월', trId: 'REAL_1M', description: '최근 1개월 일봉', supported: true, category: 'primary' },
+  { id: '3mo', label: '3개월', trId: 'REAL_3M', description: '최근 3개월 일봉', supported: true, category: 'primary' },
+  { id: '6mo', label: '6개월', trId: 'REAL_6M', description: '최근 6개월 일봉', supported: true, category: 'primary' },
+  { id: 'ytd', label: 'YTD', trId: 'REAL_YTD', description: '연초 대비 (Year To Date)', supported: true, category: 'primary' },
+  { id: '1y', label: '1년', trId: 'REAL_1Y', description: '최근 1년 일봉', supported: true, category: 'primary' },
+  { id: '5y', label: '5년', trId: 'REAL_5Y', description: '최근 5년 주봉', supported: true, category: 'primary' },
+  { id: 'all', label: '전체', trId: 'REAL_ALL', description: '상장 이후 전체 월봉', supported: true, category: 'primary' },
 ];
+
+const MINUTE_PERIODS: PeriodConfig[] = [
+  { id: '1m', label: '1분', trId: 'ka10080', ticScope: '1', description: '1분봉', supported: true, category: 'minute' },
+  { id: '5m', label: '5분', trId: 'ka10080', ticScope: '5', description: '5분봉', supported: true, category: 'minute' },
+  { id: '15m', label: '15분', trId: 'ka10080', ticScope: '15', description: '15분봉', supported: true, category: 'minute' },
+  { id: '30m', label: '30분', trId: 'ka10080', ticScope: '30', description: '30분봉', supported: true, category: 'minute' },
+  { id: '1h', label: '60분', trId: 'ka10080', ticScope: '60', description: '60분봉', supported: true, category: 'minute' },
+];
+
+const ALL_CHART_PERIODS = [...PRIMARY_PERIODS, ...MINUTE_PERIODS];
 
 export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
   symbol,
@@ -81,11 +98,19 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
     }
     return `${val.toLocaleString()}원`;
   };
-  // 1. Period & Type
-  const [period, setPeriod] = useState<KiwoomChartPeriod>('1m');
+  // 1. Period & Type (Default to '1d')
+  const [period, setPeriod] = useState<KiwoomChartPeriod>('1d');
   const [chartType, setChartType] = useState<'candle' | 'line'>('candle');
+  const [isMinuteMenuOpen, setIsMinuteMenuOpen] = useState<boolean>(false);
 
-  // 2. Raw Data State from Kiwoom
+  // Date Navigation State (과거 날짜 이동)
+  const [targetDate, setTargetDate] = useState<string>(''); // YYYY-MM-DD
+  const [isHistoricalView, setIsHistoricalView] = useState<boolean>(false);
+  const [selectedDateClose, setSelectedDateClose] = useState<number | null>(null);
+  const [selectedDateString, setSelectedDateString] = useState<string | null>(null);
+  const reqSeqRef = useRef<number>(0);
+
+  // 2. Raw Data State from Real API
   const [rawCandles, setRawCandles] = useState<CandleData[]>([]);
   const [chartMeta, setChartMeta] = useState<KiwoomChartResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -122,18 +147,31 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
 
   // Active period configuration
   const currentPeriodConfig = useMemo(() => {
-    return KIWOOM_PERIODS.find(p => p.id === period) || KIWOOM_PERIODS[0];
+    return ALL_CHART_PERIODS.find(p => p.id === period) || PRIMARY_PERIODS[0];
   }, [period]);
 
-  // Fetch Kiwoom Chart from server (preserves caching and API structure)
-  const loadChartData = useCallback(async (targetPeriod: KiwoomChartPeriod) => {
+  // Fetch Chart from server with race condition protection and date navigation
+  const loadChartData = useCallback(async (targetPeriod: KiwoomChartPeriod, customDate?: string) => {
     if (!symbol) return;
+    const currentSeq = Date.now();
+    reqSeqRef.current = currentSeq;
+
     setIsLoading(true);
     setApiError(null);
 
+    const queryDate = customDate !== undefined ? customDate : targetDate;
+
     try {
-      const res = await fetch(`/api/stocks/${symbol}/chart?period=${targetPeriod}`);
+      let url = `/api/stocks/${symbol}/chart?period=${targetPeriod}`;
+      if (queryDate && queryDate.trim()) {
+        url += `&date=${encodeURIComponent(queryDate.trim())}`;
+      }
+
+      const res = await fetch(url);
       const data: KiwoomChartResponse = await res.json();
+
+      // Guard against race conditions
+      if (reqSeqRef.current !== currentSeq) return;
 
       setChartMeta(data);
 
@@ -147,8 +185,8 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
       } else if (Array.isArray(data.candles)) {
         let candles = [...data.candles];
 
-        // Align last candle close with current stock price
-        if (stockPrice > 0 && candles.length > 0) {
+        // Only align last candle with live price if NOT viewing past date
+        if (!data.isHistoricalView && stockPrice > 0 && candles.length > 0) {
           const lastIndex = candles.length - 1;
           const last = { ...candles[lastIndex] };
           last.close = stockPrice;
@@ -158,6 +196,10 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
         }
 
         setRawCandles(candles);
+        setIsHistoricalView(Boolean(data.isHistoricalView));
+        setSelectedDateClose(data.selectedDateClose ?? null);
+        setSelectedDateString(data.selectedDate ?? null);
+
         // Reset pan offset to latest, default view count based on data length
         setViewOffset(0);
         setViewCount(Math.min(candles.length, Math.max(30, Math.min(80, candles.length))));
@@ -165,18 +207,58 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
         setRawCandles([]);
       }
     } catch (err: any) {
-      console.warn(`[InteractiveStockChart] Fetch error:`, err);
-      setApiError(err.message || '키움 Open API 서버와 통신할 수 없습니다.');
-      setRawCandles([]);
+      if (reqSeqRef.current === currentSeq) {
+        console.warn(`[InteractiveStockChart] Fetch error:`, err);
+        setApiError(err.message || '차트 서버와 통신할 수 없습니다.');
+        setRawCandles([]);
+      }
     } finally {
-      setIsLoading(false);
+      if (reqSeqRef.current === currentSeq) {
+        setIsLoading(false);
+      }
     }
-  }, [symbol, stockPrice]);
+  }, [symbol, stockPrice, targetDate]);
+
+  // Date Navigation Handlers
+  const handlePrevDay = () => {
+    const baseDate = targetDate ? new Date(targetDate) : new Date();
+    baseDate.setDate(baseDate.getDate() - (period === '1w' ? 7 : period === '1mo' ? 30 : 1));
+    const newDateStr = baseDate.toISOString().slice(0, 10);
+    setTargetDate(newDateStr);
+    loadChartData(period, newDateStr);
+  };
+
+  const handleNextDay = () => {
+    if (!targetDate) return;
+    const baseDate = new Date(targetDate);
+    baseDate.setDate(baseDate.getDate() + (period === '1w' ? 7 : period === '1mo' ? 30 : 1));
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (baseDate.toISOString().slice(0, 10) >= todayStr) {
+      handleResetToLive();
+    } else {
+      const newDateStr = baseDate.toISOString().slice(0, 10);
+      setTargetDate(newDateStr);
+      loadChartData(period, newDateStr);
+    }
+  };
+
+  const handleDateChange = (newDateStr: string) => {
+    setTargetDate(newDateStr);
+    loadChartData(period, newDateStr);
+  };
+
+  const handleResetToLive = () => {
+    setTargetDate('');
+    setIsHistoricalView(false);
+    setSelectedDateClose(null);
+    setSelectedDateString(null);
+    loadChartData(period, '');
+  };
 
   // Re-fetch whenever symbol or period changes
   useEffect(() => {
     loadChartData(period);
-  }, [symbol, period, loadChartData]);
+  }, [symbol, period]);
 
   // Real-time execution tick listener from Kiwoom WebSocket/SSE
   useEffect(() => {
@@ -620,32 +702,73 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
         
         {/* Left Section: Period Selector & Candle/Line Switch */}
         <div className="flex items-center gap-1.5 flex-wrap">
-          {/* Kiwoom TR info Badge */}
+          {/* Kiwoom/Live info Badge */}
           <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-500/10 text-rose-500 border border-rose-500/20 text-xs font-bold font-mono">
             <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
-            <span>키움 {currentPeriodConfig.trId}</span>
+            <span>{chartMeta?.source === 'kiwoom' ? '키움 Open API' : '실시간 시세'}</span>
+            <span className="opacity-60 text-[10px]">({chartMeta?.currency || currency})</span>
           </div>
 
-          {/* Period Tabs: 1분 / 5분 / 15분 / 30분 / 60분 / 일봉 */}
+          {/* Primary Period Tabs: 1일 / 1주 / 1개월 / 3개월 / 6개월 / YTD / 1년 / 5년 / 전체 */}
           <div className="flex p-0.5 bg-slate-200/60 dark:bg-slate-800 rounded-xl text-xs font-semibold overflow-x-auto scrollbar-none">
-            {KIWOOM_PERIODS.map(p => {
+            {PRIMARY_PERIODS.map(p => {
               const isActive = period === p.id;
               return (
                 <button
                   key={p.id}
-                  onClick={() => setPeriod(p.id)}
+                  onClick={() => {
+                    setPeriod(p.id);
+                    setIsMinuteMenuOpen(false);
+                  }}
                   disabled={!p.supported || isLoading}
-                  className={`px-2.5 py-1 rounded-lg transition-all shrink-0 font-mono text-xs ${
+                  className={`px-2.5 py-1 rounded-lg transition-all shrink-0 font-mono text-xs cursor-pointer ${
                     isActive
                       ? 'bg-white dark:bg-rose-500 text-slate-900 dark:text-white font-bold shadow-xs'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
-                  title={`${p.description} (실제 키움 데이터)`}
+                  title={`${p.description}`}
                 >
                   {p.label}
                 </button>
               );
             })}
+
+            {/* Minute Candles Dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => setIsMinuteMenuOpen(!isMinuteMenuOpen)}
+                className={`flex items-center gap-1 px-2 py-1 rounded-lg transition-all text-xs font-mono cursor-pointer ${
+                  MINUTE_PERIODS.some(mp => mp.id === period)
+                    ? 'bg-rose-500 text-white font-bold'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+                title="분봉 선택 (1분, 5분, 15분, 30분, 60분)"
+              >
+                <span>{MINUTE_PERIODS.find(mp => mp.id === period)?.label || '분봉'}</span>
+                <ChevronDown className="w-3 h-3" />
+              </button>
+
+              {isMinuteMenuOpen && (
+                <div className="absolute left-0 mt-1 w-28 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-xl p-1.5 z-40 text-xs space-y-0.5">
+                  {MINUTE_PERIODS.map(mp => (
+                    <button
+                      key={mp.id}
+                      onClick={() => {
+                        setPeriod(mp.id);
+                        setIsMinuteMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-2 py-1 rounded-lg font-mono cursor-pointer ${
+                        period === mp.id
+                          ? 'bg-rose-500 text-white font-bold'
+                          : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300'
+                      }`}
+                    >
+                      {mp.label}봉
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Candle / Line Switch */}

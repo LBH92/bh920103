@@ -33,6 +33,7 @@ import { PriceBadge } from '../common/PriceBadge';
 import { MiniSparkline } from '../common/MiniSparkline';
 import { newsService } from '../../services/newsService';
 import { storageService } from '../../services/storageService';
+import { stockRepository } from '../../services/stockRepository';
 import { isSurgeGain, isSurgeLoss, isVolumeSurge, MARKET_THRESHOLDS } from '../../utils/marketThresholds';
 import { marketMonitorClient } from '../../services/marketMonitorClient';
 import { globalMarketClient } from '../../services/globalMarketClient';
@@ -58,6 +59,9 @@ export const HomeView: React.FC = () => {
   const [activeMoverTab, setActiveMoverTab] = useState<'surge_gain' | 'surge_loss' | 'volume_surge' | 'popular'>('surge_gain');
   const [liveMonitorEvents, setLiveMonitorEvents] = useState<MarketAlertEvent[]>([]);
   const [homeSearchQuery, setHomeSearchQuery] = useState('');
+  const [homeSearchMarketFilter, setHomeSearchMarketFilter] = useState<'ALL' | 'KR' | 'US'>('ALL');
+  const [homeSearchResults, setHomeSearchResults] = useState<Stock[]>([]);
+  const [isSearchingHome, setIsSearchingHome] = useState<boolean>(false);
   const [selectedMarketEvent, setSelectedMarketEvent] = useState<MarketEvent | null>(null);
   const [isMarketEventModalOpen, setIsMarketEventModalOpen] = useState(false);
 
@@ -117,14 +121,36 @@ export const HomeView: React.FC = () => {
     fetchHomeNews(marketNewsCategory);
   }, [marketNewsCategory]);
 
-  const homeSearchResults = homeSearchQuery.trim()
-    ? stocks.filter(s =>
-        s.name.toLowerCase().includes(homeSearchQuery.trim().toLowerCase()) ||
-        s.symbol.toLowerCase().includes(homeSearchQuery.trim().toLowerCase()) ||
-        s.sector.toLowerCase().includes(homeSearchQuery.trim().toLowerCase()) ||
-        matchHangulSearch(s.name, homeSearchQuery)
-      ).slice(0, 8)
-    : [];
+  useEffect(() => {
+    const q = homeSearchQuery.trim();
+    if (!q) {
+      setHomeSearchResults([]);
+      setIsSearchingHome(false);
+      return;
+    }
+
+    let isSubscribed = true;
+    setIsSearchingHome(true);
+
+    const timer = setTimeout(() => {
+      stockRepository.searchStocks({ query: q, market: homeSearchMarketFilter, limit: 12 })
+        .then(results => {
+          if (isSubscribed) {
+            setHomeSearchResults(results);
+            setIsSearchingHome(false);
+          }
+        })
+        .catch(err => {
+          console.warn('[HomeView] search error:', err);
+          if (isSubscribed) setIsSearchingHome(false);
+        });
+    }, 120);
+
+    return () => {
+      isSubscribed = false;
+      clearTimeout(timer);
+    };
+  }, [homeSearchQuery, homeSearchMarketFilter]);
 
   useEffect(() => {
     marketMonitorClient.getEvents().then(res => setLiveMonitorEvents(res)).catch(() => {});
@@ -194,19 +220,56 @@ export const HomeView: React.FC = () => {
 
   return (
     <div className="space-y-6 pb-12 animate-in fade-in duration-150">
-      {/* 1. Real-time Hero Stock Search Bar */}
+      {/* 1. Real-time Hero Stock Search Bar (한국 · 미국 주식 통합 실시간 검색) */}
       <div className="relative bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
           <div>
             <h1 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
-              <span>국내 주식 실시간 검색</span>
+              <span>한국 · 미국 주식 실시간 검색</span>
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-500 border border-rose-500/20 font-mono">
                 LIVE
               </span>
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              종목명, 종목코드(6자리), 한글 초성으로 국내 주요 상장 종목을 실시간 탐색하세요.
+              KOSPI · KOSDAQ 및 NASDAQ · NYSE 주요 상장 종목, ETF, 초성을 실시간 탐색하세요.
             </p>
+          </div>
+
+          {/* Market Filter Pills */}
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl text-xs font-semibold self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={() => setHomeSearchMarketFilter('ALL')}
+              className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
+                homeSearchMarketFilter === 'ALL'
+                  ? 'bg-rose-500 text-white font-bold shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              전체
+            </button>
+            <button
+              type="button"
+              onClick={() => setHomeSearchMarketFilter('KR')}
+              className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
+                homeSearchMarketFilter === 'KR'
+                  ? 'bg-indigo-600 text-white font-bold shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              🇰🇷 한국
+            </button>
+            <button
+              type="button"
+              onClick={() => setHomeSearchMarketFilter('US')}
+              className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
+                homeSearchMarketFilter === 'US'
+                  ? 'bg-purple-600 text-white font-bold shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              🇺🇸 미국
+            </button>
           </div>
         </div>
 
@@ -218,18 +281,21 @@ export const HomeView: React.FC = () => {
               type="text"
               value={homeSearchQuery}
               onChange={e => setHomeSearchQuery(e.target.value)}
-              placeholder="종목명, 종목코드, 초성 검색 (예: 삼성전자, 005930, ㅅㅅ, 에코프로)"
-              className="w-full pl-11 pr-10 py-3 sm:py-3.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl text-sm sm:text-base text-slate-900 dark:text-white placeholder-slate-400 font-medium focus:outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 transition-all"
+              placeholder="종목명, 티커, 코드, 초성 검색 (예: 삼성전자, NVDA, AAPL, 005930, SOXL, ㅅㅅ)"
+              className="w-full pl-11 pr-14 py-3 sm:py-3.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl text-sm sm:text-base text-slate-900 dark:text-white placeholder-slate-400 font-medium focus:outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 transition-all"
             />
-            {homeSearchQuery && (
-              <button
-                onClick={() => setHomeSearchQuery('')}
-                className="absolute right-3.5 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                title="검색어 지우기"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
+            <div className="absolute right-3.5 flex items-center gap-1.5">
+              {isSearchingHome && <span className="animate-spin text-xs">⏳</span>}
+              {homeSearchQuery && (
+                <button
+                  onClick={() => setHomeSearchQuery('')}
+                  className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                  title="검색어 지우기"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Auto-complete Dropdown */}
@@ -238,7 +304,7 @@ export const HomeView: React.FC = () => {
               {homeSearchResults.length > 0 ? (
                 homeSearchResults.map(s => (
                   <button
-                    key={s.symbol}
+                    key={`${s.market}-${s.symbol}`}
                     onClick={() => {
                       navigateToStock(s.symbol);
                       setHomeSearchQuery('');
@@ -246,21 +312,52 @@ export const HomeView: React.FC = () => {
                     className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/60 text-left transition-colors cursor-pointer group"
                   >
                     <div className="flex items-center gap-3 min-w-0 pr-2">
-                      <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 shrink-0">
+                      <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded shrink-0 ${
+                        s.market === 'US'
+                          ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                      }`}>
                         {s.symbol}
                       </span>
                       <div className="truncate">
-                        <span className="font-bold text-sm sm:text-base text-slate-900 dark:text-white group-hover:text-rose-500 transition-colors">
-                          {s.name}
-                        </span>
-                        <span className="ml-2 text-xs text-slate-400">
-                          {s.market} · {s.sector}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm sm:text-base text-slate-900 dark:text-white group-hover:text-rose-500 transition-colors">
+                            {s.name}
+                          </span>
+                          <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                            s.market === 'US'
+                              ? 'bg-purple-500/10 text-purple-500 border border-purple-500/20'
+                              : s.market === 'KOSPI'
+                              ? 'bg-indigo-500/10 text-indigo-500 border border-indigo-500/20'
+                              : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+                          }`}>
+                            {s.market === 'US' ? (s.exchange || 'US') : s.market}
+                          </span>
+                          {s.productType === 'ETF' && (
+                            <span className="text-[9px] font-bold px-1 py-0.2 rounded border bg-amber-500/10 text-amber-500 border-amber-500/20">
+                              ETF
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-400 truncate mt-0.5">
+                          {s.sector || (s.market === 'US' ? '미국 상장 종목' : '국내 상장 종목')}
+                          {s.nameEn && s.nameEn !== s.name && (
+                            <span className="ml-1.5 text-slate-400 font-mono text-[11px]">
+                              ({s.nameEn})
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <div className="text-right flex items-center gap-3 shrink-0">
                       <div className="font-mono font-bold text-sm text-slate-900 dark:text-white">
-                        {s.price.toLocaleString()}원
+                        {s.price > 0 ? (
+                          s.currency === 'USD'
+                            ? `$${s.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            : `${s.price.toLocaleString()}원`
+                        ) : (
+                          <span className="text-xs text-slate-400 font-normal">시세 조회</span>
+                        )}
                       </div>
                       <PriceBadge change={s.change} changePercent={s.changePercent} size="sm" />
                     </div>
@@ -269,14 +366,16 @@ export const HomeView: React.FC = () => {
               ) : (
                 <div className="p-6 text-center text-xs text-slate-400 space-y-1">
                   <div>일치하는 검색 결과가 없습니다: '<span className="text-rose-500 font-bold">{homeSearchQuery}</span>'</div>
-                  <div className="text-[11px] text-slate-400">초성 검색 예: ㅅㅅ (삼성전자), ㅅㅋ (SK하이닉스), ㅇㅌ (알테오젠)</div>
+                  <div className="text-[11px] text-slate-400">
+                    검색 팁: 삼성전자, NVDA, AAPL, 005930, SOXL, 초성(ㅅㅅ, ㅅㅋ)
+                  </div>
                 </div>
               )}
             </div>
           )}
         </div>
 
-        {/* Quick Popular Keywords Chips */}
+        {/* Quick Popular Keywords Chips (국내 · 미국 대표 종목) */}
         <div className="flex items-center gap-2 mt-3 overflow-x-auto scrollbar-none pt-1">
           <span className="text-xs font-semibold text-slate-400 shrink-0 flex items-center gap-1">
             <Sparkles className="w-3.5 h-3.5 text-amber-500" />
@@ -284,15 +383,15 @@ export const HomeView: React.FC = () => {
           </span>
           {[
             { name: '삼성전자', symbol: '005930' },
+            { name: '엔비디아', symbol: 'NVDA' },
             { name: 'SK하이닉스', symbol: '000660' },
-            { name: '알테오젠', symbol: '196170' },
+            { name: '애플', symbol: 'AAPL' },
+            { name: '테슬라', symbol: 'TSLA' },
+            { name: 'SOXL', symbol: 'SOXL' },
             { name: '현대차', symbol: '005380' },
-            { name: '에코프로', symbol: '086520' },
-            { name: '한미반도체', symbol: '042700' },
-            { name: '두산에너빌리티', symbol: '034020' },
-            { name: '카카오', symbol: '035720' },
-            { name: 'POSCO홀딩스', symbol: '005490' },
-            { name: 'HLB', symbol: '028300' },
+            { name: 'QQQ', symbol: 'QQQ' },
+            { name: '알테오젠', symbol: '196170' },
+            { name: 'SPY', symbol: 'SPY' },
           ].map(kw => (
             <button
               key={kw.symbol}

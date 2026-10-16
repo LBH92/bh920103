@@ -109,6 +109,11 @@ export function getNotifications(uid?: string): AppNotification[] {
   return serverNotifications.filter(n => n.uid === uid);
 }
 
+export function addServerNotification(notif: AppNotification): AppNotification {
+  serverNotifications.unshift(notif);
+  return notif;
+}
+
 export function markNotificationAsRead(id: string): AppNotification | null {
   const notif = serverNotifications.find(n => n.id === id);
   if (notif) {

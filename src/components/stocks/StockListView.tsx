@@ -12,17 +12,20 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   X,
-  Flame
+  Flame,
+  Globe
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Stock } from '../../types';
 import { PriceBadge } from '../common/PriceBadge';
 import { matchHangulSearch } from '../../utils/hangul';
 import { isSurgeGain, isSurgeLoss, isVolumeSurge } from '../../utils/marketThresholds';
+import { MarketHeatmap } from './MarketHeatmap';
 
 export const StockListView: React.FC = () => {
   const { stocks, navigateToStock, watchlist, toggleWatchlist, isWatchlisted, setActiveTab } = useApp();
 
+  const [viewMode, setViewMode] = useState<'list' | 'heatmap'>('list');
   const [searchTerm, setSearchTerm] = useState('');
   const [marketFilter, setMarketFilter] = useState<'ALL' | 'KOSPI' | 'KOSDAQ'>('ALL');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
@@ -89,24 +92,50 @@ export const StockListView: React.FC = () => {
         </div>
 
         {/* Actions & Search */}
-        <div className="flex items-center gap-2.5 w-full md:w-auto">
+        <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
+          {/* View Mode Toggle: List vs Heatmap */}
+          <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-xl p-1 border border-slate-200/60 dark:border-slate-700/60 shrink-0">
+            <button
+              onClick={() => setViewMode('list')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'list'
+                  ? 'bg-white dark:bg-slate-700 text-rose-600 dark:text-rose-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span>리스트</span>
+            </button>
+            <button
+              onClick={() => setViewMode('heatmap')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'heatmap'
+                  ? 'bg-white dark:bg-slate-700 text-rose-600 dark:text-rose-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Globe className="w-3.5 h-3.5 text-indigo-500" />
+              <span>시장 히트맵</span>
+            </button>
+          </div>
+
           <button
             onClick={() => setActiveTab('ranking')}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30 text-xs font-bold hover:bg-rose-100 dark:hover:bg-rose-500/20 transition-all cursor-pointer shrink-0"
             title="실시간 상승/하락/거래량/거래대금 TOP 20 보기"
           >
             <Flame className="w-4 h-4 text-amber-500" />
-            <span>실시간 순위 TOP 20</span>
+            <span className="hidden sm:inline">실시간 순위</span> TOP 20
           </button>
 
           {/* Search Input */}
-          <div className="relative flex-1 md:w-80">
+          <div className="relative flex-1 md:w-64">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
             <input
               type="text"
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
-              placeholder="종목명, 코드, 테마 검색..."
+              placeholder="종목명, 코드 검색..."
               className="w-full pl-9 pr-8 py-2 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-xl text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-rose-500"
             />
             {searchTerm && (
@@ -121,7 +150,11 @@ export const StockListView: React.FC = () => {
         </div>
       </div>
 
-      {/* Filter Chips Bar */}
+      {viewMode === 'heatmap' ? (
+        <MarketHeatmap />
+      ) : (
+        <>
+          {/* Filter Chips Bar */}
       <div className="flex flex-col gap-3 p-3.5 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800">
         {/* Row 1: Condition Screener Tabs (+5% 이상, -5% 이하, 200% 이상) */}
         <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-1">
@@ -424,6 +457,8 @@ export const StockListView: React.FC = () => {
           </table>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 };

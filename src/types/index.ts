@@ -44,11 +44,13 @@ export interface CandleData {
   volume: number;
 }
 
-export type KiwoomChartPeriod = '1m' | '5m' | '15m' | '30m' | '1h' | 'day';
+export type KiwoomChartPeriod =
+  | '1m' | '5m' | '15m' | '30m' | '1h' | 'day'
+  | '1d' | '1w' | '1mo' | '3mo' | '6mo' | 'ytd' | '1y' | '5y' | 'all';
 
 export interface KiwoomChartResponse {
   symbol: string;
-  period: KiwoomChartPeriod;
+  period: KiwoomChartPeriod | string;
   periodLabel: string;
   trId: string;
   ticScope?: string;
@@ -56,6 +58,10 @@ export interface KiwoomChartResponse {
   candles: CandleData[];
   currentPrice?: number;
   lastCandleClose?: number;
+  selectedDateClose?: number;
+  selectedDate?: string;
+  isHistoricalView?: boolean;
+  marketStatus?: 'OPEN' | 'CLOSED' | 'DELAYED';
   source: 'kiwoom' | 'yahoo' | 'mock';
   cached: boolean;
   timestamp: number;
@@ -291,6 +297,14 @@ export interface ChatMessage {
     role?: string;
   };
   message: string;
+  imageUrl?: string;
+  imageMeta?: {
+    fileType: string;
+    fileSize: number;
+    fileName?: string;
+    width?: number;
+    height?: number;
+  };
   timestamp: string;
   sentiment?: 'bull' | 'bear' | 'neutral';
   likes: number;
@@ -522,7 +536,66 @@ export interface StockRankingResponse {
   kiwoomNotice?: string;
 }
 
-export type ViewTab = 'home' | 'stocks' | 'ranking' | 'insight' | 'watchlist' | 'portfolio' | 'community' | 'chat' | 'alerts' | 'news' | 'profile' | 'admin';
+export type ViewTab = 'home' | 'stocks' | 'ranking' | 'insight' | 'watchlist' | 'portfolio' | 'community' | 'chat' | 'alerts' | 'news' | 'profile' | 'admin' | 'calendar';
+
+// ==========================================
+// Market Calendar & Schedule Types
+// ==========================================
+export type CalendarMarket = 'ALL' | 'KR' | 'US';
+export type CalendarEventType = 'HOLIDAY' | 'ECONOMIC' | 'EARNINGS' | 'DIVIDEND';
+export type CalendarEventImportance = 'HIGH' | 'MEDIUM' | 'LOW';
+export type CalendarEventStatus = 'CONFIRMED' | 'ESTIMATED' | 'CANCELLED';
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  market: 'KR' | 'US' | 'GLOBAL';
+  type: CalendarEventType;
+  importance: CalendarEventImportance;
+  symbol?: string;
+  symbolName?: string;
+  date: string; // YYYY-MM-DD (KST date)
+  startDateTime: string; // ISO 8601 string
+  allDay: boolean;
+  timeKST: string; // e.g. "21:30" or "종일"
+  localTime?: string; // e.g. "08:30 EDT" (미국 현지 시간 및 서머타임)
+  status: CalendarEventStatus;
+  source: string; // Official source identifier (e.g. "한국거래소(KRX)", "한국은행(BOK)", "미국 연준(Fed)", "미국 노동통계국(BLS)", "기업 IR/공시")
+  sourceUrl?: string;
+  description?: string;
+  forecast?: string;
+  previous?: string;
+  actual?: string;
+  dividendAmount?: string;
+  dividendYield?: string;
+  isEarlyClose?: boolean;
+  closeTime?: string;
+  updatedAt: string;
+}
+
+export interface CalendarSummary {
+  todayEvents: CalendarEvent[];
+  weekEvents: CalendarEvent[];
+  upcomingHighImpact: CalendarEvent[];
+  counts: {
+    totalThisMonth: number;
+    holidays: number;
+    economic: number;
+    earnings: number;
+    dividends: number;
+  };
+  serverTime: string;
+}
+
+export interface CalendarAlertSettings {
+  enabled: boolean;
+  timings: ('1d' | '1h' | '15m')[];
+  types: CalendarEventType[];
+  markets: ('KR' | 'US')[];
+  watchlistOnly: boolean;
+  browserPushEnabled: boolean;
+  updatedAt?: string;
+}
 
 // ==========================================
 // Virtual Holdings (가상 보유 내역) Types
@@ -750,6 +823,47 @@ export interface UserAiConnectionUpdateRequest {
 // Root Superadmin identification constants (Client-safe)
 export const ROOT_SUPERADMIN_UID = 'lr018vf8CcW5fAv707vsl77qJy53';
 export const ROOT_SUPERADMIN_EMAIL = 'byunghyunlim92@gmail.com';
+
+// ==========================================
+// Market Heatmap Types
+// ==========================================
+export interface HeatmapStockItem {
+  symbol: string;
+  name: string;
+  nameEn: string;
+  market: 'KR' | 'US';
+  exchange: 'KOSPI' | 'KOSDAQ' | 'NASDAQ' | 'NYSE';
+  sector: string;
+  price: number;
+  currency: 'KRW' | 'USD';
+  marketCap: number; // in KRW 억 or USD million
+  formattedMarketCap: string;
+  changePercent1D: number;
+  changePercent1M: number;
+  changePercent1Y: number;
+  status: 'realtime' | 'delayed' | 'closed';
+  lastUpdated: string;
+  baseline: {
+    price1DPrev: number;
+    price1MPrev: number;
+    price1YPrev: number;
+  };
+}
+
+export interface HeatmapResponse {
+  market: 'ALL' | 'KR' | 'US' | 'KOSPI' | 'KOSDAQ' | 'NASDAQ' | 'NYSE';
+  period: '1D' | '1M' | '1Y';
+  items: HeatmapStockItem[];
+  meta: {
+    krMarketStatus: 'OPEN' | 'CLOSED';
+    usMarketStatus: 'OPEN' | 'CLOSED';
+    serverTimeKST: string;
+    serverTimeEST: string;
+    calculationBaseline: string;
+    totalTracked: number;
+    source: string;
+  };
+}
 
 
 

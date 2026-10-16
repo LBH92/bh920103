@@ -22,18 +22,18 @@ const RECENT_SEARCHES_KEY = 'bd_recent_stock_searches';
 export const SearchModal: React.FC = () => {
   const { isSearchOpen, setIsSearchOpen, navigateToStock, isWatchlisted, toggleWatchlist } = useApp();
   const [query, setQuery] = useState('');
+  const [marketFilter, setMarketFilter] = useState<'ALL' | 'KR' | 'US'>('ALL');
   const [searchResults, setSearchResults] = useState<Stock[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [selectedTradeStock, setSelectedTradeStock] = useState<Stock | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem(RECENT_SEARCHES_KEY);
-      return saved ? JSON.parse(saved) : ['삼성전자', 'SK하이닉스', '알테오젠', '005930'];
+      return saved ? JSON.parse(saved) : ['삼성전자', 'NVDA', 'SK하이닉스', 'AAPL', '005930', 'TSLA'];
     } catch {
-      return ['삼성전자', 'SK하이닉스', '알테오젠'];
+      return ['삼성전자', 'NVDA', 'AAPL'];
     }
   });
-
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -48,7 +48,7 @@ export const SearchModal: React.FC = () => {
     }
   }, [isSearchOpen]);
 
-  // Execute fast search via stockRepository (0ms in-memory cache)
+  // Execute fast unified search via stockRepository
   useEffect(() => {
     if (!query.trim()) {
       setSearchResults([]);
@@ -57,7 +57,7 @@ export const SearchModal: React.FC = () => {
     }
 
     let isSubscribed = true;
-    stockRepository.searchStocks({ query, limit: 12 }).then(results => {
+    stockRepository.searchStocks({ query, market: marketFilter, limit: 16 }).then(results => {
       if (isSubscribed) {
         setSearchResults(results);
         setSelectedIndex(0);
@@ -67,7 +67,7 @@ export const SearchModal: React.FC = () => {
     return () => {
       isSubscribed = false;
     };
-  }, [query]);
+  }, [query, marketFilter]);
 
   // Save to recent searches
   const saveRecentSearch = (term: string) => {
@@ -121,12 +121,13 @@ export const SearchModal: React.FC = () => {
 
   const popularKeywords = [
     { text: '삼성전자', symbol: '005930' },
+    { text: '엔비디아', symbol: 'NVDA' },
     { text: 'SK하이닉스', symbol: '000660' },
-    { text: '알테오젠', symbol: '196170' },
-    { text: '현대로템', symbol: '064350' },
-    { text: '한미반도체', symbol: '042700' },
-    { text: '두산에너빌리티', symbol: '034020' },
-    { text: '에코프로비엠', symbol: '247540' },
+    { text: '애플', symbol: 'AAPL' },
+    { text: '테슬라', symbol: 'TSLA' },
+    { text: 'SOXL (반도체 3X)', symbol: 'SOXL' },
+    { text: 'QQQ (나스닥 100)', symbol: 'QQQ' },
+    { text: 'SPY (S&P 500)', symbol: 'SPY' },
   ];
 
   if (!isSearchOpen) return null;
@@ -149,7 +150,7 @@ export const SearchModal: React.FC = () => {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="종목명, 종목코드, 또는 초성을 입력하세요 (예: 삼성, 005930, ㅅㅅㅈㅈ)"
+            placeholder="종목명, 티커, 코드, 초성 입력 (예: 삼성, NVDA, AAPL, 005930, SOXL, ㅅㅅ)"
             className="w-full bg-transparent text-slate-900 dark:text-white placeholder-slate-400 text-sm sm:text-base focus:outline-none font-medium"
           />
           {query && (
@@ -164,6 +165,43 @@ export const SearchModal: React.FC = () => {
           <kbd className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 text-xs font-mono font-medium text-slate-400 bg-white dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-700">
             ESC
           </kbd>
+        </div>
+
+        {/* Market Filter Bar (전체 / 한국 / 미국) */}
+        <div className="flex items-center gap-1.5 px-4 py-2 border-b border-slate-200/80 dark:border-slate-800/80 bg-slate-100/60 dark:bg-slate-900/40 text-xs font-medium">
+          <button
+            type="button"
+            onClick={() => setMarketFilter('ALL')}
+            className={`px-3 py-1 rounded-lg transition-colors font-bold cursor-pointer ${
+              marketFilter === 'ALL'
+                ? 'bg-rose-500 text-white shadow-xs'
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-800'
+            }`}
+          >
+            전체 통합
+          </button>
+          <button
+            type="button"
+            onClick={() => setMarketFilter('KR')}
+            className={`px-3 py-1 rounded-lg transition-colors font-bold cursor-pointer ${
+              marketFilter === 'KR'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-800'
+            }`}
+          >
+            🇰🇷 한국 (KOSPI · KOSDAQ)
+          </button>
+          <button
+            type="button"
+            onClick={() => setMarketFilter('US')}
+            className={`px-3 py-1 rounded-lg transition-colors font-bold cursor-pointer ${
+              marketFilter === 'US'
+                ? 'bg-purple-600 text-white shadow-xs'
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-800'
+            }`}
+          >
+            🇺🇸 미국 (NASDAQ · NYSE)
+          </button>
         </div>
 
         {/* Content Body */}
@@ -340,12 +378,12 @@ export const SearchModal: React.FC = () => {
 
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 max-w-md mx-auto text-left text-xs space-y-1.5 text-slate-500 dark:text-slate-400">
                   <span className="font-bold text-slate-700 dark:text-slate-300 block">
-                    💡 종목 검색 팁
+                    💡 통합 종목 검색 팁
                   </span>
-                  <p>• <strong>종목명 검색:</strong> 예) 삼성전자, 현대차, 알테오젠</p>
-                  <p>• <strong>종목코드 검색:</strong> 예) 005930, 000660</p>
-                  <p>• <strong>한글 초성 검색:</strong> 예) ㅅㅅ (삼성), ㅅㅋㅎㅇㄴㅅ (SK하이닉스)</p>
-                  <p>• <strong>부분 검색:</strong> 예) 반도체, 바이오, 5930</p>
+                  <p>• <strong>한국 주식:</strong> 삼성전자, 005930, SK하이닉스, 초성(ㅅㅅ, ㅅㅋㅎㅇㄴㅅ)</p>
+                  <p>• <strong>미국 주식:</strong> NVDA, AAPL, TSLA, MSFT, 엔비디아, 테슬라, 애플</p>
+                  <p>• <strong>레버리지 / 지수 ETF:</strong> SOXL, SOXS, QQQ, SPY</p>
+                  <p>• <strong>시장 필터:</strong> 상단 [한국] 또는 [미국] 탭으로 시장별 좁혀보기 지원</p>
                 </div>
               </div>
             )

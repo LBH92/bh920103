@@ -266,5 +266,16 @@ service cloud.firestore {
         isAdmin()
       );
     }
+
+    // 18. Calendar Alert Settings (Per-User Isolation)
+    match /calendarAlertSettings/{settingId} {
+      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isOwner(settingId) || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
+        isOwner(settingId) ||
+        isAdmin()
+      );
+    }
   }
 }
