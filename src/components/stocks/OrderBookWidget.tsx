@@ -44,6 +44,11 @@ export const OrderBookWidget: React.FC<OrderBookWidgetProps> = ({ stock }) => {
     const unsubOrderBook = stockRepository.subscribeOrderBook?.(stock.symbol, (realtimeOrderBook) => {
       if (!isSubscribed) return;
       if (realtimeOrderBook && realtimeOrderBook.symbol === stock.symbol) {
+        // 실시간 호가의 최우선 매도호가나 중심가가 현재 종목 주가와 10% 이상 괴리되면 오염 데이터로 간주하여 차단
+        const samplePrice = realtimeOrderBook.asks?.[0]?.price || realtimeOrderBook.bids?.[0]?.price;
+        if (stock.price > 0 && samplePrice && Math.abs(samplePrice - stock.price) / stock.price > 0.10) {
+          return;
+        }
         setOrderBook(realtimeOrderBook);
         setIsRealtime(true);
       }
@@ -51,6 +56,7 @@ export const OrderBookWidget: React.FC<OrderBookWidgetProps> = ({ stock }) => {
 
     // 3. Subscribe to Real-time Execution Tick (Kiwoom WS H0STCNT0) for 현재가 / 등락률 / 거래량
     const unsubExecution = stockRepository.subscribeExecutionTick?.(stock.symbol, (tick) => {
+      if (stock.price > 0 && tick.price > 0 && Math.abs(tick.price - stock.price) / stock.price > 0.10) return;
       if (!isSubscribed) return;
       if (tick && tick.symbol === stock.symbol) {
         setCurrentPrice(tick.price);

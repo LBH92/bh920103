@@ -266,6 +266,10 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
     if (!symbol) return;
 
     const unsubscribe = stockRepository.subscribeExecutionTick?.(symbol, (tick) => {
+      // 키움 실데이터 stockPrice와 10% 이상 괴리되는 mock 틱은 차트 훼손 방지를 위해 무시
+      if (stockPrice > 0 && tick.price > 0 && Math.abs(tick.price - stockPrice) / stockPrice > 0.10) {
+        return;
+      }
       setRawCandles(prev => {
         if (!prev || prev.length === 0) return prev;
         const last = prev[prev.length - 1];

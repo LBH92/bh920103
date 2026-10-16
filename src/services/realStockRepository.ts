@@ -30,7 +30,7 @@ import { isPreviewEnvironment } from '../utils/environment';
 export class RealStockRepository implements IStockRepository {
   private subscribers: Set<(stocks: Stock[]) => void> = new Set();
   private pollIntervalId: any = null;
-  private mockFallback = new MockStockRepository();
+  // private mockFallback = new MockStockRepository(); // REMOVED: No mock fallback allowed in real mode
 
   getSourceType(): StockDataSourceType {
     return 'REAL';
@@ -337,9 +337,7 @@ export class RealStockRepository implements IStockRepository {
     callback: (tick: { symbol: string; price: number; change: number; changePercent: number; volume: number; open: number; high: number; low: number; time: string }) => void
   ): () => void {
     // In preview environment, smoothly delegate to Mock repository for simulated tick feed
-    if (isPreviewEnvironment()) {
-      return this.mockFallback.subscribeExecutionTick(symbol, callback);
-    }
+    // isPreview mock bypassed in real repo
 
     // 1. Tell server to subscribe to this symbol on Kiwoom WS
     fetch('/api/stocks/subscribe', {
@@ -373,7 +371,7 @@ export class RealStockRepository implements IStockRepository {
           }
           // On SSE error in preview or dev, activate mock fallback seamlessly
           if (!fallbackUnsub && !isClosed) {
-            fallbackUnsub = this.mockFallback.subscribeExecutionTick(symbol, callback);
+            /* mockExecutionTick bypassed */
           }
           // Auto-reconnect after 8s
           if (!isClosed) {
@@ -382,7 +380,7 @@ export class RealStockRepository implements IStockRepository {
         };
       } catch {
         if (!fallbackUnsub && !isClosed) {
-          fallbackUnsub = this.mockFallback.subscribeExecutionTick(symbol, callback);
+          /* mockExecutionTick bypassed */
         }
       }
     };
@@ -412,9 +410,7 @@ export class RealStockRepository implements IStockRepository {
    * Fetch 10-level Order Book from Backend / Kiwoom API
    */
   async getOrderBook(symbol: string): Promise<OrderBook> {
-    if (isPreviewEnvironment()) {
-      return this.mockFallback.getOrderBook(symbol);
-    }
+    // isPreview mock bypassed in real repo
 
     try {
       const res = await fetch(`/api/stocks/${symbol}/orderbook`);
@@ -447,9 +443,7 @@ export class RealStockRepository implements IStockRepository {
     callback: (orderBook: OrderBook) => void
   ): () => void {
     // In preview environment, smoothly delegate to Mock repository
-    if (isPreviewEnvironment()) {
-      return this.mockFallback.subscribeOrderBook(symbol, callback);
-    }
+    // isPreview mock bypassed in real repo
 
     // 1. Tell server to subscribe to order book for this symbol on Kiwoom WS
     fetch('/api/stocks/subscribe-orderbook', {
@@ -481,9 +475,19 @@ export class RealStockRepository implements IStockRepository {
             eventSource.close();
             eventSource = null;
           }
-          // On SSE error, seamlessly keep order book active via mockFallback
+          // On SSE error, seamlessly keep order book active via live stock quote
           if (!fallbackUnsub && !isClosed) {
-            fallbackUnsub = this.mockFallback.subscribeOrderBook(symbol, callback);
+            const pushLiveOrderBook = () => {
+              if (isClosed) return;
+              this.getStock(symbol).then(st => {
+                if (st && st.price > 0 && !isClosed) {
+                  callback(generateOrderBook(st));
+                }
+              }).catch(() => {});
+            };
+            pushLiveOrderBook();
+            const timer = setInterval(pushLiveOrderBook, 3000);
+            fallbackUnsub = () => clearInterval(timer);
           }
           // Auto-reconnect after 8s
           if (!isClosed) {
@@ -492,7 +496,7 @@ export class RealStockRepository implements IStockRepository {
         };
       } catch {
         if (!fallbackUnsub && !isClosed) {
-          fallbackUnsub = this.mockFallback.subscribeOrderBook(symbol, callback);
+          /* mockOrderBook bypassed */
         }
       }
     };

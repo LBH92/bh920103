@@ -95,10 +95,17 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
     };
   }, [symbol, stocks]);
 
-  // Subscribe to live tick updates
+  // Subscribe to live tick updates (with validation against real stock base price)
   useEffect(() => {
     setLiveTick(null);
     const unsub = stockRepository.subscribeExecutionTick?.(symbol, (tick) => {
+      // 키움 실데이터 대비 10% 이상 왜곡된 mock 틱은 화면 오염 방지를 위해 전면 폐기
+      if (stockDetail && stockDetail.price > 0 && tick.price > 0) {
+        const diffRate = Math.abs(tick.price - stockDetail.price) / stockDetail.price;
+        if (diffRate > 0.10) {
+          return;
+        }
+      }
       setLiveTick({
         price: tick.price,
         change: tick.change,
@@ -111,7 +118,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
     return () => {
       unsub?.();
     };
-  }, [symbol]);
+  }, [symbol, stockDetail]);
 
   const baseStock: Stock = stockDetail || initialStock || {
     symbol,
@@ -141,9 +148,12 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
     sparkline: [],
   };
 
+  const isTickValid = liveTick && liveTick.price && baseStock.price > 0 &&
+    (Math.abs(liveTick.price - baseStock.price) / baseStock.price <= 0.10);
+
   const stock: Stock = {
     ...baseStock,
-    ...(liveTick ? {
+    ...(isTickValid ? {
       price: liveTick.price || baseStock.price,
       change: liveTick.change !== undefined ? liveTick.change : baseStock.change,
       changePercent: liveTick.changePercent !== undefined ? liveTick.changePercent : baseStock.changePercent,
