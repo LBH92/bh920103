@@ -33,6 +33,7 @@ export interface HeatmapStockItem {
     price1MPrev: number;
     price1YPrev: number;
   };
+  type: 'stock' | 'etf';
 }
 
 export interface HeatmapResponse {
@@ -57,32 +58,34 @@ const KR_HEATMAP_STOCKS: {
   nameEn: string;
   exchange: 'KOSPI' | 'KOSDAQ';
   sector: string;
-  approxCapKRWTrillion: number; // approx market cap in trillion KRW (조원)
+  approxCapKRWTrillion: number;
+  type: 'stock' | 'etf';
 }[] = [
-  { symbol: '005930', name: '삼성전자', nameEn: 'Samsung Electronics', exchange: 'KOSPI', sector: '반도체/IT', approxCapKRWTrillion: 420 },
-  { symbol: '000660', name: 'SK하이닉스', nameEn: 'SK hynix', exchange: 'KOSPI', sector: '반도체/IT', approxCapKRWTrillion: 135 },
-  { symbol: '373220', name: 'LG에너지솔루션', nameEn: 'LG Energy Solution', exchange: 'KOSPI', sector: '2차전지', approxCapKRWTrillion: 92 },
-  { symbol: '207940', name: '삼성바이오로직스', nameEn: 'Samsung Biologics', exchange: 'KOSPI', sector: '바이오/제약', approxCapKRWTrillion: 71 },
-  { symbol: '005380', name: '현대차', nameEn: 'Hyundai Motor', exchange: 'KOSPI', sector: '자동차', approxCapKRWTrillion: 55 },
-  { symbol: '000270', name: '기아', nameEn: 'Kia', exchange: 'KOSPI', sector: '자동차', approxCapKRWTrillion: 44 },
-  { symbol: '068270', name: '셀트리온', nameEn: 'Celltrion', exchange: 'KOSPI', sector: '바이오/제약', approxCapKRWTrillion: 42 },
-  { symbol: '105560', name: 'KB금융', nameEn: 'KB Financial', exchange: 'KOSPI', sector: '금융/지주', approxCapKRWTrillion: 34 },
-  { symbol: '055550', name: '신한지주', nameEn: 'Shinhan Financial', exchange: 'KOSPI', sector: '금융/지주', approxCapKRWTrillion: 28 },
-  { symbol: '005490', name: 'POSCO홀딩스', nameEn: 'POSCO Holdings', exchange: 'KOSPI', sector: '철강/소재', approxCapKRWTrillion: 27 },
-  { symbol: '035420', name: 'NAVER', nameEn: 'NAVER Corp', exchange: 'KOSPI', sector: '플랫폼/인터넷', approxCapKRWTrillion: 26 },
-  { symbol: '035720', name: '카카오', nameEn: 'Kakao Corp', exchange: 'KOSPI', sector: '플랫폼/인터넷', approxCapKRWTrillion: 18 },
-  { symbol: '042700', name: '한미반도체', nameEn: 'Hanmi Semiconductor', exchange: 'KOSPI', sector: '반도체장비', approxCapKRWTrillion: 15 },
-  { symbol: '012330', name: '현대모비스', nameEn: 'Hyundai Mobis', exchange: 'KOSPI', sector: '자동차부품', approxCapKRWTrillion: 22 },
-  { symbol: '064350', name: '현대로템', nameEn: 'Hyundai Rotem', exchange: 'KOSPI', sector: '방위산업/철도', approxCapKRWTrillion: 8 },
-  { symbol: '034020', name: '두산에너빌리티', nameEn: 'Doosan Enerbility', exchange: 'KOSPI', sector: '원자력/에너지', approxCapKRWTrillion: 12 },
-  { symbol: '417860', name: 'HD현대일렉트릭', nameEn: 'HD Hyundai Electric', exchange: 'KOSPI', sector: '전력설비/인프라', approxCapKRWTrillion: 14 },
-  { symbol: '247540', name: '에코프로비엠', nameEn: 'EcoPro BM', exchange: 'KOSDAQ', sector: '2차전지', approxCapKRWTrillion: 16 },
-  { symbol: '086520', name: '에코프로', nameEn: 'EcoPro', exchange: 'KOSDAQ', sector: '2차전지', approxCapKRWTrillion: 21 },
-  { symbol: '196170', name: '알테오젠', nameEn: 'Alteogen', exchange: 'KOSDAQ', sector: '바이오/신약', approxCapKRWTrillion: 19 },
-  { symbol: '028300', name: 'HLB', nameEn: 'HLB', exchange: 'KOSDAQ', sector: '바이오/제약', approxCapKRWTrillion: 11 },
-  { symbol: '277810', name: '레인보우로보틱스', nameEn: 'Rainbow Robotics', exchange: 'KOSDAQ', sector: '로봇/자동화', approxCapKRWTrillion: 4 },
-  { symbol: '058470', name: '리노공업', nameEn: 'Leeno Industrial', exchange: 'KOSDAQ', sector: '반도체테스트', approxCapKRWTrillion: 3 },
-  { symbol: '039030', name: '이오테크닉스', nameEn: 'EO Technics', exchange: 'KOSDAQ', sector: '반도체레이저', approxCapKRWTrillion: 2.5 },
+  { symbol: '005930', name: '삼성전자', nameEn: 'Samsung Electronics', exchange: 'KOSPI', sector: '반도체', approxCapKRWTrillion: 420, type: 'stock' },
+  { symbol: '000660', name: 'SK하이닉스', nameEn: 'SK hynix', exchange: 'KOSPI', sector: '반도체', approxCapKRWTrillion: 135, type: 'stock' },
+  { symbol: '373220', name: 'LG에너지솔루션', nameEn: 'LG Energy Solution', exchange: 'KOSPI', sector: '2차전지', approxCapKRWTrillion: 92, type: 'stock' },
+  { symbol: '207940', name: '삼성바이오로직스', nameEn: 'Samsung Biologics', exchange: 'KOSPI', sector: '바이오', approxCapKRWTrillion: 71, type: 'stock' },
+  { symbol: '005380', name: '현대차', nameEn: 'Hyundai Motor', exchange: 'KOSPI', sector: '자동차', approxCapKRWTrillion: 55, type: 'stock' },
+  { symbol: '000270', name: '기아', nameEn: 'Kia', exchange: 'KOSPI', sector: '자동차', approxCapKRWTrillion: 44, type: 'stock' },
+  { symbol: '068270', name: '셀트리온', nameEn: 'Celltrion', exchange: 'KOSPI', sector: '바이오', approxCapKRWTrillion: 42, type: 'stock' },
+  { symbol: '105560', name: 'KB금융', nameEn: 'KB Financial', exchange: 'KOSPI', sector: '금융', approxCapKRWTrillion: 34, type: 'stock' },
+  { symbol: '055550', name: '신한지주', nameEn: 'Shinhan Financial', exchange: 'KOSPI', sector: '금융', approxCapKRWTrillion: 28, type: 'stock' },
+  { symbol: '005490', name: 'POSCO홀딩스', nameEn: 'POSCO Holdings', exchange: 'KOSPI', sector: '소재', approxCapKRWTrillion: 27, type: 'stock' },
+  { symbol: '035420', name: 'NAVER', nameEn: 'NAVER Corp', exchange: 'KOSPI', sector: '인터넷/플랫폼', approxCapKRWTrillion: 26, type: 'stock' },
+  { symbol: '035720', name: '카카오', nameEn: 'Kakao Corp', exchange: 'KOSPI', sector: '인터넷/플랫폼', approxCapKRWTrillion: 18, type: 'stock' },
+  { symbol: '042700', name: '한미반도체', nameEn: 'Hanmi Semiconductor', exchange: 'KOSPI', sector: '반도체', approxCapKRWTrillion: 15, type: 'stock' },
+  { symbol: '012330', name: '현대모비스', nameEn: 'Hyundai Mobis', exchange: 'KOSPI', sector: '자동차', approxCapKRWTrillion: 22, type: 'stock' },
+  { symbol: '064350', name: '현대로템', nameEn: 'Hyundai Rotem', exchange: 'KOSPI', sector: '방산/철도', approxCapKRWTrillion: 8, type: 'stock' },
+  { symbol: '034020', name: '두산에너빌리티', nameEn: 'Doosan Enerbility', exchange: 'KOSPI', sector: '에너지', approxCapKRWTrillion: 12, type: 'stock' },
+  { symbol: '417860', name: 'HD현대일렉트릭', nameEn: 'HD Hyundai Electric', exchange: 'KOSPI', sector: '에너지/인프라', approxCapKRWTrillion: 14, type: 'stock' },
+  { symbol: '247540', name: '에코프로비엠', nameEn: 'EcoPro BM', exchange: 'KOSDAQ', sector: '2차전지', approxCapKRWTrillion: 16, type: 'stock' },
+  { symbol: '086520', name: '에코프로', nameEn: 'EcoPro', exchange: 'KOSDAQ', sector: '2차전지', approxCapKRWTrillion: 21, type: 'stock' },
+  { symbol: '196170', name: '알테오젠', nameEn: 'Alteogen', exchange: 'KOSDAQ', sector: '바이오', approxCapKRWTrillion: 19, type: 'stock' },
+  { symbol: '028300', name: 'HLB', nameEn: 'HLB', exchange: 'KOSDAQ', sector: '바이오', approxCapKRWTrillion: 11, type: 'stock' },
+  { symbol: '277810', name: '레인보우로보틱스', nameEn: 'Rainbow Robotics', exchange: 'KOSDAQ', sector: '로봇', approxCapKRWTrillion: 4, type: 'stock' },
+  { symbol: '058470', name: '리노공업', nameEn: 'Leeno Industrial', exchange: 'KOSDAQ', sector: '반도체', approxCapKRWTrillion: 3, type: 'stock' },
+  { symbol: '039030', name: '이오테크닉스', nameEn: 'EO Technics', exchange: 'KOSDAQ', sector: '반도체', approxCapKRWTrillion: 2.5, type: 'stock' },
+  { symbol: '000030', name: 'KODEX 200', nameEn: 'KODEX 200', exchange: 'KOSPI', sector: 'ETF', approxCapKRWTrillion: 5, type: 'etf' },
 ];
 
 // Top US Stocks curated from US_STOCK_MASTER
@@ -92,32 +95,33 @@ const US_HEATMAP_STOCKS: {
   nameEn: string;
   exchange: 'NASDAQ' | 'NYSE';
   sector: string;
-  approxCapUSDBillion: number; // approx market cap in billion USD
+  approxCapUSDBillion: number;
+  type: 'stock' | 'etf';
 }[] = [
-  { symbol: 'NVDA', name: '엔비디아', nameEn: 'NVIDIA Corporation', exchange: 'NASDAQ', sector: '반도체/AI가속기', approxCapUSDBillion: 3400 },
-  { symbol: 'AAPL', name: '애플', nameEn: 'Apple Inc.', exchange: 'NASDAQ', sector: '빅테크/가전', approxCapUSDBillion: 3300 },
-  { symbol: 'MSFT', name: '마이크로소프트', nameEn: 'Microsoft Corp', exchange: 'NASDAQ', sector: '소프트웨어/클라우드', approxCapUSDBillion: 3100 },
-  { symbol: 'AMZN', name: '아마존', nameEn: 'Amazon.com Inc.', exchange: 'NASDAQ', sector: '전자상거래/AWS', approxCapUSDBillion: 2100 },
-  { symbol: 'GOOGL', name: '알파벳 (구글)', nameEn: 'Alphabet Inc.', exchange: 'NASDAQ', sector: '검색/AI/클라우드', approxCapUSDBillion: 2000 },
-  { symbol: 'META', name: '메타 플랫폼스', nameEn: 'Meta Platforms Inc.', exchange: 'NASDAQ', sector: '소셜미디어/AI', approxCapUSDBillion: 1500 },
-  { symbol: 'TSLA', name: '테슬라', nameEn: 'Tesla, Inc.', exchange: 'NASDAQ', sector: '전기차/에너지', approxCapUSDBillion: 850 },
-  { symbol: 'AVGO', name: '브로드컴', nameEn: 'Broadcom Inc.', exchange: 'NASDAQ', sector: '반도체/통신', approxCapUSDBillion: 800 },
-  { symbol: 'TSM', name: 'TSMC', nameEn: 'Taiwan Semiconductor', exchange: 'NYSE', sector: '파운드리반도체', approxCapUSDBillion: 920 },
-  { symbol: 'PLTR', name: '팔란티어', nameEn: 'Palantir Technologies', exchange: 'NYSE', sector: '빅데이터/방산AI', approxCapUSDBillion: 130 },
-  { symbol: 'AMD', name: 'AMD', nameEn: 'Advanced Micro Devices', exchange: 'NASDAQ', sector: '반도체/CPU/GPU', approxCapUSDBillion: 240 },
-  { symbol: 'QCOM', name: '퀄컴', nameEn: 'QUALCOMM Inc.', exchange: 'NASDAQ', sector: '모바일반도체', approxCapUSDBillion: 190 },
-  { symbol: 'NFLX', name: '넷플릭스', nameEn: 'Netflix, Inc.', exchange: 'NASDAQ', sector: '엔터/스트리밍', approxCapUSDBillion: 310 },
-  { symbol: 'ORCL', name: '오라클', nameEn: 'Oracle Corp', exchange: 'NYSE', sector: '데이터베이스/클라우드', approxCapUSDBillion: 480 },
-  { symbol: 'CRM', name: '세일즈포스', nameEn: 'Salesforce, Inc.', exchange: 'NYSE', sector: 'CRM/SaaS', approxCapUSDBillion: 280 },
-  { symbol: 'ADBE', name: '어도비', nameEn: 'Adobe Inc.', exchange: 'NASDAQ', sector: '크리에이티브SW', approxCapUSDBillion: 220 },
-  { symbol: 'SMCI', name: '슈퍼마이크로', nameEn: 'Super Micro Computer', exchange: 'NASDAQ', sector: 'AI서버/인프라', approxCapUSDBillion: 30 },
-  { symbol: 'ARM', name: 'ARM 홀딩스', nameEn: 'Arm Holdings plc', exchange: 'NASDAQ', sector: '반도체아키텍처', approxCapUSDBillion: 140 },
-  { symbol: 'INTC', name: '인텔', nameEn: 'Intel Corp', exchange: 'NASDAQ', sector: '반도체/파운드리', approxCapUSDBillion: 95 },
-  { symbol: 'MU', name: '마이크론', nameEn: 'Micron Technology', exchange: 'NASDAQ', sector: '메모리반도체', approxCapUSDBillion: 110 },
-  { symbol: 'ASML', name: 'ASML 홀딩', nameEn: 'ASML Holding', exchange: 'NASDAQ', sector: '반도체EUV노광기', approxCapUSDBillion: 320 },
-  { symbol: 'QQQ', name: '인베스코 QQQ', nameEn: 'Invesco QQQ Trust', exchange: 'NASDAQ', sector: '나스닥100 ETF', approxCapUSDBillion: 280 },
-  { symbol: 'SPY', name: 'SPDR S&P 500', nameEn: 'SPDR S&P 500 ETF', exchange: 'NYSE', sector: 'S&P500 ETF', approxCapUSDBillion: 560 },
-  { symbol: 'SOXL', name: '필라델피아반도체 3X', nameEn: 'Direxion Daily Semi 3X', exchange: 'NYSE', sector: '반도체레버리지 ETF', approxCapUSDBillion: 12 },
+  { symbol: 'NVDA', name: '엔비디아', nameEn: 'NVIDIA Corporation', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 3400, type: 'stock' },
+  { symbol: 'AAPL', name: '애플', nameEn: 'Apple Inc.', exchange: 'NASDAQ', sector: '빅테크', approxCapUSDBillion: 3300, type: 'stock' },
+  { symbol: 'MSFT', name: '마이크로소프트', nameEn: 'Microsoft Corp', exchange: 'NASDAQ', sector: '빅테크', approxCapUSDBillion: 3100, type: 'stock' },
+  { symbol: 'AMZN', name: '아마존', nameEn: 'Amazon.com Inc.', exchange: 'NASDAQ', sector: '인터넷/플랫폼', approxCapUSDBillion: 2100, type: 'stock' },
+  { symbol: 'GOOGL', name: '알파벳 (구글)', nameEn: 'Alphabet Inc.', exchange: 'NASDAQ', sector: '인터넷/플랫폼', approxCapUSDBillion: 2000, type: 'stock' },
+  { symbol: 'META', name: '메타 플랫폼스', nameEn: 'Meta Platforms Inc.', exchange: 'NASDAQ', sector: '인터넷/플랫폼', approxCapUSDBillion: 1500, type: 'stock' },
+  { symbol: 'TSLA', name: '테슬라', nameEn: 'Tesla, Inc.', exchange: 'NASDAQ', sector: '자동차', approxCapUSDBillion: 850, type: 'stock' },
+  { symbol: 'AVGO', name: '브로드컴', nameEn: 'Broadcom Inc.', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 800, type: 'stock' },
+  { symbol: 'TSM', name: 'TSMC', nameEn: 'Taiwan Semiconductor', exchange: 'NYSE', sector: '반도체', approxCapUSDBillion: 920, type: 'stock' },
+  { symbol: 'PLTR', name: '팔란티어', nameEn: 'Palantir Technologies', exchange: 'NYSE', sector: '빅데이터/AI', approxCapUSDBillion: 130, type: 'stock' },
+  { symbol: 'AMD', name: 'AMD', nameEn: 'Advanced Micro Devices', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 240, type: 'stock' },
+  { symbol: 'QCOM', name: '퀄컴', nameEn: 'QUALCOMM Inc.', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 190, type: 'stock' },
+  { symbol: 'NFLX', name: '넷플릭스', nameEn: 'Netflix, Inc.', exchange: 'NASDAQ', sector: '엔터/스트리밍', approxCapUSDBillion: 310, type: 'stock' },
+  { symbol: 'ORCL', name: '오라클', nameEn: 'Oracle Corp', exchange: 'NYSE', sector: '소프트웨어', approxCapUSDBillion: 480, type: 'stock' },
+  { symbol: 'CRM', name: '세일즈포스', nameEn: 'Salesforce, Inc.', exchange: 'NYSE', sector: '소프트웨어', approxCapUSDBillion: 280, type: 'stock' },
+  { symbol: 'ADBE', name: '어도비', nameEn: 'Adobe Inc.', exchange: 'NASDAQ', sector: '소프트웨어', approxCapUSDBillion: 220, type: 'stock' },
+  { symbol: 'SMCI', name: '슈퍼마이크로', nameEn: 'Super Micro Computer', exchange: 'NASDAQ', sector: 'AI서버/인프라', approxCapUSDBillion: 30, type: 'stock' },
+  { symbol: 'ARM', name: 'ARM 홀딩스', nameEn: 'Arm Holdings plc', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 140, type: 'stock' },
+  { symbol: 'INTC', name: '인텔', nameEn: 'Intel Corp', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 95, type: 'stock' },
+  { symbol: 'MU', name: '마이크론', nameEn: 'Micron Technology', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 110, type: 'stock' },
+  { symbol: 'ASML', name: 'ASML 홀딩', nameEn: 'ASML Holding', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 320, type: 'stock' },
+  { symbol: 'QQQ', name: '인베스코 QQQ', nameEn: 'Invesco QQQ Trust', exchange: 'NASDAQ', sector: 'ETF', approxCapUSDBillion: 280, type: 'etf' },
+  { symbol: 'SPY', name: 'SPDR S&P 500', nameEn: 'SPDR S&P 500 ETF', exchange: 'NYSE', sector: 'ETF', approxCapUSDBillion: 560, type: 'etf' },
+  { symbol: 'SOXL', name: '필라델피아반도체 3X', nameEn: 'Direxion Daily Semi 3X', exchange: 'NYSE', sector: 'ETF', approxCapUSDBillion: 12, type: 'etf' },
 ];
 
 class MarketHeatmapService {
@@ -225,9 +229,11 @@ class MarketHeatmapService {
    */
   public async getHeatmap(
     targetMarket: 'ALL' | 'KR' | 'US' | 'KOSPI' | 'KOSDAQ' | 'NASDAQ' | 'NYSE' = 'ALL',
-    period: '1D' | '1M' | '1Y' = '1D'
+    period: '1D' | '1M' | '1Y' = '1D',
+    limit?: number,
+    includeEtf: boolean = false
   ): Promise<HeatmapResponse> {
-    const cacheKey = `heatmap_${targetMarket}_${period}`;
+    const cacheKey = `heatmap_${targetMarket}_${period}_${limit || 'all'}_${includeEtf}`;
     const cached = this.cache.get(cacheKey);
     const now = Date.now();
     if (cached && cached.expiresAt > now) {
@@ -242,6 +248,7 @@ class MarketHeatmapService {
     // 1. Process Korean Stocks
     if (targetMarket === 'ALL' || targetMarket === 'KR' || targetMarket === 'KOSPI' || targetMarket === 'KOSDAQ') {
       const filteredKR = KR_HEATMAP_STOCKS.filter(s => {
+        if (!includeEtf && s.type === 'etf') return false;
         if (targetMarket === 'KOSPI') return s.exchange === 'KOSPI';
         if (targetMarket === 'KOSDAQ') return s.exchange === 'KOSDAQ';
         return true;
@@ -276,9 +283,9 @@ class MarketHeatmapService {
               price1MPrev: returns.prev1M,
               price1YPrev: returns.prev1Y,
             },
+            type: item.type,
           };
         } else {
-          // If historical call failed, report delayed/unsupported accurately without fake values
           return {
             symbol: item.symbol,
             name: item.name,
@@ -296,6 +303,7 @@ class MarketHeatmapService {
             status: 'delayed' as const,
             lastUpdated: '조회 지연',
             baseline: { price1DPrev: 0, price1MPrev: 0, price1YPrev: 0 },
+            type: item.type,
           };
         }
       });
@@ -309,6 +317,7 @@ class MarketHeatmapService {
     // 2. Process US Stocks
     if (targetMarket === 'ALL' || targetMarket === 'US' || targetMarket === 'NASDAQ' || targetMarket === 'NYSE') {
       const filteredUS = US_HEATMAP_STOCKS.filter(s => {
+        if (!includeEtf && s.type === 'etf') return false;
         if (targetMarket === 'NASDAQ') return s.exchange === 'NASDAQ';
         if (targetMarket === 'NYSE') return s.exchange === 'NYSE';
         return true;
@@ -343,6 +352,7 @@ class MarketHeatmapService {
               price1MPrev: returns.prev1M,
               price1YPrev: returns.prev1Y,
             },
+            type: item.type,
           };
         } else {
           return {
@@ -362,6 +372,7 @@ class MarketHeatmapService {
             status: 'delayed' as const,
             lastUpdated: '조회 지연',
             baseline: { price1DPrev: 0, price1MPrev: 0, price1YPrev: 0 },
+            type: item.type,
           };
         }
       });
@@ -375,6 +386,8 @@ class MarketHeatmapService {
     // Sort descending by Market Cap so largest corporations get priority
     items.sort((a, b) => b.marketCap - a.marketCap);
 
+    const finalItems = limit ? items.slice(0, limit) : items;
+
     const kstNow = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
     const estNow = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
 
@@ -385,14 +398,14 @@ class MarketHeatmapService {
     const response: HeatmapResponse = {
       market: targetMarket,
       period,
-      items,
+      items: finalItems,
       meta: {
         krMarketStatus: isKrOpen ? 'OPEN' : 'CLOSED',
         usMarketStatus: isUsOpen ? 'OPEN' : 'CLOSED',
         serverTimeKST: kstNow,
         serverTimeEST: estNow,
         calculationBaseline: baselineText,
-        totalTracked: items.length,
+        totalTracked: finalItems.length,
         source: '한국거래소(KRX) · NYSE/NASDAQ 실거래 시세 및 일봉 데이터 기반',
       },
     };

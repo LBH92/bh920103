@@ -43,6 +43,7 @@ import {
   FIBONACCI_LEVELS 
 } from '../../types/chartDrawings';
 import { IndicatorSettingsModal } from './IndicatorSettingsModal';
+import { AdSlot } from '../common/AdSlot';
 
 interface InteractiveStockChartProps {
   symbol?: string;
@@ -1922,6 +1923,9 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
         settings={indicators}
         onChange={setIndicators}
       />
+
+      {/* AdSense Ad Slot: 종목 상세 차트 아래 광고 영역 */}
+      <AdSlot slotId="stock-chart-ad" format="auto" />
     </div>
   );
 };

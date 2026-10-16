@@ -104,10 +104,10 @@ export class ChatImageUploadService {
   ): Promise<UploadedImageMeta> {
     this.ensureUploadDir();
 
-    // 1. Size constraint: 5MB
-    const MAX_SIZE = 5 * 1024 * 1024;
+    // 1. Size constraint: 20MB
+    const MAX_SIZE = 20 * 1024 * 1024;
     if (buffer.length > MAX_SIZE) {
-      throw new Error(`이미지 파일 크기가 제한(5MB)을 초과했습니다. (현재: ${(buffer.length / (1024 * 1024)).toFixed(2)}MB)`);
+      throw new Error(`이미지 파일 크기가 제한(20MB)을 초과했습니다. (현재: ${(buffer.length / (1024 * 1024)).toFixed(2)}MB)`);
     }
 
     // 2. Magic signature check

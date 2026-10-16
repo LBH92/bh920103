@@ -192,7 +192,7 @@ setInterval(async () => {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
 });
 
 async function startServer() {
@@ -1410,7 +1410,9 @@ async function startServer() {
     try {
       const market = (req.query.market as any) || 'ALL';
       const period = (req.query.period as any) || '1D';
-      const result = await marketHeatmapService.getHeatmap(market, period);
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
+      const includeEtf = req.query.includeEtf === 'true';
+      const result = await marketHeatmapService.getHeatmap(market, period, limit, includeEtf);
       res.setHeader('Cache-Control', 'public, max-age=30');
       res.json(result);
     } catch (err: any) {

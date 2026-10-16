@@ -25,6 +25,7 @@ import { IndexDetailView } from './components/indices/IndexDetailView';
 import { PortfolioView } from './components/portfolio/PortfolioView';
 import { CalendarView } from './components/calendar/CalendarView';
 import { SideChatPanel } from './components/chat/SideChatPanel';
+import { InquiryPage } from './components/inquiry/InquiryPage';
 
 const MainLayout: React.FC = () => {
   const { 
@@ -107,6 +108,8 @@ const MainLayout: React.FC = () => {
         return <ChatView />;
       case 'alerts':
         return <AlertsView />;
+      case 'inquiry':
+        return <InquiryPage />;
       case 'news':
         return <NewsView />;
       case 'profile':

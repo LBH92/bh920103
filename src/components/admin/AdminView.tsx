@@ -16,6 +16,8 @@ import { AdminAlertsTab } from './tabs/AdminAlertsTab';
 import { AdminMarketTab } from './tabs/AdminMarketTab';
 import { AdminLogsTab } from './tabs/AdminLogsTab';
 import { AdminSettingsTab } from './tabs/AdminSettingsTab';
+import { AdminAdsTab } from './tabs/AdminAdsTab';
+import { AdminInquiriesTab } from './tabs/AdminInquiriesTab';
 import { ShieldAlert, ArrowLeft, LogIn } from 'lucide-react';
 
 export const AdminView: React.FC = () => {
@@ -29,7 +31,7 @@ export const AdminView: React.FC = () => {
 
     const validTabs: AdminSubTab[] = [
       'dashboard', 'users', 'posts', 'comments', 'reports', 
-      'chat', 'notices', 'filters', 'alerts', 'market', 'logs', 'settings'
+      'chat', 'notices', 'filters', 'alerts', 'market', 'logs', 'settings', 'ads'
     ];
 
     return validTabs.includes(target) ? target : 'dashboard';
@@ -489,6 +491,10 @@ export const AdminView: React.FC = () => {
             }}
           />
         );
+      case 'ads':
+        return <AdminAdsTab />;
+      case 'inquiries':
+        return <AdminInquiriesTab />;
 
       default:
         return (

@@ -66,6 +66,11 @@ export const Footer: React.FC = () => {
             </h4>
             <ul className="space-y-2">
               <li>
+                <button onClick={() => setActiveTab('inquiry')} className="hover:text-rose-500 transition-colors">
+                  고객센터 및 문의하기
+                </button>
+              </li>
+              <li>
                 <button onClick={() => setActiveTab('admin')} className="hover:text-rose-500 transition-colors">
                   관리자 콘솔
                 </button>

@@ -40,8 +40,35 @@ import { globalMarketClient } from '../../services/globalMarketClient';
 import { MarketAlertEvent } from '../../types/marketMonitor';
 import { matchHangulSearch } from '../../utils/hangul';
 import { MarketEventDetailModal } from '../common/MarketEventDetailModal';
+import { MarketHeatmap } from '../stocks/MarketHeatmap';
+import { AdSlot } from '../common/AdSlot';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../../services/firebase';
+import { firebaseRepository } from '../../services/firebaseRepository';
 
 export const HomeView: React.FC = () => {
+  const [adBanner, setAdBanner] = useState<{ active: boolean; text: string; link: string } | null>(null);
+
+  useEffect(() => {
+    const fetchAd = async () => {
+      const docSnap = await getDoc(doc(db, 'systemConfig', 'ads'));
+      if (docSnap.exists()) {
+        const data = docSnap.data() as any;
+        setAdBanner(data);
+        if (data.active) {
+          firebaseRepository.incrementAdStats('home-banner', 'impressions');
+        }
+      }
+    };
+    fetchAd();
+  }, []);
+
+  const handleAdClick = () => {
+    if (adBanner) {
+      firebaseRepository.incrementAdStats('home-banner', 'clicks');
+    }
+  };
+
   const { 
     indices, 
     stocks, 
@@ -297,6 +324,12 @@ export const HomeView: React.FC = () => {
               )}
             </div>
           </div>
+
+          {adBanner?.active && (
+            <a href={adBanner.link || '#'} onClick={handleAdClick} className="block my-4 p-4 rounded-xl border border-dashed border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/10 text-center hover:bg-rose-100 dark:hover:bg-rose-900/20 transition-colors">
+              <p className="text-sm font-bold text-rose-600 dark:text-rose-400">{adBanner.text}</p>
+            </a>
+          )}
 
           {/* Auto-complete Dropdown */}
           {homeSearchQuery.trim() && (
@@ -973,6 +1006,18 @@ export const HomeView: React.FC = () => {
             )}
           </div>
         </div>
+      </section>
+
+      {/* AdSense Ad Slot: 홈 화면 시장 요약·히트맵 아래 반응형 광고 영역 */}
+      <AdSlot slotId="home-summary-ad" format="auto" />
+
+      {/* Market Heatmap Section */}
+      <section aria-label="시장 히트맵" className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-xs">
+        <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2 mb-4">
+          <Globe className="w-4 h-4 text-indigo-500" />
+          시장 히트맵 (국내 시장)
+        </h3>
+        <MarketHeatmap />
       </section>
 
       {/* 내 관심종목 퀵 트래커 바 */}

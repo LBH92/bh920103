@@ -33,6 +33,7 @@ import { storageService } from '../../services/storageService';
 import { filterProfanity, checkSpamViolation } from '../../utils/chatModerator';
 import { ReportModal } from '../community/ReportModal';
 import { CreateChatRoomModal } from './CreateChatRoomModal';
+import { ChatToolbar } from './ChatToolbar';
 
 export const ChatView: React.FC = () => {
   const { 
@@ -203,7 +204,18 @@ export const ChatView: React.FC = () => {
     // Subscribe to Firestore onSnapshot
     const unsubscribe = firebaseRepository.subscribeChat(activeRoomId, remoteMessages => {
       if (remoteMessages && remoteMessages.length > 0) {
-        setMessages(remoteMessages);
+        setMessages(prev => {
+          const merged = [...prev];
+          remoteMessages.forEach(remoteMsg => {
+            const index = merged.findIndex(m => m.id === remoteMsg.id || (m.tempId && m.tempId === remoteMsg.tempId));
+            if (index !== -1) {
+              merged[index] = remoteMsg;
+            } else {
+              merged.push(remoteMsg);
+            }
+          });
+          return merged.sort((a, b) => (a._sortTime || 0) - (b._sortTime || 0));
+        });
       }
     });
 
@@ -668,6 +680,15 @@ export const ChatView: React.FC = () => {
                         }`}
                       >
                         {msg.message}
+                        {msg.imageUrl && (
+                          <div className="mt-2">
+                            <img
+                              src={msg.imageUrl}
+                              alt="채팅 업로드 이미지"
+                              className="max-w-[240px] max-h-[200px] rounded-xl object-cover border border-white/20 shadow-sm"
+                            />
+                          </div>
+                        )}
                       </div>
 
                       {/* Action Menu (신고, 차단, 뮤트, 관리자 삭제/채팅제한) */}
@@ -802,18 +823,73 @@ export const ChatView: React.FC = () => {
                     </button>
                   </div>
 
-                  <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
-                    금칙어 및 도배 자동 방지 적용 중
-                  </span>
+                  {/* Chat Toolbar: Emoji & Image Upload */}
+                  <ChatToolbar
+                    onInsertText={emoji => setInputText(prev => prev + emoji)}
+                    onImageUploaded={url => {
+                      if (!user) return;
+                      const imageMsgPayload = {
+                        roomId: activeRoomId,
+                        author: {
+                          id: user.id,
+                          name: user.name,
+                          avatar: user.avatar,
+                          role: user.role === 'admin' ? '총괄운영자' : user.tier,
+                        },
+                        message: '',
+                        imageUrl: url,
+                        timestamp: new Date().toTimeString().slice(0, 8),
+                        sentiment,
+                      };
+                      const sent = storageService.sendChatMessage(imageMsgPayload);
+                      setMessages(prev => [...prev, sent]);
+                      firebaseRepository.sendChatMessage(imageMsgPayload, sent.id).catch(() => {});
+                    }}
+                  />
                 </div>
-
                 <div className="flex items-center gap-2">
                   <input
                     type="text"
-                    required
                     value={inputText}
                     onChange={e => setInputText(e.target.value)}
-                    placeholder={`${activeRoom.name} 채널에 메시지를 입력하세요 (Enter로 전송)`}
+                    onPaste={async (e) => {
+                      if (!user) return;
+                      const items = e.clipboardData?.items;
+                      if (!items) return;
+                      for (let i = 0; i < items.length; i++) {
+                        if (items[i].type.indexOf('image') !== -1) {
+                          const file = items[i].getAsFile();
+                          if (file) {
+                            e.preventDefault();
+                            // Upload pasted image
+                            const formData = new FormData();
+                            formData.append('image', file);
+                            formData.append('uid', user.id);
+                            const res = await fetch('/api/chat/upload', { method: 'POST', body: formData });
+                            const data = await res.json();
+                            if (res.ok && data.url) {
+                              const imageMsgPayload = {
+                                roomId: activeRoomId,
+                                author: {
+                                  id: user.id,
+                                  name: user.name,
+                                  avatar: user.avatar,
+                                  role: user.role === 'admin' ? '총괄운영자' : user.tier,
+                                },
+                                message: '',
+                                imageUrl: data.url,
+                                timestamp: new Date().toTimeString().slice(0, 8),
+                                sentiment,
+                              };
+                              const sent = storageService.sendChatMessage(imageMsgPayload);
+                              setMessages(prev => [...prev, sent]);
+                              firebaseRepository.sendChatMessage(imageMsgPayload, sent.id).catch(() => {});
+                            }
+                          }
+                        }
+                      }
+                    }}
+                    placeholder={`${activeRoom.name} 채널에 메시지, 짤, 이모티콘 입력 (Ctrl+V 이미지 붙여넣기 지원)`}
                     className="flex-1 px-4 py-2.5 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700 rounded-xl text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-rose-500 font-medium"
                   />
                   <button

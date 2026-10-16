@@ -308,6 +308,8 @@ export interface ChatMessage {
   timestamp: string;
   sentiment?: 'bull' | 'bear' | 'neutral';
   likes: number;
+  tempId?: string;
+  _sortTime?: number;
 }
 
 export interface PriceAlert {
@@ -448,7 +450,9 @@ export type AdminSubTab =
   | 'alerts'
   | 'market'
   | 'logs'
-  | 'settings';
+  | 'settings'
+  | 'ads'
+  | 'inquiries';
 
 export interface AdminLogItem {
   id: string;
@@ -536,7 +540,7 @@ export interface StockRankingResponse {
   kiwoomNotice?: string;
 }
 
-export type ViewTab = 'home' | 'stocks' | 'ranking' | 'insight' | 'watchlist' | 'portfolio' | 'community' | 'chat' | 'alerts' | 'news' | 'profile' | 'admin' | 'calendar';
+export type ViewTab = 'home' | 'stocks' | 'ranking' | 'insight' | 'watchlist' | 'portfolio' | 'community' | 'chat' | 'alerts' | 'news' | 'profile' | 'admin' | 'calendar' | 'inquiry';
 
 // ==========================================
 // Market Calendar & Schedule Types
@@ -864,6 +868,21 @@ export interface HeatmapResponse {
     source: string;
   };
 }
+
+export interface Inquiry {
+  id: string;
+  userId: string;
+  userName: string;
+  type: 'account' | 'technical' | 'market' | 'other';
+  title: string;
+  content: string;
+  contact?: string;
+  status: 'pending' | 'processing' | 'answered';
+  answer?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 
 
 

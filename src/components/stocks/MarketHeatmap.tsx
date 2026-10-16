@@ -21,6 +21,8 @@ export const MarketHeatmap: React.FC = () => {
 
   const [marketFilter, setMarketFilter] = useState<'ALL' | 'KR' | 'US' | 'KOSPI' | 'KOSDAQ' | 'NASDAQ' | 'NYSE'>('ALL');
   const [period, setPeriod] = useState<'1D' | '1M' | '1Y'>('1D');
+  const [limit, setLimit] = useState<number>(100);
+  const [includeEtf, setIncludeEtf] = useState<boolean>(false);
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
 
   const [heatmapData, setHeatmapData] = useState<HeatmapResponse | null>(null);
@@ -32,7 +34,7 @@ export const MarketHeatmap: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/market/heatmap?market=${marketFilter}&period=${period}`);
+      const res = await fetch(`/api/market/heatmap?market=${marketFilter}&period=${period}&limit=${limit}&includeEtf=${includeEtf}`);
       if (!res.ok) {
         throw new Error('히트맵 데이터를 불러오지 못했습니다.');
       }
@@ -48,7 +50,8 @@ export const MarketHeatmap: React.FC = () => {
 
   useEffect(() => {
     loadHeatmap();
-  }, [marketFilter, period]);
+  }, [marketFilter, period, limit, includeEtf]);
+
 
   // Extract distinct sectors from loaded items
   const availableSectors = useMemo(() => {
@@ -108,7 +111,7 @@ export const MarketHeatmap: React.FC = () => {
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400 mr-1 flex items-center gap-1">
               <Globe className="w-3.5 h-3.5 text-indigo-500" />
-              시장:
+              {marketFilter === 'ALL' ? '국내외 시장' : marketFilter === 'KR' || marketFilter === 'KOSPI' || marketFilter === 'KOSDAQ' ? '국내 시장' : '미국 시장'}:
             </span>
             {[
               { id: 'ALL', label: '한·미 전체' },
@@ -154,6 +157,29 @@ export const MarketHeatmap: React.FC = () => {
                 </button>
               ))}
             </div>
+
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  checked={includeEtf} 
+                  onChange={(e) => setIncludeEtf(e.target.checked)}
+                  className="rounded border-slate-300 text-rose-600 focus:ring-rose-500"
+                />
+                <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300">ETF 포함</span>
+              </label>
+            </div>
+
+            <select 
+              value={limit} 
+              onChange={(e) => { setLimit(Number(e.target.value)); }}
+              className="px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 focus:ring-0 cursor-pointer"
+            >
+              <option value={50}>50개</option>
+              <option value={100}>100개</option>
+              <option value={200}>200개</option>
+              {['US', 'NASDAQ', 'NYSE'].includes(marketFilter) && <option value={500}>500개</option>}
+            </select>
 
             <button
               onClick={loadHeatmap}

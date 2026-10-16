@@ -13,7 +13,8 @@ import {
   limit, 
   onSnapshot,
   Timestamp,
-  serverTimestamp 
+  serverTimestamp,
+  increment
 } from 'firebase/firestore';
 import { db, auth, OperationType, handleFirestoreError } from './firebase';
 import { UserProfile, UserRole, CommunityPost, CommentItem, ChatMessage, PriceAlert, AdminReport, ReportItem, ChatRoomInfo } from '../types';
@@ -766,6 +767,7 @@ export const firebaseRepository = {
       const q = query(
         collection(db, 'chatMessages'),
         where('roomId', '==', roomId),
+        orderBy('serverCreatedAt', 'asc'),
         limit(messageLimit)
       );
       return onSnapshot(q, snap => {
@@ -782,6 +784,9 @@ export const firebaseRepository = {
             const date = new Date(d.createdAt);
             time = date.toTimeString().split(' ')[0];
             sortTime = date.getTime();
+          } else {
+            console.warn('[Firebase] Message missing timestamp:', docSnap.id);
+            sortTime = Date.now();
           }
 
           list.push({
@@ -794,6 +799,8 @@ export const firebaseRepository = {
               role: d.authorRole,
             },
             message: d.content,
+            imageUrl: d.imageUrl || '',
+            tempId: d.tempId || undefined,
             timestamp: time,
             sentiment: d.sentiment,
             likes: 0,
@@ -838,6 +845,9 @@ export const firebaseRepository = {
             const date = new Date(d.createdAt);
             time = date.toTimeString().split(' ')[0];
             sortTime = date.getTime();
+          } else {
+            console.warn('[Firebase] Message missing timestamp in AllChat:', docSnap.id);
+            sortTime = Date.now();
           }
 
           list.push({
@@ -850,6 +860,8 @@ export const firebaseRepository = {
               role: d.authorRole,
             },
             message: d.content || '',
+            imageUrl: d.imageUrl || '',
+            tempId: d.tempId || undefined,
             timestamp: time,
             sentiment: d.sentiment,
             likes: 0,
@@ -870,18 +882,20 @@ export const firebaseRepository = {
     }
   },
 
-  async sendChatMessage(msg: Omit<ChatMessage, 'id' | 'timestamp' | 'likes'>): Promise<string> {
+  async sendChatMessage(msg: Omit<ChatMessage, 'id' | 'timestamp' | 'likes'>, tempId?: string): Promise<string> {
     try {
       const col = collection(db, 'chatMessages');
       const docRef = doc(col);
       await setDoc(docRef, {
         id: docRef.id,
+        tempId: tempId || null,
         roomId: msg.roomId,
         authorId: msg.author.id,
         authorName: msg.author.name,
         authorAvatar: msg.author.avatar,
         authorRole: msg.author.role || '회원',
         content: msg.message,
+        imageUrl: msg.imageUrl || '',
         sentiment: msg.sentiment || 'neutral',
         createdAt: new Date().toISOString(),
         serverCreatedAt: serverTimestamp(),
@@ -1032,6 +1046,16 @@ export const firebaseRepository = {
       await Promise.all(batchPromises);
     } catch (err) {
       console.warn('[firebaseRepository] clearAllAdminLogs failed:', err);
+    }
+  },
+  async incrementAdStats(adId: string, type: 'impressions' | 'clicks'): Promise<void> {
+    try {
+      const docRef = doc(db, 'adStats', adId);
+      await setDoc(docRef, {
+        [type]: increment(1)
+      }, { merge: true });
+    } catch (err) {
+      console.warn('Firebase incrementAdStats failed:', err);
     }
   },
 };

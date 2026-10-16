@@ -58,6 +58,8 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
     { id: 'alerts', label: '알림 관리', icon: <Bell className="w-4 h-4" />, minRole: 'admin' },
     { id: 'market', label: '시장 데이터', icon: <Activity className="w-4 h-4" /> },
     { id: 'logs', label: '관리자 로그', icon: <Lock className="w-4 h-4" /> },
+    { id: 'inquiries', label: '문의 관리', icon: <MessageSquare className="w-4 h-4" />, minRole: 'admin' },
+    { id: 'ads', label: '광고 관리', icon: <Megaphone className="w-4 h-4" />, minRole: 'admin' },
     { id: 'settings', label: '시스템 설정', icon: <Sliders className="w-4 h-4" />, minRole: 'superadmin' },
   ];
 

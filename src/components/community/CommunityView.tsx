@@ -23,6 +23,7 @@ import { useApp } from '../../context/AppContext';
 import { CommunityPost, PostCategory } from '../../types';
 import { storageService } from '../../services/storageService';
 import { firebaseRepository } from '../../services/firebaseRepository';
+import { AdSlot } from '../common/AdSlot';
 import { matchHangulSearch } from '../../utils/hangul';
 import { PostEditorModal } from './PostEditorModal';
 import { PostDetailView } from './PostDetailView';
@@ -435,14 +436,16 @@ export const CommunityView: React.FC = () => {
             </div>
           ) : paginatedPosts.length > 0 ? (
             <>
-              {paginatedPosts.map(post => {
+              {paginatedPosts.map((post, idx) => {
                 const isNotice = post.category === 'notice';
                 const author = getSafeAuthor(post);
 
+                const showMidAd = idx === 2;
                 return (
-                  <div
-                    key={post.id}
-                    onClick={() => navigateToPost(post.id)}
+                  <div key={post.id} className="space-y-3">
+                    {showMidAd && <AdSlot slotId="community-mid-ad" format="auto" />}
+                    <div
+                      onClick={() => navigateToPost(post.id)}
                     className={`p-5 rounded-2xl bg-white dark:bg-[#131722] border transition-all cursor-pointer shadow-xs group ${
                       isNotice
                         ? 'border-purple-200 dark:border-purple-900/50 bg-purple-50/20 dark:bg-purple-950/10'
@@ -534,8 +537,9 @@ export const CommunityView: React.FC = () => {
                       </div>
                     </div>
                   </div>
-                );
-              })}
+                </div>
+              );
+            })}
 
               {hasMore && (
                 <div className="pt-2 text-center">

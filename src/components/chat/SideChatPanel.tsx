@@ -24,6 +24,7 @@ import { firebaseRepository } from '../../services/firebaseRepository';
 import { storageService } from '../../services/storageService';
 import { filterProfanity, checkSpamViolation } from '../../utils/chatModerator';
 import { ReportModal } from '../community/ReportModal';
+import { SideChatToolbar } from './SideChatToolbar';
 
 interface SideChatPanelProps {
   onOpenFullChat?: () => void;
@@ -139,7 +140,18 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
         setConnectionStatus('CONNECTED');
         setLastReceivedTime(new Date().toLocaleTimeString('ko-KR'));
         if (remoteMessages) {
-          setMessages(remoteMessages);
+          setMessages(prev => {
+            const merged = [...prev];
+            remoteMessages.forEach(remoteMsg => {
+              const index = merged.findIndex(m => m.id === remoteMsg.id || (m.tempId && m.tempId === remoteMsg.tempId));
+              if (index !== -1) {
+                merged[index] = remoteMsg;
+              } else {
+                merged.push(remoteMsg);
+              }
+            });
+            return merged.sort((a, b) => (a._sortTime || 0) - (b._sortTime || 0));
+          });
 
           // Handle Unread Badge: If panel is collapsed and not on full chat view
           if (!isSideChatOpen && activeTab !== 'chat') {
@@ -339,7 +351,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
       {/* ------------------------------------------------------------- */}
       <aside 
         aria-label="실시간 채팅 사이드바"
-        className={`hidden lg:flex flex-col fixed top-16 right-0 bottom-0 z-30 bg-white dark:bg-[#131722] border-l border-slate-200 dark:border-slate-800 transition-all duration-200 ease-in-out shadow-lg ${
+        className={`hidden lg:flex flex-col fixed top-[88px] right-0 bottom-0 z-30 bg-white dark:bg-[#131722] border-l border-slate-200 dark:border-slate-800 transition-all duration-200 ease-in-out shadow-lg ${
           isSideChatOpen ? 'w-[340px] xl:w-[360px]' : 'w-12'
         }`}
       >
@@ -385,7 +397,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
 
         {/* EXPANDED FULL PANEL CONTENT */}
         {isSideChatOpen && (
-          <div className="flex-1 flex flex-col h-full overflow-hidden">
+          <div className="flex-1 flex flex-col h-full overflow-hidden min-h-0">
             {/* Header */}
             <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/70 dark:bg-slate-900/60 shrink-0">
               <div className="flex items-center gap-2">
@@ -477,7 +489,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
             <div 
               ref={messagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto p-3 space-y-3 text-xs divide-y divide-slate-100/60 dark:divide-slate-800/40 relative"
+              className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3 text-xs divide-y divide-slate-100/60 dark:divide-slate-800/40 relative"
             >
               {/* Load older messages button if scrolled up */}
               {isLoadingMore && (
@@ -579,9 +591,18 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
                             운영 정책에 따라 차단된 회원의 메시지입니다.
                           </div>
                         ) : (
-                          <p className="text-[12px] text-slate-800 dark:text-slate-200 leading-relaxed break-words whitespace-pre-wrap">
-                            {msg.message}
-                          </p>
+                          <div className="space-y-1.5">
+                            <p className="text-[12px] text-slate-800 dark:text-slate-200 leading-relaxed break-words whitespace-pre-wrap">
+                              {msg.message}
+                            </p>
+                            {msg.imageUrl && (
+                              <img
+                                src={msg.imageUrl}
+                                alt="채팅 이미지"
+                                className="max-w-[200px] max-h-[160px] rounded-xl object-cover border border-slate-200 dark:border-slate-700 shadow-sm"
+                              />
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -604,7 +625,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
 
             {/* Input Bar Area */}
             <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/40 shrink-0">
-              {/* Sentiment Selector Bar */}
+              {/* Sentiment Selector Bar & Toolbar */}
               <div className="flex items-center justify-between mb-1.5 text-[10px]">
                 <div className="flex items-center gap-1">
                   <span className="text-slate-400 font-semibold">의견:</span>
@@ -631,12 +652,29 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
                     📉 하락
                   </button>
                 </div>
-
-                <span className="text-slate-400 font-mono">
-                  {inputText.length}/500
-                </span>
+                <SideChatToolbar
+                  onInsertText={emoji => setInputText(prev => prev + emoji)}
+                  onImageUploaded={url => {
+                    if (!user) return;
+                    const imageMsgPayload = {
+                      roomId: activeRoomId,
+                      author: {
+                        id: user.id,
+                        name: user.name,
+                        avatar: user.avatar,
+                        role: user.role === 'admin' ? '총괄운영자' : user.tier,
+                      },
+                      message: '',
+                      imageUrl: url,
+                      timestamp: new Date().toTimeString().slice(0, 8),
+                      sentiment,
+                    };
+                    const sent = storageService.sendChatMessage(imageMsgPayload);
+                    setMessages(prev => [...prev, sent]);
+                    firebaseRepository.sendChatMessage(imageMsgPayload, sent.id).catch(() => {});
+                  }}
+                />
               </div>
-
               {/* Text Input & Send */}
               {user ? (
                 <div className="relative">
@@ -646,8 +684,44 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
                     value={inputText}
                     onChange={e => setInputText(e.target.value)}
                     onKeyDown={handleKeyDown}
+                    onPaste={async (e) => {
+                      if (!user) return;
+                      const items = e.clipboardData?.items;
+                      if (!items) return;
+                      for (let i = 0; i < items.length; i++) {
+                        if (items[i].type.indexOf('image') !== -1) {
+                          const file = items[i].getAsFile();
+                          if (file) {
+                            e.preventDefault();
+                            const formData = new FormData();
+                            formData.append('image', file);
+                            formData.append('uid', user.id);
+                            const res = await fetch('/api/chat/upload', { method: 'POST', body: formData });
+                            const data = await res.json();
+                            if (res.ok && data.url) {
+                              const imageMsgPayload = {
+                                roomId: activeRoomId,
+                                author: {
+                                  id: user.id,
+                                  name: user.name,
+                                  avatar: user.avatar,
+                                  role: user.role === 'admin' ? '총괄운영자' : user.tier,
+                                },
+                                message: '',
+                                imageUrl: data.url,
+                                timestamp: new Date().toTimeString().slice(0, 8),
+                                sentiment,
+                              };
+                              const sent = storageService.sendChatMessage(imageMsgPayload);
+                              setMessages(prev => [...prev, sent]);
+                              firebaseRepository.sendChatMessage(imageMsgPayload, sent.id).catch(() => {});
+                            }
+                          }
+                        }
+                      }
+                    }}
                     disabled={isSending}
-                    placeholder="실시간 증시 의견을 나눠보세요 (Enter: 전송, Shift+Enter: 줄바꿈)"
+                    placeholder="실시간 증시 의견, 짤, 이모티콘 입력 (Ctrl+V 이미지 붙여넣기 지원)"
                     className="w-full pl-3 pr-10 py-2 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-xl text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-rose-500 resize-none"
                   />
                   <button

@@ -20,6 +20,8 @@ import {
 import { useApp } from '../../context/AppContext';
 import { storageService } from '../../services/storageService';
 import { UserAiSettingsModal } from './UserAiSettingsModal';
+import { InquiryForm } from '../user/InquiryForm';
+import { MyInquiries } from '../user/MyInquiries';
 
 export const ProfileView: React.FC = () => {
   const { user, updateUser, watchlist, navigateToPost, setActiveTab, setIsAuthModalOpen, showToast, logout } = useApp();
@@ -28,7 +30,7 @@ export const ProfileView: React.FC = () => {
   const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
   const [name, setName] = useState(user?.name || '');
   const [bio, setBio] = useState(user?.bio || '');
-  const [profileTab, setProfileTab] = useState<'my_posts' | 'my_comments' | 'settings'>('my_posts');
+  const [profileTab, setProfileTab] = useState<'my_posts' | 'my_comments' | 'settings' | 'inquiries'>('my_posts');
 
   if (!user) {
     return (
@@ -235,6 +237,16 @@ export const ProfileView: React.FC = () => {
         >
           내가 쓴 댓글 ({myComments.length})
         </button>
+        <button
+          onClick={() => setProfileTab('inquiries')}
+          className={`px-4 py-2 text-xs font-bold rounded-xl transition-all ${
+            profileTab === 'inquiries'
+              ? 'bg-white dark:bg-[#1a1f2e] text-slate-900 dark:text-white shadow-sm'
+              : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+          }`}
+        >
+          문의 내역
+        </button>
       </div>
 
       {/* Tab Contents */}
@@ -298,6 +310,19 @@ export const ProfileView: React.FC = () => {
               아직 작성한 댓글이 없습니다.
             </div>
           )}
+        </div>
+      )}
+
+      {profileTab === 'inquiries' && (
+        <div className="space-y-6">
+          <div className="p-4 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl">
+             <h3 className="font-bold text-sm mb-4">새 문의하기</h3>
+             <InquiryForm />
+          </div>
+          <div className="p-4 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl">
+             <h3 className="font-bold text-sm mb-4">내 문의 내역</h3>
+             <MyInquiries />
+          </div>
         </div>
       )}
 
