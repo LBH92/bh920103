@@ -283,83 +283,92 @@ export const MarketHeatmap: React.FC = () => {
           <p className="text-sm text-slate-500">선택한 조건에 부합하는 종목이 없습니다.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 min-h-[520px]">
-          {displayItems.map(item => {
-            const chg = getChangePercent(item);
-            const isRising = chg > 0;
-            const isFalling = chg < 0;
-            const isDelayed = item.status === 'delayed';
+        <div className="w-full">
+          {/* Summary Panel */}
+          <div className="mb-4 bg-white dark:bg-[#131722] p-4 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
+            <div>시장: {marketFilter} | 기준: {period} | 종목수: {displayItems.length}</div>
+            <div>데이터 기준: {heatmapData?.meta.lastUpdated || '알 수 없음'}</div>
+          </div>
 
-            // Visual flex span based on market cap dominance
-            const capRatio = item.marketCap / maxCap;
-            const isMegaCap = capRatio > 0.45;
-            const isLargeCap = capRatio > 0.15;
+          {/* Main Heatmap Treemap / Grid Container */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 min-h-[520px]">
+            {displayItems.map(item => {
+              const chg = getChangePercent(item);
+              const isRising = chg > 0;
+              const isFalling = chg < 0;
+              const isDelayed = item.delayStatus === 'delayed_15m';
 
-            const spanClass = isMegaCap
-              ? 'col-span-2 row-span-2 min-h-[140px]'
-              : isLargeCap
-              ? 'col-span-2 sm:col-span-1 row-span-1 min-h-[105px]'
-              : 'col-span-1 row-span-1 min-h-[95px]';
+              // Visual flex span based on market cap dominance
+              const capRatio = item.marketCap / maxCap;
+              const isMegaCap = capRatio > 0.45;
+              const isLargeCap = capRatio > 0.15;
 
-            const bgClass = isDelayed
-              ? 'bg-slate-200 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
-              : getTileBgColor(chg);
+              const spanClass = isMegaCap
+                ? 'col-span-2 row-span-2 min-h-[140px]'
+                : isLargeCap
+                ? 'col-span-2 sm:col-span-1 row-span-1 min-h-[105px]'
+                : 'col-span-1 row-span-1 min-h-[95px]';
 
-            return (
-              <button
-                key={item.symbol}
-                onClick={() => navigateToStock(item.symbol)}
-                className={`relative rounded-xl p-3 border transition-all duration-200 cursor-pointer flex flex-col justify-between text-left group overflow-hidden ${spanClass} ${bgClass}`}
-              >
-                {/* Header: Market Badge & Symbol */}
-                <div className="flex items-center justify-between w-full">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-[10px] px-1.5 py-0.2 rounded font-black bg-black/25 uppercase shrink-0">
-                      {item.exchange}
-                    </span>
-                    <span className="font-mono text-xs font-black truncate">
-                      {item.symbol}
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-medium opacity-80 shrink-0">
-                    {item.formattedMarketCap}
-                  </span>
-                </div>
+              const bgClass = isDelayed
+                ? 'bg-slate-200 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
+                : getTileBgColor(chg);
 
-                {/* Stock Name */}
-                <div className="my-1 min-w-0">
-                  <p className={`font-black truncate ${isMegaCap ? 'text-base sm:text-lg' : 'text-xs sm:text-sm'}`}>
-                    {item.name}
-                  </p>
-                  <p className="text-[10px] opacity-75 truncate">{item.sector}</p>
-                </div>
-
-                {/* Price & Change Rate */}
-                <div className="flex items-baseline justify-between w-full mt-auto pt-1 border-t border-white/10">
-                  <span className="text-[11px] font-mono font-bold">
-                    {item.currency === 'USD'
-                      ? `$${item.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                      : `${item.price.toLocaleString()}원`}
-                  </span>
-
-                  <div className="flex items-center gap-0.5 font-mono font-black text-xs">
-                    {isRising && <TrendingUp className="w-3 h-3" />}
-                    {isFalling && <TrendingDown className="w-3 h-3" />}
-                    <span>{isRising ? `+${chg}%` : `${chg}%`}</span>
-                  </div>
-                </div>
-
-                {/* Delayed / Missing state overlay */}
-                {isDelayed && (
-                  <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 text-center">
-                    <span className="text-[10px] font-bold text-amber-300">
-                      시세 공급 지연 (확인 중)
+              return (
+                <button
+                  key={item.symbol}
+                  onClick={() => navigateToStock(item.symbol)}
+                  className={`relative rounded-xl p-3 border transition-all duration-200 cursor-pointer flex flex-col justify-between text-left group overflow-hidden ${spanClass} ${bgClass}`}
+                >
+                  {/* Header: Market Badge & Symbol */}
+                  <div className="flex items-center justify-between w-full">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-[10px] px-1.5 py-0.2 rounded font-black bg-black/25 uppercase shrink-0">
+                        {item.exchange}
+                      </span>
+                      <span className="font-mono text-xs font-black truncate">
+                        {item.symbol}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-medium opacity-80 shrink-0">
+                      {item.formattedMarketCap}
                     </span>
                   </div>
-                )}
-              </button>
-            );
-          })}
+
+                  {/* Stock Name */}
+                  <div className="my-1 min-w-0">
+                    <p className={`font-black truncate ${isMegaCap ? 'text-base sm:text-lg' : 'text-xs sm:text-sm'}`}>
+                      {item.name}
+                    </p>
+                    <p className="text-[10px] opacity-75 truncate">{item.sector}</p>
+                  </div>
+
+                  {/* Price & Change Rate */}
+                  <div className="flex items-baseline justify-between w-full mt-auto pt-1 border-t border-white/10">
+                    <span className="text-[11px] font-mono font-bold">
+                      {item.currency === 'USD'
+                        ? `$${item.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : `${item.price.toLocaleString()}원`}
+                    </span>
+
+                    <div className="flex items-center gap-0.5 font-mono font-black text-xs">
+                      {isRising && <TrendingUp className="w-3 h-3" />}
+                      {isFalling && <TrendingDown className="w-3 h-3" />}
+                      <span>{isRising ? `+${chg}%` : `${chg}%`}</span>
+                    </div>
+                  </div>
+
+                  {/* Delayed / Missing state overlay */}
+                  {isDelayed && (
+                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 text-center">
+                      <span className="text-[10px] font-bold text-amber-300">
+                        15분 지연 시세
+                      </span>
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 

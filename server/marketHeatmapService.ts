@@ -10,7 +10,9 @@
  */
 
 import { US_STOCK_MASTER } from './usStockMasterService';
+import { SECTOR_STOCK_MAPPING } from './sectorMapping';
 import { serverResilienceService } from './serverResilienceService';
+import { getGlobalMarketSummary, getExchangeRate } from './globalMarketService';
 
 export interface HeatmapStockItem {
   symbol: string;
@@ -21,12 +23,13 @@ export interface HeatmapStockItem {
   sector: string;
   price: number;
   currency: 'KRW' | 'USD';
+  delayStatus?: 'realtime' | 'delayed_15m';
+  status?: 'realtime' | 'delayed' | 'closed';
   marketCap: number; // in KRW 억 or USD million
   formattedMarketCap: string;
   changePercent1D: number;
   changePercent1M: number;
   changePercent1Y: number;
-  status: 'realtime' | 'delayed' | 'closed';
   lastUpdated: string;
   baseline: {
     price1DPrev: number;
@@ -48,6 +51,7 @@ export interface HeatmapResponse {
     calculationBaseline: string;
     totalTracked: number;
     source: string;
+    lastUpdated: string;
   };
 }
 
@@ -169,7 +173,7 @@ class MarketHeatmapService {
     prev1D: number;
     prev1M: number;
     prev1Y: number;
-    status: 'realtime' | 'delayed' | 'closed';
+    status: 'realtime' | 'delayed_15m' | 'closed';
   } | null> {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1y`;
     try {
@@ -217,7 +221,7 @@ class MarketHeatmapService {
         prev1D,
         prev1M,
         prev1Y,
-        status: 'realtime',
+        status: 'delayed_15m',
       };
     } catch {
       return null;
@@ -242,6 +246,17 @@ class MarketHeatmapService {
 
     const isKrOpen = this.isKrMarketOpen();
     const isUsOpen = this.isUsMarketOpen();
+    
+    let exchangeRate = 1380; // Default
+    try {
+      const summary = await getGlobalMarketSummary();
+      const usdkrw = summary.groups.forex.find(item => item.id === 'usdkrw');
+      if (usdkrw && usdkrw.value > 1000) {
+        exchangeRate = usdkrw.value;
+      }
+    } catch (e) {
+      console.warn('[Heatmap] Failed to fetch exchange rate, using fallback.');
+    }
 
     const items: HeatmapStockItem[] = [];
 
@@ -276,7 +291,7 @@ class MarketHeatmapService {
             changePercent1D: returns.change1D,
             changePercent1M: returns.change1M,
             changePercent1Y: returns.change1Y,
-            status: isKrOpen ? ('realtime' as const) : ('closed' as const),
+            delayStatus: isKrOpen ? ('realtime' as const) : ('delayed_15m' as const),
             lastUpdated: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
             baseline: {
               price1DPrev: returns.prev1D,
@@ -300,7 +315,7 @@ class MarketHeatmapService {
             changePercent1D: 0,
             changePercent1M: 0,
             changePercent1Y: 0,
-            status: 'delayed' as const,
+            delayStatus: 'delayed_15m' as const,
             lastUpdated: '조회 지연',
             baseline: { price1DPrev: 0, price1MPrev: 0, price1YPrev: 0 },
             type: item.type,
@@ -323,12 +338,13 @@ class MarketHeatmapService {
         return true;
       });
 
+      const exchangeRateData = await getExchangeRate();
       const usPromises = filteredUS.map(async item => {
         const returns = await this.fetchStockReturns(item.symbol);
-        const marketCapNumber = item.approxCapUSDBillion * 1000; // in Millions USD
-        const formattedCap = item.approxCapUSDBillion >= 1000
-          ? `$${(item.approxCapUSDBillion / 1000).toFixed(2)}T`
-          : `$${item.approxCapUSDBillion}B`;
+        const marketCapKRW = item.approxCapUSDBillion * 1000 * exchangeRateData.rate;
+        const formattedCap = marketCapKRW >= 1000000
+          ? `${(marketCapKRW / 1000000).toFixed(1)}조 원`
+          : `${(marketCapKRW / 1000).toFixed(0)}억 원`;
 
         if (returns) {
           return {
@@ -340,13 +356,13 @@ class MarketHeatmapService {
             sector: item.sector,
             price: returns.price,
             currency: 'USD' as const,
-            marketCap: marketCapNumber,
+            marketCap: marketCapKRW,
             formattedMarketCap: formattedCap,
             changePercent1D: returns.change1D,
             changePercent1M: returns.change1M,
             changePercent1Y: returns.change1Y,
-            status: isUsOpen ? ('realtime' as const) : ('closed' as const),
-            lastUpdated: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+            delayStatus: returns.status === 'closed' ? 'delayed_15m' : returns.status, // mapped from fetchStockReturns
+            lastUpdated: new Date(exchangeRateData.lastUpdated).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
             baseline: {
               price1DPrev: returns.prev1D,
               price1MPrev: returns.prev1M,
@@ -364,12 +380,12 @@ class MarketHeatmapService {
             sector: item.sector,
             price: 0,
             currency: 'USD' as const,
-            marketCap: marketCapNumber,
+            marketCap: marketCapKRW,
             formattedMarketCap: formattedCap,
             changePercent1D: 0,
             changePercent1M: 0,
             changePercent1Y: 0,
-            status: 'delayed' as const,
+            delayStatus: 'delayed_15m' as const,
             lastUpdated: '조회 지연',
             baseline: { price1DPrev: 0, price1MPrev: 0, price1YPrev: 0 },
             type: item.type,
@@ -407,6 +423,7 @@ class MarketHeatmapService {
         calculationBaseline: baselineText,
         totalTracked: finalItems.length,
         source: '한국거래소(KRX) · NYSE/NASDAQ 실거래 시세 및 일봉 데이터 기반',
+        lastUpdated: kstNow,
       },
     };
 

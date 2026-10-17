@@ -34,7 +34,9 @@ import { portfolioService } from '../../services/portfolioService';
 import { VirtualHoldingModal } from './VirtualHoldingModal';
 import { MockTradeModal } from './MockTradeModal';
 import { FeeSettingsModal } from './FeeSettingsModal';
+import { PortfolioCharts } from './PortfolioCharts';
 import { stockRepository } from '../../services/stockRepository';
+
 
 export const PortfolioView: React.FC = () => {
   const { user, isAuthenticated, showToast, exchangeRate, stocks, navigateToStock, setActiveTab } = useApp();
@@ -138,14 +140,12 @@ export const PortfolioView: React.FC = () => {
       const costKRW = isUSD ? h.totalBuyAmount * currentRate : h.totalBuyAmount;
       totalCostKRW += costKRW;
 
-      if (quote && quote.price > 0) {
+      if (quote && quote.price > 0 && (isUSD ? currentRate > 0 : true)) {
         const val = quote.price * h.quantity;
-        const valKRW = quote.currency === 'USD' ? val * currentRate : val;
+        const valKRW = isUSD ? val * currentRate : val;
         totalValuationKRW += valKRW;
-      } else {
-        // Fallback to cost if quote is pending
-        totalValuationKRW += costKRW;
       }
+      // If missing quote or rate, do not add to valuation (stays 0)
     }
 
     for (const t of virtualTrades) {
@@ -412,6 +412,9 @@ export const PortfolioView: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {/* Portfolio Charts */}
+          <PortfolioCharts holdings={virtualHoldings} quotesMap={quotesMap} exchangeRate={exchangeRate} />
 
           {/* Virtual Holdings Table / Card List */}
           <div className="rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">

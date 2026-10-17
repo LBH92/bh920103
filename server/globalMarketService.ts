@@ -482,6 +482,15 @@ async function fetchSingleTicker(config: TickerConfig): Promise<GlobalMarketItem
  * Fetch All Global Market Summaries grouped by category
  * Server-side cache TTL: 25 seconds
  */
+export async function getExchangeRate(): Promise<{ rate: number; lastUpdated: string }> {
+  const summary = await getGlobalMarketSummary();
+  const usdkrw = summary.groups.forex.find(item => item.id === 'usdkrw');
+  return {
+    rate: usdkrw?.value || 1380,
+    lastUpdated: usdkrw?.lastUpdated || new Date().toISOString()
+  };
+}
+
 export async function getGlobalMarketSummary(): Promise<GlobalMarketSummaryResponse> {
   const cacheKey = 'global_market_summary_all';
   const cached = getCache<GlobalMarketSummaryResponse>(cacheKey);

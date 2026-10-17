@@ -32,7 +32,7 @@ export const StockSmartAlertWidget: React.FC<StockSmartAlertWidgetProps> = ({ st
     setAlertConfig(storageService.getSmartAlertForStock(stock.symbol, stock.name));
   }, [stock.symbol, stock.name]);
 
-  const handleToggle = (rule: 'rise5Percent' | 'fall5Percent' | 'volume200Percent' | 'newsAlert' | 'aiBriefingAlert', label: string) => {
+  const handleToggle = (rule: 'rise5Percent' | 'fall5Percent' | 'volume200Percent' | 'newsAlert' | 'aiBriefingAlert' | 'highLowAlert', label: string) => {
     const updated = storageService.toggleSmartAlertRule(stock.symbol, rule, stock.name);
     setAlertConfig({ ...updated });
     
@@ -93,6 +93,15 @@ export const StockSmartAlertWidget: React.FC<StockSmartAlertWidgetProps> = ({ st
       icon: <Zap className="w-4 h-4 text-amber-500" />,
       tagColor: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
       activeText: '거래량 200% 알림 ON',
+    },
+    {
+      key: 'highLowAlert' as const,
+      label: '신고가/신저가',
+      detail: '당일 신고가 또는 신저가 경신 시점 즉시 알림',
+      checked: alertConfig.highLowAlert,
+      icon: <ShieldCheck className="w-4 h-4 text-emerald-500" />,
+      tagColor: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
+      activeText: '신고가/신저가 알림 ON',
     },
     {
       key: 'newsAlert' as const,

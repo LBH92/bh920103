@@ -329,7 +329,9 @@ export type AlertRuleType =
   | 'volume_spike'         // 거래량 급증
   | 'trading_value_spike'  // 거래대금 급증
   | 'related_news'         // 관련 뉴스
-  | 'market_event';        // 시장 이벤트
+  | 'market_event'         // 시장 이벤트
+  | 'price_target'         // 목표가 도달
+  | 'high_low';            // 신고가/신저가
 
 export interface UserAlertRule {
   id: string;
@@ -383,6 +385,8 @@ export interface StockSmartAlert {
   volume200Percent: boolean;  // ☑ 거래량 200%
   newsAlert: boolean;         // ☑ 뉴스 발생
   aiBriefingAlert: boolean;   // ☑ AI 브리핑
+  targetPrice?: number;       // ☑ 목표가 설정
+  highLowAlert: boolean;      // ☑ 신고가/신저가 알림
   updatedAt: string;
 }
 
@@ -540,7 +544,7 @@ export interface StockRankingResponse {
   kiwoomNotice?: string;
 }
 
-export type ViewTab = 'home' | 'stocks' | 'ranking' | 'insight' | 'watchlist' | 'portfolio' | 'community' | 'chat' | 'alerts' | 'news' | 'profile' | 'admin' | 'calendar' | 'inquiry';
+export type ViewTab = 'home' | 'stocks' | 'ranking' | 'insight' | 'watchlist' | 'portfolio' | 'community' | 'chat' | 'alerts' | 'news' | 'profile' | 'admin' | 'calendar' | 'inquiry' | 'compare';
 
 // ==========================================
 // Market Calendar & Schedule Types
@@ -845,7 +849,8 @@ export interface HeatmapStockItem {
   changePercent1D: number;
   changePercent1M: number;
   changePercent1Y: number;
-  status: 'realtime' | 'delayed' | 'closed';
+  delayStatus?: 'realtime' | 'delayed_15m';
+  status?: 'realtime' | 'delayed' | 'closed';
   lastUpdated: string;
   baseline: {
     price1DPrev: number;
@@ -866,6 +871,7 @@ export interface HeatmapResponse {
     calculationBaseline: string;
     totalTracked: number;
     source: string;
+    lastUpdated: string;
   };
 }
 

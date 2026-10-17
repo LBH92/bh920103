@@ -276,6 +276,7 @@ export const storageService = {
       volume200Percent: true,
       newsAlert: true,
       aiBriefingAlert: true,
+      highLowAlert: true,
       updatedAt: '실시간 감지 활성화',
     };
     alerts.push(brandNew);
@@ -301,7 +302,7 @@ export const storageService = {
 
   toggleSmartAlertRule(
     symbol: string,
-    rule: 'rise5Percent' | 'fall5Percent' | 'volume200Percent' | 'newsAlert' | 'aiBriefingAlert',
+    rule: 'rise5Percent' | 'fall5Percent' | 'volume200Percent' | 'newsAlert' | 'aiBriefingAlert' | 'highLowAlert',
     symbolName?: string
   ): StockSmartAlert {
     const current = this.getSmartAlertForStock(symbol, symbolName);

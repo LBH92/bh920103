@@ -260,6 +260,40 @@ export function evaluateUserAlertRules(
           }
           break;
         }
+        case 'price_target': {
+          // 목표가 도달
+          if (rule.condition === 'above' && targetStock.price >= rule.value) {
+            isTriggered = true;
+            title = `🎯 [목표가 도달] ${targetStock.name} ${rule.value.toLocaleString()}원`;
+            message = `설정하신 목표가(${rule.value.toLocaleString()}원)에 도달하였습니다.`;
+            reason = `현재가 ${targetStock.price.toLocaleString()}원 (목표가: ${rule.value.toLocaleString()}원)`;
+            metrics = { currentValue: targetStock.price, threshold: rule.value };
+          } else if (rule.condition === 'below' && targetStock.price <= rule.value) {
+            isTriggered = true;
+            title = `🎯 [목표가 도달] ${targetStock.name} ${rule.value.toLocaleString()}원`;
+            message = `설정하신 목표가(${rule.value.toLocaleString()}원)에 도달하였습니다.`;
+            reason = `현재가 ${targetStock.price.toLocaleString()}원 (목표가: ${rule.value.toLocaleString()}원)`;
+            metrics = { currentValue: targetStock.price, threshold: rule.value };
+          }
+          break;
+        }
+        case 'high_low': {
+          // 신고가/신저가
+          if (targetStock.price >= targetStock.highPrice && targetStock.highPrice > 0) {
+            isTriggered = true;
+            title = `📈 [신고가 경신] ${targetStock.name}`;
+            message = `당일 신고가(${targetStock.highPrice.toLocaleString()}원)를 경신하였습니다.`;
+            reason = `현재가 ${targetStock.price.toLocaleString()}원 (신고가: ${targetStock.highPrice.toLocaleString()}원)`;
+            metrics = { currentValue: targetStock.price, highPrice: targetStock.highPrice };
+          } else if (targetStock.price <= targetStock.lowPrice && targetStock.lowPrice > 0) {
+            isTriggered = true;
+            title = `📉 [신저가 경신] ${targetStock.name}`;
+            message = `당일 신저가(${targetStock.lowPrice.toLocaleString()}원)를 경신하였습니다.`;
+            reason = `현재가 ${targetStock.price.toLocaleString()}원 (신저가: ${targetStock.lowPrice.toLocaleString()}원)`;
+            metrics = { currentValue: targetStock.price, lowPrice: targetStock.lowPrice };
+          }
+          break;
+        }
 
         case 'volume_spike': {
           // 3. 거래량 급증 (예: 200%)

@@ -143,6 +143,7 @@ export const Navbar: React.FC = () => {
   const mainNavItems: { tab: ViewTab; label: string; icon: React.ReactNode; badge?: string }[] = [
     { tab: 'home', label: '홈', icon: <Home className="w-3.5 h-3.5 shrink-0" /> },
     { tab: 'stocks', label: '종목', icon: <BarChart2 className="w-3.5 h-3.5 shrink-0" /> },
+    { tab: 'compare', label: '비교', icon: <Layers className="w-3.5 h-3.5 shrink-0" /> },
     { tab: 'ranking', label: '실시간 순위', icon: <Flame className="w-3.5 h-3.5 text-amber-500 shrink-0" />, badge: 'TOP' },
     { tab: 'insight', label: 'Stock Insight', icon: <Activity className="w-3.5 h-3.5 text-rose-500 shrink-0" />, badge: 'LIVE' },
     { tab: 'portfolio', label: '모의투자', icon: <Briefcase className="w-3.5 h-3.5 text-emerald-500 shrink-0" /> },

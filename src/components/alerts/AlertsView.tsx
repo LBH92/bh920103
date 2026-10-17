@@ -654,6 +654,11 @@ export const AlertsView: React.FC = () => {
 
                         <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
                           {notif.message}
+                          {notif.metrics?.price !== undefined && (
+                            <span className="ml-1 font-bold text-slate-900 dark:text-white">
+                              (당시가: {notif.metrics.price.toLocaleString()}원)
+                            </span>
+                          )}
                         </p>
 
                         {/* 감지 사유 명시 */}

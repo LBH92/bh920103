@@ -23,6 +23,7 @@ import { NewsView } from './components/news/NewsView';
 import { StockRankingView } from './components/stocks/StockRankingView';
 import { IndexDetailView } from './components/indices/IndexDetailView';
 import { PortfolioView } from './components/portfolio/PortfolioView';
+import { StockComparisonView } from './components/stocks/StockComparisonView';
 import { CalendarView } from './components/calendar/CalendarView';
 import { SideChatPanel } from './components/chat/SideChatPanel';
 import { InquiryPage } from './components/inquiry/InquiryPage';
@@ -92,6 +93,8 @@ const MainLayout: React.FC = () => {
         return <HomeView />;
       case 'stocks':
         return selectedSymbol ? <StockDetailView symbol={selectedSymbol} /> : <StockListView />;
+      case 'compare':
+        return <StockComparisonView />;
       case 'ranking':
         return <StockRankingView />;
       case 'insight':

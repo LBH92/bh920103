@@ -115,7 +115,7 @@ export const StockVolumeSection: React.FC<StockVolumeSectionProps> = ({ stock })
         <div className="flex items-center justify-between text-xs font-semibold">
           <span className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
             <Users className="w-3.5 h-3.5 text-indigo-500" />
-            투자자별 당일 순매수 추정치
+            투자자별 당일 순매수 추정치 <span className="text-[10px] text-slate-400 font-normal">(실시간 집계 데이터 기준)</span>
           </span>
           <span className="text-slate-400 text-[11px] font-mono">단위: 억 원</span>
         </div>
@@ -142,6 +142,9 @@ export const StockVolumeSection: React.FC<StockVolumeSectionProps> = ({ stock })
             </span>
           </div>
         </div>
+        <p className="text-[10px] text-slate-400 text-right">
+          갱신시각: {new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+        </p>
       </div>
     </div>
   );
