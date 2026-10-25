@@ -15,6 +15,14 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { HeatmapStockItem, HeatmapResponse } from '../../types';
+  const getMarketLabel = (filter: string) => {
+    switch (filter) {
+      case 'ALL': return '한미 전체 시장';
+      case 'KR': return '국내 시장';
+      case 'US': return '미국 시장';
+      default: return filter;
+    }
+  };
 
 export const MarketHeatmap: React.FC = () => {
   const { navigateToStock } = useApp();
@@ -91,6 +99,7 @@ export const MarketHeatmap: React.FC = () => {
   // Falling (-) = Blue/Cyan gradient
   // Flat (0) = Slate neutral
   const getTileBgColor = (pct: number): string => {
+    if (isNaN(pct)) return 'bg-slate-800 text-slate-500';
     if (pct > 5) return 'bg-rose-600 hover:bg-rose-500 text-white border-rose-500/50 shadow-rose-950/20';
     if (pct > 2.5) return 'bg-rose-500 hover:bg-rose-400 text-white border-rose-400/40';
     if (pct > 0.5) return 'bg-rose-500/80 hover:bg-rose-500 text-white border-rose-400/30';
@@ -111,7 +120,7 @@ export const MarketHeatmap: React.FC = () => {
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400 mr-1 flex items-center gap-1">
               <Globe className="w-3.5 h-3.5 text-indigo-500" />
-              {marketFilter === 'ALL' ? '국내외 시장' : marketFilter === 'KR' || marketFilter === 'KOSPI' || marketFilter === 'KOSDAQ' ? '국내 시장' : '미국 시장'}:
+              {marketFilter === 'ALL' ? '시장 히트맵 (전체 시장)' : `${marketFilter === 'KR' || marketFilter === 'KOSPI' || marketFilter === 'KOSDAQ' ? '국내 시장' : '미국 시장'} 히트맵`}:
             </span>
             {[
               { id: 'ALL', label: '한·미 전체' },
@@ -286,7 +295,7 @@ export const MarketHeatmap: React.FC = () => {
         <div className="w-full">
           {/* Summary Panel */}
           <div className="mb-4 bg-white dark:bg-[#131722] p-4 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
-            <div>시장: {marketFilter} | 기준: {period} | 종목수: {displayItems.length}</div>
+            <div>시장: {getMarketLabel(marketFilter)} | 기준: {period} | 종목수: {displayItems.length}</div>
             <div>데이터 기준: {heatmapData?.meta.lastUpdated || '알 수 없음'}</div>
           </div>
 
@@ -309,9 +318,7 @@ export const MarketHeatmap: React.FC = () => {
                 ? 'col-span-2 sm:col-span-1 row-span-1 min-h-[105px]'
                 : 'col-span-1 row-span-1 min-h-[95px]';
 
-              const bgClass = isDelayed
-                ? 'bg-slate-200 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
-                : getTileBgColor(chg);
+              const bgClass = getTileBgColor(chg);
 
               return (
                 <button
@@ -319,6 +326,16 @@ export const MarketHeatmap: React.FC = () => {
                   onClick={() => navigateToStock(item.symbol)}
                   className={`relative rounded-xl p-3 border transition-all duration-200 cursor-pointer flex flex-col justify-between text-left group overflow-hidden ${spanClass} ${bgClass}`}
                 >
+              {/* State Badges */}
+              {item.delayStatus !== 'realtime' && (
+                <div className={`absolute top-0 right-0 p-1 text-[9px] font-bold z-10 ${
+                    item.delayStatus === 'delayed_15m' ? 'bg-amber-500 text-black' : 
+                    item.delayStatus === 'closed' ? 'bg-slate-500 text-white' : 'bg-slate-400 text-black'
+                }`}>
+                    {item.delayStatus === 'delayed_15m' ? '지연' : 
+                     item.delayStatus === 'closed' ? '장 종료' : '상태 확인'}
+                </div>
+              )}
                   {/* Header: Market Badge & Symbol */}
                   <div className="flex items-center justify-between w-full">
                     <div className="flex items-center gap-1.5 min-w-0">
@@ -358,13 +375,7 @@ export const MarketHeatmap: React.FC = () => {
                   </div>
 
                   {/* Delayed / Missing state overlay */}
-                  {isDelayed && (
-                    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-2 text-center">
-                      <span className="text-[10px] font-bold text-amber-300">
-                        15분 지연 시세
-                      </span>
-                    </div>
-                  )}
+
                 </button>
               );
             })}

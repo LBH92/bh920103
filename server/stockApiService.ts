@@ -268,7 +268,15 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
     console.log(`[StockAPI] Yahoo data notice for ${symbol}: ${err.message}`);
   }
 
-  // 3. Fallback: Local master item or mock
+  // 3. Stale Data Handling (if API fetch fails)
+  const expiredCache = serverCache.get(cacheKey);
+  if (expiredCache && expiredCache.data?.stock) {
+    console.log(`[StockAPI] Returning stale data for ${symbol}`);
+    const staleStock = { ...expiredCache.data.stock, isStale: true };
+    return { stock: staleStock, dataSource: expiredCache.data.dataSource };
+  }
+
+  // 4. Mock fallback
   if (masterItem) {
     const price = masterItem.lastPrice || 0;
     const stock: Stock = {

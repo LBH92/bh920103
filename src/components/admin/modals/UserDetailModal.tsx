@@ -239,8 +239,9 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
                     </button>
                   ) : (
                     <button
+                      disabled={isOwnerAccount}
                       onClick={() => onMute(user.id, '24시간 발언 제한')}
-                      className="flex items-center gap-1.5 px-3 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-bold text-xs transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-bold text-xs transition-colors disabled:opacity-30"
                     >
                       <VolumeX className="w-4 h-4" />
                       <span>채팅 24시간 제한</span>

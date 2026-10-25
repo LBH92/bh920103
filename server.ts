@@ -82,7 +82,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const isProduction = process.env.NODE_ENV === 'production';
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = 3000;
 
 // Environment Data Source Configuration:
 // Default strictly to REAL stock data source (Live Exchange & Yahoo Finance feeds)
@@ -1996,7 +1996,10 @@ async function startServer() {
   // -------------------------------------------------------------
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { 
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

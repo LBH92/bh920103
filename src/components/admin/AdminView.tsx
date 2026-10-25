@@ -376,17 +376,37 @@ export const AdminView: React.FC = () => {
           <AdminChatTab
             chatMessages={chatMessages}
             callerRole={user.role}
-            onDeleteMessage={(mid, rid) => {
-              adminService.deleteChatMessage(mid, rid, callerProfile);
-              setChatMessages(adminService.getChatMessages(rid));
+            onDeleteMessage={async (mid, rid) => {
+              await adminService.deleteChatMessage(mid, rid, callerProfile);
+              setChatMessages(prev => prev.filter(m => m.id !== mid));
               setLogs(adminService.getAdminLogs());
-              showToast('채팅 메시지가 삭제되었습니다.', 'info');
+              showToast('채팅 메시지가 데이터베이스에서 영구 삭제되었습니다.', 'info');
             }}
-            onMuteUser={(uid, dur) => {
-              adminService.muteUser(uid, dur, callerProfile);
+            onMuteUser={async (uid, dur) => {
+              const res = await adminService.muteUser(uid, dur, callerProfile);
               setUsers(adminService.getUsers());
               setLogs(adminService.getAdminLogs());
-              showToast('사용자 채팅이 제한되었습니다.', 'info');
+              showToast(res.message, res.success ? 'warning' : 'error');
+            }}
+            onClearRoomChat={async (rid) => {
+              const res = await adminService.clearChatMessages(rid, callerProfile);
+              if (res.success) {
+                setChatMessages(prev => rid === 'all' ? [] : prev.filter(m => (m.roomId || 'all') !== rid));
+                setLogs(adminService.getAdminLogs());
+                showToast(res.message, 'success');
+              } else {
+                showToast(res.message, 'error');
+              }
+            }}
+            onDeleteChatRoom={async (rid) => {
+              const res = await adminService.deleteChatRoom(rid, callerProfile);
+              if (res.success) {
+                setChatMessages(prev => prev.filter(m => (m.roomId || 'all') !== rid));
+                setLogs(adminService.getAdminLogs());
+                showToast(res.message, 'success');
+              } else {
+                showToast(res.message, 'error');
+              }
             }}
           />
         );

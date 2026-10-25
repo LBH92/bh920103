@@ -97,7 +97,7 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
     );
   }
 
-  const isAuthor = Boolean(user && (user.id === post.author.id || user.role === 'admin'));
+  const isAuthor = Boolean(user && (user.id === post.author.id || user.role === 'admin' || user.role === 'superadmin'));
   const isLiked = Boolean(user && post.likedBy?.includes(user.id));
   const matchedStock = post.symbol ? stocks.find(s => s.symbol === post.symbol) : null;
 
@@ -228,8 +228,8 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
         </button>
 
         <div className="flex items-center gap-2">
-          {/* Author/Admin Actions */}
-          {isAuthor && (
+          {/* Author Actions */}
+          {user && user.id === post.author.id && (
             <>
               <button
                 onClick={() => setIsEditModalOpen(true)}
@@ -246,6 +246,17 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
                 <span>삭제</span>
               </button>
             </>
+          )}
+
+          {/* Admin Actions (for non-author posts) */}
+          {user && (user.role === 'admin' || user.role === 'superadmin') && user.id !== post.author.id && (
+            <button
+              onClick={handleDeletePost}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-xl border border-amber-200 dark:border-amber-900/40 text-xs font-semibold text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors cursor-pointer"
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>관리자 삭제</span>
+            </button>
           )}
 
           {/* Report Button */}
@@ -438,7 +449,7 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
           {visibleComments.length > 0 ? (
             <>
               {visibleComments.map(c => {
-                const isCommentAuthor = Boolean(user && (user.id === c.author.id || user.role === 'admin'));
+                const isCommentAuthor = Boolean(user && (user.id === c.author.id || user.role === 'admin' || user.role === 'superadmin'));
                 const isEditingThis = editingCommentId === c.id;
 
                 return (

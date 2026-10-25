@@ -186,6 +186,13 @@ class KiwoomApiService {
   private publicServerIp: string = '';
   private publicServerIpVerifiedAt: number = 0;
   private chartServerCache = new Map<string, { data: KiwoomChartResponse; expiresAt: number }>();
+  private requestQueue: Promise<any> = Promise.resolve();
+
+  private async enqueueRequest<T>(requestFn: () => Promise<T>): Promise<T> {
+    const result = this.requestQueue.then(requestFn);
+    this.requestQueue = result.catch(() => {}); // Continue queue on error
+    return result;
+  }
 
   constructor() {
     const isMock = process.env.KIWOOM_IS_MOCK !== 'false'; // Default to mock environment if not explicitly false
@@ -1292,9 +1299,9 @@ class KiwoomApiService {
     try {
       let candles: CandleData[] = [];
       if (trId === 'ka10080' && ticScope) {
-        candles = await this.fetchStockMinuteCandles(symbol, ticScope);
+        candles = await this.enqueueRequest(() => this.fetchStockMinuteCandles(symbol, ticScope));
       } else if (trId === 'ka10081') {
-        candles = await this.fetchStockDailyCandles(symbol);
+        candles = await this.enqueueRequest(() => this.fetchStockDailyCandles(symbol));
       }
 
       // Requirement 4: Align last candle close with current live price

@@ -69,25 +69,25 @@ service cloud.firestore {
     // - Update: Author can update their post, or any authenticated user can like/view/comment (updating likeCount/likedBy/viewCount/comments), or Admin
     // - Delete: Author or Admin
     match /posts/{postId} {
-      allow read: if true;
+      allow read: if resource.data.isDeleted != true;
       allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
       allow update: if isSignedIn() && (
         resource.data.authorId == request.auth.uid ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount', 'likeCount', 'likedBy', 'commentCount', 'comments', 'updatedAt']) ||
         isAdmin()
-      );
-      allow delete: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+      ) && resource.data.isDeleted != true;
+      allow delete: if isAdmin();
     }
 
     match /communityPosts/{postId} {
-      allow read: if true;
+      allow read: if resource.data.isDeleted != true;
       allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
       allow update: if isSignedIn() && (
         resource.data.authorId == request.auth.uid ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount', 'likeCount', 'likedBy', 'commentCount', 'comments', 'updatedAt']) ||
         isAdmin()
-      );
-      allow delete: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+      ) && resource.data.isDeleted != true;
+      allow delete: if isAdmin();
     }
 
     // 7. Comments Subcollection / Collection
@@ -128,7 +128,7 @@ service cloud.firestore {
     }
 
     match /chatMessages/{msgId} {
-      allow read: if true;
+      allow read: if isAdmin() || resource.data.isDeleted != true;
       allow create: if isSignedIn() && 
         request.resource.data.authorId == request.auth.uid &&
         request.resource.data.content is string &&
@@ -136,7 +136,7 @@ service cloud.firestore {
         request.resource.data.content.size() <= 1000 &&
         request.resource.data.roomId is string;
       allow update: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
-      allow delete: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+      allow delete: if isAdmin();
     }
 
     // 10. Chat Restrictions & Moderation
@@ -145,6 +145,11 @@ service cloud.firestore {
     match /chatRestrictions/{userId} {
       allow read: if isSignedIn();
       allow write: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /chat_restrictions/{userId} {
+      allow read: if isAdmin();
       allow delete: if isAdmin();
     }
 

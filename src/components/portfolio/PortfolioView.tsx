@@ -132,20 +132,24 @@ export const PortfolioView: React.FC = () => {
     let totalCostKRW = 0;
     let totalValuationKRW = 0;
     let totalRealizedProfitKRW = 0;
-    const currentRate = exchangeRate?.rate || 1400;
+    let missingQuoteCount = 0;
+    const currentRate = exchangeRate?.rate || 0; 
 
     for (const h of virtualHoldings) {
       const quote = quotesMap.get(h.symbol);
       const isUSD = h.currency === 'USD';
-      const costKRW = isUSD ? h.totalBuyAmount * currentRate : h.totalBuyAmount;
+      
+      // Calculate cost accurately even if missing rate
+      const costKRW = (isUSD && currentRate > 0) ? h.totalBuyAmount * currentRate : (isUSD ? 0 : h.totalBuyAmount);
       totalCostKRW += costKRW;
 
       if (quote && quote.price > 0 && (isUSD ? currentRate > 0 : true)) {
         const val = quote.price * h.quantity;
         const valKRW = isUSD ? val * currentRate : val;
         totalValuationKRW += valKRW;
+      } else {
+        missingQuoteCount++;
       }
-      // If missing quote or rate, do not add to valuation (stays 0)
     }
 
     for (const t of virtualTrades) {
@@ -164,6 +168,7 @@ export const PortfolioView: React.FC = () => {
       returnRatePercent,
       totalRealizedProfitKRW,
       count: virtualHoldings.length,
+      missingQuoteCount,
     };
   }, [virtualHoldings, virtualTrades, quotesMap, exchangeRate?.rate]);
 
@@ -398,6 +403,11 @@ export const PortfolioView: React.FC = () => {
                 <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white">
                   {virtualMetrics.count}개 종목
                 </span>
+                {virtualMetrics.missingQuoteCount > 0 && (
+                  <span className="text-[10px] text-amber-500 font-bold block mt-0.5">
+                    ({virtualMetrics.missingQuoteCount}개 시세 미확인)
+                  </span>
+                )}
               </div>
               <button
                 onClick={() => {

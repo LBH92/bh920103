@@ -49,6 +49,8 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
   const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
   const [isPurging, setIsPurging] = useState(false);
   const [purgeResult, setPurgeResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
+  const [memberStatuses, setMemberStatuses] = useState<Record<string, any>>({});
+  const [isVerifying, setIsVerifying] = useState(false);
 
   // Confirmation modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -87,6 +89,23 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
 
   const isSuperAdmin = callerRole === 'superadmin';
 
+  const verifyMembers = async () => {
+    setIsVerifying(true);
+    try {
+      const res = await fetch('/api/admin/members/verify');
+      const data = await res.json();
+      if (res.ok) {
+        const statuses: Record<string, any> = {};
+        data.forEach((m: any) => statuses[m.uid] = m);
+        setMemberStatuses(statuses);
+      }
+    } catch (err) {
+      console.error('Verification failed', err);
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
   return (
     <div className="space-y-5 animate-in fade-in duration-150">
       {/* Top Header & Search/Filters */}
@@ -100,8 +119,17 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
           </p>
         </div>
 
-        {/* Top Actions: Purge Non-Admin (Superadmin only) & Search */}
+        {/* Top Actions */}
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+          <button
+            onClick={verifyMembers}
+            disabled={isVerifying}
+            className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm"
+          >
+            <RefreshCw className={`w-4 h-4 ${isVerifying ? 'animate-spin' : ''}`} />
+            <span>{isVerifying ? '검증 중...' : '전체 회원 검증'}</span>
+          </button>
+          
           {isSuperAdmin && (
             <button
               onClick={() => {
@@ -223,15 +251,17 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
             <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400 font-semibold bg-slate-50/50 dark:bg-slate-800/30">
               <th className="py-3 px-4">회원 정보</th>
               <th className="py-3 px-4">이메일 / UID</th>
+              <th className="py-3 px-4">인증/프로필 검증</th>
               <th className="py-3 px-4">가입일 / 최근접속</th>
               <th className="py-3 px-4 text-center">권한 (Role)</th>
               <th className="py-3 px-4 text-center">상태</th>
-              <th className="py-3 px-4 text-center">활동 수</th>
               <th className="py-3 px-4 text-right">관리 조치</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-            {filteredUsers.map(u => (
+            {filteredUsers.map(u => {
+              const status = memberStatuses[u.id];
+              return (
               <tr 
                 key={u.id}
                 className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors cursor-pointer"
@@ -259,12 +289,77 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                   <div className="text-[10px] text-slate-400 truncate max-w-[140px]">{u.id}</div>
                 </td>
 
+                {/* Status */}
+                <td className="py-3.5 px-4 text-slate-500 font-bold text-[10px]">
+                  {status ? (
+                    <div className="flex flex-col gap-1 items-start">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        status.status === '정상' 
+                          ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' 
+                          : status.status === '프로필 누락'
+                          ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
+                          : 'bg-rose-500/10 text-rose-500 border border-rose-500/20'
+                      }`}>
+                        {status.status}
+                      </span>
+                      {status.status === '프로필 누락' && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            try {
+                              const res = await fetch('/api/admin/members/repair-profile', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ uid: u.id })
+                              });
+                              if (res.ok) {
+                                await verifyMembers();
+                              }
+                            } catch {}
+                          }}
+                          className="text-[9px] text-indigo-500 hover:underline"
+                        >
+                          프로필 복원
+                        </button>
+                      )}
+                      {status.status === '인증 계정 없음' && isSuperAdmin && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmModal({
+                              isOpen: true,
+                              title: '고아 프로필 정리',
+                              description: `'${u.name}' 회원은 Firebase Authentication에 계정이 존재하지 않는 고아 프로필입니다. 해당 프로필을 정리하시겠습니까?`,
+                              isDestructive: true,
+                              onConfirm: async () => {
+                                try {
+                                  await fetch('/api/admin/members/delete-orphan', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'x-admin-role': 'superadmin' },
+                                    body: JSON.stringify({ uid: u.id, deleteReferences: false })
+                                  });
+                                  await verifyMembers();
+                                } catch {}
+                              }
+                            });
+                          }}
+                          className="text-[9px] text-rose-500 hover:underline"
+                        >
+                          고아 정리
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-slate-400">검증 필요</span>
+                  )}
+                </td>
+                
                 {/* Dates */}
                 <td className="py-3.5 px-4 text-slate-500">
                   <div>{u.joinedDate}</div>
                   <div className="text-[10px] text-slate-400 font-mono">{u.lastLoginAt || '-'}</div>
                 </td>
-
+                
                 {/* Role */}
                 <td className="py-3.5 px-4 text-center">
                   <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
@@ -276,8 +371,8 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                     {u.role.toUpperCase()}
                   </span>
                 </td>
-
-                {/* Status */}
+                
+                {/* Activity & Chat Restriction */}
                 <td className="py-3.5 px-4 text-center">
                   <div className="flex flex-col items-center gap-1">
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -288,19 +383,12 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                       {u.status === 'suspended' ? '이용정지' : '정상'}
                     </span>
                     {u.chatRestricted && (
-                      <span className="text-[9px] text-amber-500 font-bold">
-                        채팅제한
+                      <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 flex items-center gap-0.5">
+                        <VolumeX className="w-2.5 h-2.5" />
+                        <span>채팅제한</span>
                       </span>
                     )}
                   </div>
-                </td>
-
-                {/* Counts */}
-                <td className="py-3.5 px-4 text-center font-mono text-slate-500">
-                  <span>글 {u.postCount || 0} / 댓 {u.commentCount || 0}</span>
-                  {Boolean(u.reportedCount) && (
-                    <div className="text-[10px] text-rose-500 font-bold">신고 {u.reportedCount}회</div>
-                  )}
                 </td>
 
                 {/* Actions */}
@@ -313,6 +401,40 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                     >
                       <Eye className="w-3.5 h-3.5" />
                     </button>
+                    {u.chatRestricted ? (
+                      <button
+                        onClick={() => {
+                          setConfirmModal({
+                            isOpen: true,
+                            title: '채팅 제한 해제',
+                            description: `'${u.name}' 회원의 채팅 발언 제한을 즉시 해제하시겠습니까?`,
+                            isDestructive: false,
+                            onConfirm: () => onUnmute(u.id),
+                          });
+                        }}
+                        className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors"
+                        title="채팅 제한 해제"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                      </button>
+                    ) : (
+                      <button
+                        disabled={u.role === 'superadmin' || u.id === 'lr018vf8CcW5fAv707vsl77qJy53'}
+                        onClick={() => {
+                          setConfirmModal({
+                            isOpen: true,
+                            title: '채팅 24시간 제한',
+                            description: `'${u.name}' 회원의 채팅 발언을 24시간 동안 제한하시겠습니까?`,
+                            isDestructive: true,
+                            onConfirm: () => onMute(u.id, '24시간 발언 제한'),
+                          });
+                        }}
+                        className="p-1.5 rounded-lg bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 transition-colors disabled:opacity-20"
+                        title="채팅 제한"
+                      >
+                        <VolumeX className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     {u.status === 'suspended' ? (
                       <button
                         onClick={() => {
@@ -367,7 +489,7 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                   </div>
                 </td>
               </tr>
-            ))}
+            )})}
           </tbody>
         </table>
       </div>

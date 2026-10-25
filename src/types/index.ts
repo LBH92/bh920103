@@ -33,6 +33,7 @@ export interface Stock {
   dataSource?: 'kiwoom' | 'yahoo' | 'mock';
   nameEn?: string;
   productType?: 'EQUITY' | 'ETF' | 'INDEX';
+  isStale?: boolean;
 }
 
 export interface CandleData {
@@ -239,6 +240,7 @@ export interface CommunityPost {
   tags: string[];
   comments?: CommentItem[];
   status?: 'published' | 'hidden' | 'deleted';
+  isDeleted?: boolean;
 }
 
 export interface CommentItem {
@@ -310,6 +312,7 @@ export interface ChatMessage {
   likes: number;
   tempId?: string;
   _sortTime?: number;
+  isDeleted?: boolean;
 }
 
 export interface PriceAlert {

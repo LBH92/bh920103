@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Navbar } from './components/layout/Navbar';
 import { MobileNav } from './components/layout/MobileNav';
@@ -45,6 +45,20 @@ const MainLayout: React.FC = () => {
     user && 
     (user.role === 'admin' || user.role === 'superadmin' || user.role === 'moderator')
   );
+
+  useEffect(() => {
+    import('@capacitor/app').then(({ App }) => {
+      App.addListener('backButton', ({ canGoBack }) => {
+        if (!canGoBack) {
+          // If cannot go back in navigation history, handle app exit
+          App.exitApp();
+        } else {
+          // If can go back, navigate to the previous tab or screen
+          window.history.back();
+        }
+      });
+    });
+  }, []);
 
   // Listen to /admin direct route navigation and subroutes
   // Strict rule: Non-admin or unauthenticated access MUST be rejected and redirected to '/' immediately.
@@ -127,10 +141,11 @@ const MainLayout: React.FC = () => {
       <Navbar />
 
       {/* Main Container with responsive right padding when SideChatPanel is open on lg screens */}
-      <div className={`flex-1 flex flex-col transition-all duration-200 ${
-        activeTab !== 'chat' && isSideChatOpen ? 'lg:pr-[340px] xl:pr-[360px]' : activeTab !== 'chat' ? 'lg:pr-12' : ''
+      <div className={`flex-1 flex flex-col transition-all duration-200 min-w-0 overflow-x-hidden ${
+        activeTab !== 'chat' && isSideChatOpen ? 'lg:pr-[340px] xl:pr-[360px]' : activeTab !== 'chat' ? 'lg:pr-0' : ''
       }`}>
-        <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-24 md:pb-8">
+        <main className="flex-1 w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-24 md:pb-12 overflow-x-hidden">
+
           <ErrorBoundary fallbackTitle="화면을 불러오는 중 문제가 발생했습니다.">
             {renderActiveView()}
           </ErrorBoundary>

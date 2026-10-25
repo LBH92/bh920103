@@ -10,18 +10,26 @@ interface StockVolumeSectionProps {
 
 export const StockVolumeSection: React.FC<StockVolumeSectionProps> = ({ stock }) => {
   const [data, setData] = useState<VolumeAnalysisData | null>(null);
+  const [error, setError] = useState<boolean>(false);
 
   useEffect(() => {
     let isSubscribed = true;
     stockRepository.getVolumeAnalysis(stock.symbol).then(res => {
       if (isSubscribed) {
-        setData(res);
+        if (res) setData(res);
+        else setError(true);
       }
+    }).catch(() => {
+      if (isSubscribed) setError(true);
     });
     return () => {
       isSubscribed = false;
     };
   }, [stock.symbol]);
+
+  if (error) {
+    return <div className="p-6 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 text-slate-500 text-xs text-center">수급 분석 데이터를 불러올 수 없습니다.</div>;
+  }
 
   if (!data) {
     return (

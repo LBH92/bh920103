@@ -21,6 +21,7 @@ import { PriceBadge } from '../common/PriceBadge';
 import { matchHangulSearch } from '../../utils/hangul';
 import { isSurgeGain, isSurgeLoss, isVolumeSurge } from '../../utils/marketThresholds';
 import { MarketHeatmap } from './MarketHeatmap';
+import { formatTradingValue } from '../../utils/format';
 
 export const StockListView: React.FC = () => {
   const { stocks, navigateToStock, watchlist, toggleWatchlist, isWatchlisted, setActiveTab } = useApp();
@@ -422,7 +423,9 @@ export const StockListView: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono text-xs text-slate-700 dark:text-slate-300">
-                      {stock.tradingValue.toLocaleString()}억 원
+                      {formatTradingValue(stock.tradingValue)}
+
+
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono text-xs text-slate-700 dark:text-slate-300">
                       {stock.marketCap >= 10000

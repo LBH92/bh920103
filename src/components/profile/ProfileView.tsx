@@ -15,13 +15,15 @@ import {
   Bell,
   LogIn,
   Sparkles,
-  Key
+  Key,
+  Info
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { storageService } from '../../services/storageService';
 import { UserAiSettingsModal } from './UserAiSettingsModal';
 import { InquiryForm } from '../user/InquiryForm';
 import { MyInquiries } from '../user/MyInquiries';
+import { AppInfoView } from './AppInfoView';
 
 export const ProfileView: React.FC = () => {
   const { user, updateUser, watchlist, navigateToPost, setActiveTab, setIsAuthModalOpen, showToast, logout } = useApp();
@@ -30,7 +32,8 @@ export const ProfileView: React.FC = () => {
   const [isAiSettingsOpen, setIsAiSettingsOpen] = useState(false);
   const [name, setName] = useState(user?.name || '');
   const [bio, setBio] = useState(user?.bio || '');
-  const [profileTab, setProfileTab] = useState<'my_posts' | 'my_comments' | 'settings' | 'inquiries'>('my_posts');
+  const [profileTab, setProfileTab] = useState<'my_posts' | 'my_comments' | 'settings' | 'inquiries' | 'info'>('my_posts');
+
 
   if (!user) {
     return (
@@ -247,7 +250,18 @@ export const ProfileView: React.FC = () => {
         >
           문의 내역
         </button>
+        <button
+          onClick={() => setProfileTab('info')}
+          className={`px-4 py-2 text-xs font-bold rounded-xl transition-all ${
+            profileTab === 'info'
+              ? 'bg-white dark:bg-[#1a1f2e] text-slate-900 dark:text-white shadow-sm'
+              : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+          }`}
+        >
+          앱 정보
+        </button>
       </div>
+
 
       {/* Tab Contents */}
       {profileTab === 'my_posts' && (
@@ -325,6 +339,11 @@ export const ProfileView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {profileTab === 'info' && (
+        <AppInfoView />
+      )}
+
 
       {/* User Personal AI Settings Modal */}
       <UserAiSettingsModal

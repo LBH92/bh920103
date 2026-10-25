@@ -399,9 +399,8 @@ export const adminService = {
   async muteUser(userId: string, durationDesc: string, adminProfile?: { id: string; name: string; role: UserRole }): Promise<{ success: boolean; message: string }> {
     const users = this.getUsers();
     const target = users.find(u => u.id === userId);
-    if (!target) return { success: false, message: '사용자를 찾을 수 없습니다.' };
 
-    if (target.role === 'superadmin' || target.id === 'lr018vf8CcW5fAv707vsl77qJy53') {
+    if (userId === 'lr018vf8CcW5fAv707vsl77qJy53' || target?.role === 'superadmin' || target?.email === 'byunghyunlim92@gmail.com') {
       return { success: false, message: '최고 운영자 계정은 채팅을 제한할 수 없습니다.' };
     }
 
@@ -425,10 +424,13 @@ export const adminService = {
     await firebaseRepository.restrictChatUser(userId, durationDesc, adminProfile?.id || 'admin');
     await firebaseRepository.updateUserChatRestricted(userId, true, durationDesc);
 
-    target.chatRestricted = true;
-    target.chatMutedUntil = durationDesc;
-    this.saveUsers(users);
+    if (target) {
+      target.chatRestricted = true;
+      target.chatMutedUntil = durationDesc;
+      this.saveUsers(users);
+    }
 
+    const userName = target?.name || '사용자';
     this.logAction({
       adminId: adminProfile?.id || 'admin',
       adminName: adminProfile?.name || '운영관리자',
@@ -436,17 +438,16 @@ export const adminService = {
       action: 'MUTE_CHAT_USER',
       targetType: 'user',
       targetId: userId,
-      targetTitle: target.name,
+      targetTitle: userName,
       details: `채팅 발언 제한 적용: ${durationDesc}`,
     });
 
-    return { success: true, message: `'${target.name}' 회원의 채팅이 ${durationDesc} 동안 제한되었습니다.` };
+    return { success: true, message: `'${userName}' 회원의 채팅이 ${durationDesc} 동안 제한되었습니다.` };
   },
 
   async unmuteUser(userId: string, adminProfile?: { id: string; name: string; role: UserRole }): Promise<{ success: boolean; message: string }> {
     const users = this.getUsers();
     const target = users.find(u => u.id === userId);
-    if (!target) return { success: false, message: '사용자를 찾을 수 없습니다.' };
 
     try {
       const headers = await getAdminHeaders();
@@ -468,10 +469,13 @@ export const adminService = {
     await firebaseRepository.unrestrictChatUser(userId);
     await firebaseRepository.updateUserChatRestricted(userId, false);
 
-    target.chatRestricted = false;
-    target.chatMutedUntil = undefined;
-    this.saveUsers(users);
+    if (target) {
+      target.chatRestricted = false;
+      target.chatMutedUntil = undefined;
+      this.saveUsers(users);
+    }
 
+    const userName = target?.name || (userId === 'lr018vf8CcW5fAv707vsl77qJy53' ? '총괄관리자(임병현)' : '사용자');
     this.logAction({
       adminId: adminProfile?.id || 'admin',
       adminName: adminProfile?.name || '운영관리자',
@@ -479,11 +483,11 @@ export const adminService = {
       action: 'UNMUTE_CHAT_USER',
       targetType: 'user',
       targetId: userId,
-      targetTitle: target.name,
+      targetTitle: userName,
       details: '채팅 발언 제한 해제',
     });
 
-    return { success: true, message: `'${target.name}' 회원의 채팅 제한이 해제되었습니다.` };
+    return { success: true, message: `'${userName}' 회원의 채팅 제한이 해제되었습니다.` };
   },
 
   warnUser(userId: string, message: string, adminProfile?: { id: string; name: string; role: UserRole }): boolean {
@@ -1096,6 +1100,76 @@ export const adminService = {
     });
 
     return { success: true };
+  },
+
+  async clearChatMessages(
+    roomId: string = 'all',
+    adminProfile?: { id: string; name: string; role: UserRole }
+  ): Promise<{ success: boolean; message: string; deletedCount?: number }> {
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = adminProfile?.name || '운영관리자';
+      const res = await fetch(`/api/admin/chat/rooms/${encodeURIComponent(roomId)}/clear`, {
+        method: 'POST',
+        headers,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { success: false, message: data.error || '채팅 전체 삭제 실패' };
+      }
+
+      // Clear local storage buffer
+      storageService.saveChatMessages(roomId, []);
+
+      this.logAction({
+        adminId: adminProfile?.id || 'admin',
+        adminName: adminProfile?.name || '운영관리자',
+        adminRole: adminProfile?.role || 'admin',
+        action: 'CLEAR_CHAT_ROOM',
+        targetType: 'chat',
+        targetId: roomId,
+        details: `채팅방 [${roomId}] 대화 내용 전체 삭제 (${data.deletedCount || 0}건)`,
+      });
+
+      return { success: true, message: `채팅방 [${roomId}]의 모든 메시지가 성공적으로 삭제되었습니다.`, deletedCount: data.deletedCount };
+    } catch (e: any) {
+      return { success: false, message: e.message || '채팅 전체 삭제 처리 중 오류' };
+    }
+  },
+
+  async deleteChatRoom(
+    roomId: string,
+    adminProfile?: { id: string; name: string; role: UserRole }
+  ): Promise<{ success: boolean; message: string }> {
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = adminProfile?.name || '운영관리자';
+      const res = await fetch(`/api/admin/chat/rooms/${encodeURIComponent(roomId)}`, {
+        method: 'DELETE',
+        headers,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        return { success: false, message: data.error || '채팅방 삭제 실패' };
+      }
+
+      await firebaseRepository.deleteChatRoom(roomId, adminProfile?.id || 'admin').catch(() => {});
+      storageService.saveChatMessages(roomId, []);
+
+      this.logAction({
+        adminId: adminProfile?.id || 'admin',
+        adminName: adminProfile?.name || '운영관리자',
+        adminRole: adminProfile?.role || 'admin',
+        action: 'DELETE_CHAT_ROOM',
+        targetType: 'chat',
+        targetId: roomId,
+        details: `채팅방 [${roomId}] 영구 삭제`,
+      });
+
+      return { success: true, message: `채팅방이 성공적으로 삭제되었습니다.` };
+    } catch (e: any) {
+      return { success: false, message: e.message || '채팅방 삭제 중 오류 발생' };
+    }
   },
 
   // -------------------------------------------------------------

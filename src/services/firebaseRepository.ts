@@ -314,7 +314,7 @@ export const firebaseRepository = {
   // 3. Community Posts & Comments
   async getPosts(): Promise<CommunityPost[]> {
     try {
-      const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100));
+      const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100), where('isDeleted', '!=', true));
       const snap = await getDocs(q);
       const list: CommunityPost[] = [];
       snap.forEach(docSnap => {
@@ -356,7 +356,7 @@ export const firebaseRepository = {
     errorCallback?: (error: any) => void
   ): () => void {
     try {
-      const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100));
+      const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100), where('isDeleted', '!=', true));
       return onSnapshot(
         q,
         snap => {
@@ -467,6 +467,7 @@ export const firebaseRepository = {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         status: 'published',
+        isDeleted: false,
         tags: post.tags || [],
       });
       return docRef.id;
@@ -495,16 +496,16 @@ export const firebaseRepository = {
 
   async deletePost(postId: string): Promise<void> {
     try {
-      await deleteDoc(doc(db, 'posts', postId));
+      await updateDoc(doc(db, 'posts', postId), { isDeleted: true, deletedAt: new Date().toISOString() });
     } catch (err) {
-      console.warn('Firebase delete post failed:', err);
+      console.warn('Firebase soft-delete post failed:', err);
     }
   },
 
   async updatePostStatus(postId: string, status: 'published' | 'hidden' | 'deleted'): Promise<void> {
     try {
       if (status === 'deleted') {
-        await deleteDoc(doc(db, 'posts', postId));
+        await updateDoc(doc(db, 'posts', postId), { isDeleted: true, deletedAt: new Date().toISOString() });
       } else {
         await updateDoc(doc(db, 'posts', postId), {
           status,
@@ -757,6 +758,18 @@ export const firebaseRepository = {
     }
   },
 
+  async deleteChatRoom(roomId: string, adminUid: string): Promise<void> {
+    try {
+      if (!(await this.isAdmin(adminUid))) {
+        throw new Error('Unauthorized: Admin access required.');
+      }
+      await deleteDoc(doc(db, 'chatRooms', roomId));
+    } catch (err) {
+      console.warn('Firebase deleteChatRoom error:', err);
+      throw err;
+    }
+  },
+
   subscribeChat(
     roomId: string, 
     callback: (messages: ChatMessage[]) => void, 
@@ -767,6 +780,7 @@ export const firebaseRepository = {
       const q = query(
         collection(db, 'chatMessages'),
         where('roomId', '==', roomId),
+        where('isDeleted', '!=', true),
         orderBy('serverCreatedAt', 'asc'),
         limit(messageLimit)
       );
@@ -829,6 +843,7 @@ export const firebaseRepository = {
     try {
       const q = query(
         collection(db, 'chatMessages'),
+        where('isDeleted', '!=', true),
         limit(messageLimit)
       );
       return onSnapshot(q, snap => {
@@ -900,6 +915,7 @@ export const firebaseRepository = {
         createdAt: new Date().toISOString(),
         serverCreatedAt: serverTimestamp(),
         status: 'active',
+        isDeleted: false,
       });
       return docRef.id;
     } catch (err) {
@@ -910,9 +926,9 @@ export const firebaseRepository = {
 
   async deleteChatMessage(messageId: string): Promise<void> {
     try {
-      await deleteDoc(doc(db, 'chatMessages', messageId));
+      await updateDoc(doc(db, 'chatMessages', messageId), { isDeleted: true, deletedAt: new Date().toISOString() });
     } catch (err) {
-      console.warn('Firebase delete chat message failed:', err);
+      console.warn('Firebase soft-delete chat message failed:', err);
     }
   },
 
@@ -932,7 +948,10 @@ export const firebaseRepository = {
 
   async unrestrictChatUser(uid: string): Promise<void> {
     try {
-      await deleteDoc(doc(db, 'chatRestrictions', uid));
+      await Promise.all([
+        deleteDoc(doc(db, 'chatRestrictions', uid)).catch(() => {}),
+        deleteDoc(doc(db, 'chat_restrictions', uid)).catch(() => {})
+      ]);
     } catch (err) {
       console.warn('Firebase unrestrict chat user failed:', err);
     }
@@ -951,13 +970,25 @@ export const firebaseRepository = {
   subscribeChatRestrictions(callback: (restrictedUids: string[]) => void): () => void {
     try {
       const col = collection(db, 'chatRestrictions');
-      return onSnapshot(col, snap => {
+      const colLegacy = collection(db, 'chat_restrictions');
+      
+      const unsub = onSnapshot(col, snap => {
         const uids: string[] = [];
         snap.forEach(d => uids.push(d.id));
-        callback(uids);
+        console.log('[firebaseRepository] Restricted users (chatRestrictions):', uids);
+        
+        // Check legacy
+        getDocs(colLegacy).then(snapLegacy => {
+            if (!snapLegacy.empty) {
+                console.warn('[firebaseRepository] Found restricted users in LEGACY chat_restrictions collection!');
+                snapLegacy.forEach(d => { if(!uids.includes(d.id)) uids.push(d.id); });
+            }
+            callback(uids);
+        });
       }, err => {
         console.warn('subscribeChatRestrictions error:', err);
       });
+      return unsub;
     } catch (err) {
       console.warn('subscribeChatRestrictions exception:', err);
       return () => {};
@@ -1031,7 +1062,7 @@ export const firebaseRepository = {
 
   async clearAllSanctions(): Promise<void> {
     try {
-      const snap = await getDocs(collection(db, 'chat_restrictions'));
+      const snap = await getDocs(collection(db, 'chatRestrictions'));
       const batchPromises = snap.docs.map(d => deleteDoc(d.ref));
       await Promise.all(batchPromises);
     } catch (err) {
@@ -1048,6 +1079,60 @@ export const firebaseRepository = {
       console.warn('[firebaseRepository] clearAllAdminLogs failed:', err);
     }
   },
+  async pinMessage(messageId: string, roomId: string, pinned: boolean): Promise<void> {
+    try {
+      const msgRef = doc(db, 'chatMessages', messageId);
+      await updateDoc(msgRef, {
+        isPinned: pinned,
+        pinnedAt: pinned ? new Date().toISOString() : null,
+      });
+    } catch (err) {
+      console.warn('Firebase pinMessage failed:', err);
+    }
+  },
+
+  async logAdminAction(adminUid: string, adminName: string, action: string, details: string): Promise<void> {
+    try {
+      await setDoc(doc(collection(db, 'adminLogs')), {
+        adminUid,
+        adminName,
+        action,
+        details,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('Firebase logAdminAction failed:', err);
+    }
+  },
+
+  async isAdmin(uid: string): Promise<boolean> {
+    try {
+      const userSnap = await getDoc(doc(db, 'users', uid));
+      return userSnap.exists() && (userSnap.data().role === 'admin' || userSnap.data().role === 'superadmin');
+    } catch {
+      return false;
+    }
+  },
+
+  async clearRoomChatHistory(roomId: string, adminUid: string): Promise<void> {
+    try {
+      if (!(await this.isAdmin(adminUid))) {
+        throw new Error('Unauthorized: Admin access required.');
+      }
+      const q = query(collection(db, 'chatMessages'), where('roomId', '==', roomId));
+      const snap = await getDocs(q);
+      
+      const batch = writeBatch(db);
+      snap.docs.forEach(d => {
+        batch.update(d.ref, { isDeleted: true, deletedAt: new Date().toISOString() });
+      });
+      await batch.commit();
+    } catch (err) {
+      console.warn('[firebaseRepository] clearRoomChatHistory failed:', err);
+      throw err;
+    }
+  },
+
   async incrementAdStats(adId: string, type: 'impressions' | 'clicks'): Promise<void> {
     try {
       const docRef = doc(db, 'adStats', adId);

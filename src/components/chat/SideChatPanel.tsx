@@ -25,6 +25,7 @@ import { storageService } from '../../services/storageService';
 import { filterProfanity, checkSpamViolation } from '../../utils/chatModerator';
 import { ReportModal } from '../community/ReportModal';
 import { SideChatToolbar } from './SideChatToolbar';
+import { adminService } from '../../services/adminService';
 
 interface SideChatPanelProps {
   onOpenFullChat?: () => void;
@@ -310,13 +311,13 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
     }
   };
 
-  // Admin delete message
+  // Admin delete message (authoritative via server Admin SDK and Firestore)
   const handleDeleteMessage = async (msgId: string) => {
     if (!isAdmin) return;
     try {
-      await firebaseRepository.deleteChatMessage(msgId);
+      await adminService.deleteChatMessage(msgId, activeRoomId, user ? { id: user.id, name: user.name, role: user.role } : undefined);
       setMessages(prev => prev.filter(m => m.id !== msgId));
-      showToast('관리자 권한으로 메시지를 삭제했습니다.', 'info');
+      showToast('관리자 권한으로 메시지를 완전히 삭제했습니다.', 'info');
     } catch (err: any) {
       showToast(`삭제 실패: ${err.message}`, 'error');
     }
@@ -326,8 +327,8 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
   const handleRestrictUser = async (targetUserId: string, targetUserName: string) => {
     if (!isAdmin) return;
     try {
-      await firebaseRepository.restrictChatUser(targetUserId, '운영자 실시간 조치', user!.id);
-      showToast(`'${targetUserName}' 사용자의 채팅 발언을 제한했습니다.`, 'warning');
+      const res = await adminService.muteUser(targetUserId, '운영자 실시간 조치', user ? { id: user.id, name: user.name, role: user.role } : undefined);
+      showToast(res.message, res.success ? 'warning' : 'error');
     } catch (err: any) {
       showToast(`채팅 제한 실패: ${err.message}`, 'error');
     }

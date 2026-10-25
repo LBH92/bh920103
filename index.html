@@ -26,6 +26,28 @@
     </style>
     <script>
       (function() {
+        // AI Studio Environment: Gracefully ignore Vite HMR WebSocket connection errors
+        window.addEventListener('unhandledrejection', function(event) {
+          if (!event) return;
+          var reason = event.reason;
+          var msg = (reason && (reason.message || String(reason))) || '';
+          var stack = (reason && reason.stack) || '';
+          if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('vite') !== -1 || stack.indexOf('@vite/client') !== -1 || msg.indexOf('closed without opened') !== -1) {
+            event.preventDefault();
+            if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+          }
+        }, true);
+
+        window.addEventListener('error', function(event) {
+          if (!event) return;
+          var msg = event.message || '';
+          var filename = event.filename || '';
+          if (msg.indexOf('WebSocket') !== -1 || filename.indexOf('@vite/client') !== -1) {
+            event.preventDefault();
+            if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+          }
+        }, true);
+
         try {
           var saved = localStorage.getItem('bd_theme');
           var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;

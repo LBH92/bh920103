@@ -19,6 +19,8 @@ interface AdminChatTabProps {
   callerRole: UserRole;
   onDeleteMessage: (messageId: string, roomId: string) => void;
   onMuteUser: (userId: string, durationDesc: string) => void;
+  onClearRoomChat?: (roomId: string) => void;
+  onDeleteChatRoom?: (roomId: string) => void;
 }
 
 export const AdminChatTab: React.FC<AdminChatTabProps> = ({
@@ -26,6 +28,8 @@ export const AdminChatTab: React.FC<AdminChatTabProps> = ({
   callerRole,
   onDeleteMessage,
   onMuteUser,
+  onClearRoomChat,
+  onDeleteChatRoom,
 }) => {
   const rooms = [
     { id: 'all', name: '전체 광장', icon: '🌐' },
@@ -108,18 +112,60 @@ export const AdminChatTab: React.FC<AdminChatTabProps> = ({
           ))}
         </div>
 
-        {/* Spam toggle */}
-        <button
-          onClick={() => setSpamFilterOnly(!spamFilterOnly)}
-          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 border ${
-            spamFilterOnly
-              ? 'bg-amber-500 text-white border-amber-600'
-              : 'bg-white dark:bg-[#131722] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-800'
-          }`}
-        >
-          <AlertTriangle className="w-3.5 h-3.5" />
-          <span>이상 징후/의심 메시지만 필터링</span>
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Bulk Clear Chat in Active Room */}
+          {onClearRoomChat && (
+            <button
+              onClick={() => {
+                const roomName = rooms.find(r => r.id === activeRoomId)?.name || activeRoomId;
+                setConfirmModal({
+                  isOpen: true,
+                  title: '채팅 전체 삭제',
+                  description: `'${roomName}' 채팅방의 모든 메시지를 완전히 삭제하시겠습니까? 데이터베이스에서 일괄 삭제 처리되어 복구할 수 없습니다.`,
+                  onConfirm: () => onClearRoomChat(activeRoomId),
+                });
+              }}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 border border-rose-500/20"
+              title="현재 채팅방 메시지 전체 삭제"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>채팅 전체 삭제</span>
+            </button>
+          )}
+
+          {/* Delete Chat Room */}
+          {onDeleteChatRoom && activeRoomId !== 'all' && (
+            <button
+              onClick={() => {
+                const roomName = rooms.find(r => r.id === activeRoomId)?.name || activeRoomId;
+                setConfirmModal({
+                  isOpen: true,
+                  title: '채팅방 삭제',
+                  description: `'${roomName}' 채팅방과 해당 방의 모든 대화 내용을 영구 삭제하시겠습니까?`,
+                  onConfirm: () => onDeleteChatRoom(activeRoomId),
+                });
+              }}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-rose-600 hover:text-white border border-slate-200 dark:border-slate-700"
+              title="채팅방 영구 삭제"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>채팅방 삭제</span>
+            </button>
+          )}
+
+          {/* Spam toggle */}
+          <button
+            onClick={() => setSpamFilterOnly(!spamFilterOnly)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 border ${
+              spamFilterOnly
+                ? 'bg-amber-500 text-white border-amber-600'
+                : 'bg-white dark:bg-[#131722] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-800'
+            }`}
+          >
+            <AlertTriangle className="w-3.5 h-3.5" />
+            <span>이상 징후 필터링</span>
+          </button>
+        </div>
       </div>
 
       {/* Chat Messages List */}

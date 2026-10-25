@@ -41,6 +41,7 @@ import { MarketAlertEvent } from '../../types/marketMonitor';
 import { matchHangulSearch } from '../../utils/hangul';
 import { MarketEventDetailModal } from '../common/MarketEventDetailModal';
 import { MarketHeatmap } from '../stocks/MarketHeatmap';
+import { MarketSentimentCard } from './MarketSentimentCard';
 import { AdSlot } from '../common/AdSlot';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../services/firebase';
@@ -1011,8 +1012,15 @@ export const HomeView: React.FC = () => {
       {/* AdSense Ad Slot: 홈 화면 시장 요약·히트맵 아래 반응형 광고 영역 */}
       <AdSlot slotId="home-summary-ad" format="auto" />
 
+      {/* 2-1. 커뮤니티 시장 심리지수 (Bull vs Bear Index) 시각화 카드 */}
+      <MarketSentimentCard
+        onNavigateToStock={navigateToStock}
+        onNavigateToChat={() => setActiveTab('chat')}
+        onNavigateToCommunity={() => setActiveTab('community')}
+      />
+
       {/* Market Heatmap Section */}
-      <section aria-label="시장 히트맵" className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-xs">
+      <section aria-label="시장 히트맵" className="hidden md:block bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-xs">
         <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2 mb-4">
           <Globe className="w-4 h-4 text-indigo-500" />
           시장 히트맵 (국내 시장)
@@ -1396,7 +1404,7 @@ export const HomeView: React.FC = () => {
             {/* Real News Items */}
             {marketNewsList.length > 0 && (
               <div className="divide-y divide-slate-100 dark:divide-slate-800 flex-1">
-                {marketNewsList.map(news => (
+                {marketNewsList.slice(0, 3).map(news => (
                   <div key={news.id} className="p-4 hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors group">
                     <div className="flex items-center justify-between gap-2 mb-1.5">
                       <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -1469,7 +1477,7 @@ export const HomeView: React.FC = () => {
             </div>
 
             <div className="divide-y divide-slate-100 dark:divide-slate-800">
-              {communityPosts.map(post => (
+              {communityPosts.slice(0, 3).map(post => (
                 <div
                   key={post.id}
                   onClick={() => navigateToPost(post.id)}

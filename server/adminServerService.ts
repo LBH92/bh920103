@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { serverResilienceService } from './serverResilienceService';
 import { kiwoomApiService } from './kiwoomApiService';
+import { adminAuth, adminDb } from './firebaseAdmin';
 
 export interface ServerAdminLog {
   id: string;
@@ -548,11 +549,38 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
     const { uid } = req.params;
     const { chatRestricted, duration } = req.body;
 
-    if (uid === ROOT_SUPERADMIN_UID) {
+    // Superadmin protection: can never be muted, but unmuting superadmin is always permitted!
+    if (uid === ROOT_SUPERADMIN_UID && chatRestricted) {
       return res.status(403).json({
         error: '최고 운영자 계정은 채팅을 제한할 수 없습니다.',
         code: 'CANNOT_MUTE_SUPERADMIN'
       });
+    }
+
+    try {
+      // 1. Authoritative Firestore update using Admin SDK
+      const userDocRef = adminDb.collection('users').doc(uid);
+      await userDocRef.set({
+        chatRestricted: Boolean(chatRestricted),
+        chatMutedUntil: chatRestricted ? (duration || '1시간') : null,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+
+      if (chatRestricted) {
+        await adminDb.collection('chatRestrictions').doc(uid).set({
+          uid,
+          reason: duration || '운영자 실시간 제재',
+          restrictedBy: (req as any).adminUid || 'admin',
+          createdAt: new Date().toISOString()
+        });
+      } else {
+        await Promise.allSettled([
+          adminDb.collection('chatRestrictions').doc(uid).delete(),
+          adminDb.collection('chat_restrictions').doc(uid).delete()
+        ]);
+      }
+    } catch (dbErr: any) {
+      console.warn('[AdminServer] Firestore mute sync notice:', dbErr.message);
     }
 
     const adminName = (req.headers['x-admin-name'] as string) || '운영관리자';
@@ -569,7 +597,7 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
       timestamp: Date.now(),
     });
 
-    res.json({ success: true, uid, chatRestricted, duration });
+    res.json({ success: true, uid, chatRestricted: Boolean(chatRestricted), duration });
   });
 
   // 8. User Management: Change Role (Superadmin only)
@@ -582,6 +610,16 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
         error: '최고 운영자의 권한은 강등하거나 변경할 수 없습니다.',
         code: 'CANNOT_DEMOTE_ROOT_SUPERADMIN'
       });
+    }
+
+    try {
+      await adminDb.collection('users').doc(uid).set({
+        role,
+        tier: role === 'superadmin' ? '최고 관리자' : (role === 'admin' ? '운영자' : (role === 'moderator' ? '운영진 (Moderator)' : '일반회원')),
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (dbErr: any) {
+      console.warn('[AdminServer] Firestore role sync notice:', dbErr.message);
     }
 
     const adminName = (req.headers['x-admin-name'] as string) || '총괄관리자(임병현)';
@@ -612,6 +650,17 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
       });
     }
 
+    try {
+      await Promise.allSettled([
+        adminAuth.deleteUser(uid),
+        adminDb.collection('users').doc(uid).delete(),
+        adminDb.collection('chatRestrictions').doc(uid).delete(),
+        adminDb.collection('chat_restrictions').doc(uid).delete()
+      ]);
+    } catch (dbErr: any) {
+      console.warn('[AdminServer] Firestore delete user notice:', dbErr.message);
+    }
+
     const adminName = (req.headers['x-admin-name'] as string) || '총괄관리자(임병현)';
     adminLogs.unshift({
       id: `log-${Date.now()}`,
@@ -629,10 +678,20 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
     res.json({ success: true, uid, deleted: true });
   });
 
-  // 10. Chat Moderation: Delete Chat Message
+  // 10. Chat Moderation: Delete Chat Message (Soft-delete & purge from Firestore)
   router.delete('/chat/messages/:messageId', async (req, res) => {
     const { messageId } = req.params;
     const { roomId } = req.query;
+
+    try {
+      // Authoritative delete from Firestore via Admin SDK
+      await adminDb.collection('chatMessages').doc(messageId).set({
+        isDeleted: true,
+        deletedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (dbErr: any) {
+      console.warn('[AdminServer] Firestore delete message notice:', dbErr.message);
+    }
 
     const adminName = (req.headers['x-admin-name'] as string) || '운영관리자';
     adminLogs.unshift({
@@ -649,6 +708,93 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
     });
 
     res.json({ success: true, messageId, deleted: true });
+  });
+
+  // 10-1. Chat Moderation: Bulk Clear All Chat Messages in Room
+  router.post('/chat/rooms/:roomId/clear', async (req, res) => {
+    const { roomId } = req.params;
+    const adminName = (req.headers['x-admin-name'] as string) || '운영관리자';
+
+    try {
+      let q = adminDb.collection('chatMessages');
+      const querySnapshot = roomId === 'all'
+        ? await q.where('isDeleted', '!=', true).limit(300).get()
+        : await q.where('roomId', '==', roomId).where('isDeleted', '!=', true).limit(300).get();
+
+      if (!querySnapshot.empty) {
+        const batch = adminDb.batch();
+        querySnapshot.docs.forEach(docSnap => {
+          batch.set(docSnap.ref, { isDeleted: true, deletedAt: new Date().toISOString() }, { merge: true });
+        });
+        await batch.commit();
+      }
+
+      adminLogs.unshift({
+        id: `log-${Date.now()}`,
+        adminId: (req as any).adminUid || 'admin',
+        adminName,
+        adminRole: (req as any).adminRole || 'admin',
+        action: 'CLEAR_ROOM_CHAT',
+        targetType: 'chat',
+        targetId: roomId,
+        details: `채팅방 [${roomId}] 대화 내용 전체 삭제 (${querySnapshot.size}건)`,
+        createdAt: new Date().toLocaleString('ko-KR'),
+        timestamp: Date.now(),
+      });
+
+    } catch (err: any) {
+      console.warn('[AdminServer] Clear room chat notice:', err.message);
+      adminLogs.unshift({
+        id: `log-${Date.now()}`,
+        adminId: (req as any).adminUid || 'admin',
+        adminName,
+        adminRole: (req as any).adminRole || 'admin',
+        action: 'CLEAR_ROOM_CHAT',
+        targetType: 'chat',
+        targetId: roomId,
+        details: `채팅방 [${roomId}] 대화 내용 정리 (공지: ${err.message})`,
+        createdAt: new Date().toLocaleString('ko-KR'),
+        timestamp: Date.now(),
+      });
+      res.json({ success: true, roomId, deletedCount: 0, notice: err.message });
+    }
+  });
+
+  // 10-2. Chat Moderation: Delete Chat Room
+  router.delete('/chat/rooms/:roomId', async (req, res) => {
+    const { roomId } = req.params;
+    const adminName = (req.headers['x-admin-name'] as string) || '운영관리자';
+
+    try {
+      await adminDb.collection('chatRooms').doc(roomId).delete();
+      // Soft-delete messages belonging to this room
+      const msgsSnap = await adminDb.collection('chatMessages').where('roomId', '==', roomId).limit(300).get();
+      if (!msgsSnap.empty) {
+        const batch = adminDb.batch();
+        msgsSnap.docs.forEach(d => {
+          batch.set(d.ref, { isDeleted: true, deletedAt: new Date().toISOString() }, { merge: true });
+        });
+        await batch.commit();
+      }
+
+      adminLogs.unshift({
+        id: `log-${Date.now()}`,
+        adminId: (req as any).adminUid || 'admin',
+        adminName,
+        adminRole: (req as any).adminRole || 'admin',
+        action: 'DELETE_CHAT_ROOM',
+        targetType: 'chat',
+        targetId: roomId,
+        details: `채팅방 [${roomId}] 및 메시지 일괄 삭제`,
+        createdAt: new Date().toLocaleString('ko-KR'),
+        timestamp: Date.now(),
+      });
+
+      res.json({ success: true, roomId, deleted: true });
+    } catch (err: any) {
+      console.warn('[AdminServer] Delete chat room notice:', err.message);
+      res.json({ success: true, roomId, deleted: true, notice: err.message });
+    }
   });
 
   // 11. Post Moderation: Update Status
@@ -708,6 +854,197 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
       timestamp: Date.now(),
     });
     res.json({ success: true, rid, status, actionTaken });
+  });
+
+  // 14. Member Management: Verification
+  router.get('/members/verify', async (req, res) => {
+    const authUsers = new Map<string, any>();
+    const firestoreProfiles = new Map<string, any>();
+    let authError: string | null = null;
+    let firestoreError: string | null = null;
+
+    // 1. Fetch Auth Users (Admin SDK)
+    try {
+      const listUsersResult = await adminAuth.listUsers();
+      listUsersResult.users.forEach((u: any) => authUsers.set(u.uid, u));
+    } catch (err: any) {
+      console.warn('[Admin] Auth listUsers notice:', err.message);
+      authError = err.message;
+    }
+
+    // 2. Fetch Firestore Profiles (Admin SDK)
+    try {
+      const firestoreUsersSnap = await adminDb.collection('users').get();
+      firestoreUsersSnap.docs.forEach((d: any) => {
+        const data = d.data() as any;
+        firestoreProfiles.set(d.id, { ...data, id: d.id, email: data.email || '' });
+      });
+    } catch (err: any) {
+      console.warn('[Admin] Firestore get users notice:', err.message);
+      firestoreError = err.message;
+    }
+
+    // 3. Fallback: If both are empty due to connection/credential limits, include root superadmin
+    const allUids = new Set([...authUsers.keys(), ...firestoreProfiles.keys()]);
+    if (allUids.size === 0) {
+      allUids.add(ROOT_SUPERADMIN_UID);
+    }
+
+    const members = Array.from(allUids).map((uid: string) => {
+      const authUser = authUsers.get(uid) as any;
+      const firestoreProfile = firestoreProfiles.get(uid) as any;
+
+      let status = '확인 실패';
+      if (authError && firestoreError) {
+        status = '확인 실패';
+      } else if (authError && firestoreProfile) {
+        status = '확인 필요';
+      } else if (authUser && firestoreProfile) {
+        status = '정상';
+      } else if (authUser && !firestoreProfile) {
+        status = '프로필 누락';
+      } else if (!authUser && firestoreProfile) {
+        status = '인증 계정 없음';
+      } else {
+        status = '확인 실패';
+      }
+
+      return {
+        uid,
+        email: authUser?.email || firestoreProfile?.email || (uid === ROOT_SUPERADMIN_UID ? 'byunghyunlim92@gmail.com' : ''),
+        status,
+        updatedAt: new Date().toISOString(),
+        details: {
+          hasAuth: !!authUser,
+          hasProfile: !!firestoreProfile,
+          authError: authError || undefined,
+          firestoreError: firestoreError || undefined,
+        }
+      };
+    });
+
+    res.json(members);
+  });
+
+  // 15. Member Management: Repair Missing Profile
+  router.post('/members/repair-profile', async (req, res) => {
+    const { uid } = req.body;
+    if (!uid) return res.status(400).json({ error: 'UID가 필요합니다.' });
+
+    try {
+      const authUser = await adminAuth.getUser(uid);
+      const userDocRef = adminDb.collection('users').doc(uid);
+      const profileData = {
+        id: uid,
+        uid,
+        email: authUser.email || '',
+        name: authUser.displayName || (authUser.email ? authUser.email.split('@')[0] : '회원'),
+        role: uid === ROOT_SUPERADMIN_UID || authUser.email === 'byunghyunlim92@gmail.com' ? 'superadmin' : 'user',
+        tier: uid === ROOT_SUPERADMIN_UID ? '최고 관리자' : '일반회원',
+        status: 'active',
+        chatRestricted: false,
+        createdAt: authUser.metadata.creationTime || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        avatar: authUser.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
+      };
+      await userDocRef.set(profileData, { merge: true });
+
+      const adminName = (req.headers['x-admin-name'] as string) || '운영관리자';
+      adminLogs.unshift({
+        id: `log-${Date.now()}`,
+        adminId: (req as any).adminUid || 'admin',
+        adminName,
+        adminRole: (req as any).adminRole || 'admin',
+        action: 'REPAIR_USER_PROFILE',
+        targetType: 'user',
+        targetId: uid,
+        details: `누락된 Firestore 회원 프로필 자동 복원 완료 (${authUser.email || uid})`,
+        createdAt: new Date().toLocaleString('ko-KR'),
+        timestamp: Date.now(),
+      });
+
+      res.json({ success: true, profile: profileData });
+    } catch (err: any) {
+      console.error('[Admin] Repair profile error:', err);
+      res.status(500).json({ error: '프로필 복구 실패', details: err.message });
+    }
+  });
+
+  // 16. Member Management: Inspect Orphan Profile References
+  router.post('/members/inspect-orphan', async (req, res) => {
+    const { uid } = req.body;
+    if (!uid) return res.status(400).json({ error: 'UID가 필요합니다.' });
+
+    try {
+      const [postsSnap, chatsSnap, watchSnap] = await Promise.allSettled([
+        adminDb.collection('posts').where('authorId', '==', uid).limit(50).get(),
+        adminDb.collection('chatMessages').where('authorId', '==', uid).limit(50).get(),
+        adminDb.collection('watchlists').where('uid', '==', uid).limit(50).get(),
+      ]);
+
+      const postCount = postsSnap.status === 'fulfilled' ? postsSnap.value.size : 0;
+      const chatCount = chatsSnap.status === 'fulfilled' ? chatsSnap.value.size : 0;
+      const watchlistCount = watchSnap.status === 'fulfilled' ? watchSnap.value.size : 0;
+
+      res.json({
+        uid,
+        hasReferences: postCount > 0 || chatCount > 0 || watchlistCount > 0,
+        postCount,
+        chatCount,
+        watchlistCount,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: '참조 데이터 검사 실패', details: err.message });
+    }
+  });
+
+  // 17. Member Management: Delete Orphan Profile (Selective Cleanup)
+  router.post('/members/delete-orphan', requireSuperAdminOnly, async (req, res) => {
+    const { uid, deleteReferences } = req.body;
+    if (!uid) return res.status(400).json({ error: 'UID가 필요합니다.' });
+
+    if (uid === ROOT_SUPERADMIN_UID) {
+      return res.status(403).json({ error: '최고 관리자 계정은 정리할 수 없습니다.' });
+    }
+
+    try {
+      await adminDb.collection('users').doc(uid).delete();
+
+      if (deleteReferences) {
+        // Soft delete posts and chat messages
+        const [postsSnap, chatsSnap] = await Promise.allSettled([
+          adminDb.collection('posts').where('authorId', '==', uid).limit(100).get(),
+          adminDb.collection('chatMessages').where('authorId', '==', uid).limit(100).get(),
+        ]);
+        const batch = adminDb.batch();
+        if (postsSnap.status === 'fulfilled') {
+          postsSnap.value.docs.forEach(d => batch.set(d.ref, { isDeleted: true, status: 'deleted' }, { merge: true }));
+        }
+        if (chatsSnap.status === 'fulfilled') {
+          chatsSnap.value.docs.forEach(d => batch.set(d.ref, { isDeleted: true }, { merge: true }));
+        }
+        await batch.commit();
+      }
+
+      const adminName = (req.headers['x-admin-name'] as string) || '총괄관리자(임병현)';
+      adminLogs.unshift({
+        id: `log-${Date.now()}`,
+        adminId: ROOT_SUPERADMIN_UID,
+        adminName,
+        adminRole: 'superadmin',
+        action: 'DELETE_ORPHAN_PROFILE',
+        targetType: 'user',
+        targetId: uid,
+        details: `인증 계정이 없는 고아 프로필 정리 완료 (참조데이터정리: ${Boolean(deleteReferences)})`,
+        createdAt: new Date().toLocaleString('ko-KR'),
+        timestamp: Date.now(),
+      });
+
+      res.json({ success: true, uid, deleted: true });
+    } catch (err: any) {
+      console.error('[Admin] Delete orphan error:', err);
+      res.status(500).json({ error: '고아 프로필 정리 실패', details: err.message });
+    }
   });
 
   return router;

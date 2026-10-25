@@ -34,6 +34,8 @@ import { filterProfanity, checkSpamViolation } from '../../utils/chatModerator';
 import { ReportModal } from '../community/ReportModal';
 import { CreateChatRoomModal } from './CreateChatRoomModal';
 import { ChatToolbar } from './ChatToolbar';
+import { AdminChatControl } from './AdminChatControl';
+import { adminService } from '../../services/adminService';
 
 export const ChatView: React.FC = () => {
   const { 
@@ -117,7 +119,7 @@ export const ChatView: React.FC = () => {
   const [revealedMessages, setRevealedMessages] = useState<Record<string, boolean>>({});
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
   // Merged rooms list
   const allRooms: ChatRoomInfo[] = [...officialRooms, ...customRooms];
@@ -388,24 +390,27 @@ export const ChatView: React.FC = () => {
     }
   };
 
-  // Admin: Delete Message
+  // Admin: Delete Message (authoritative deletion from database)
   const handleDeleteMessage = async (msgId: string) => {
     if (!isAdmin) return;
-    if (window.confirm('관리자 권한으로 이 메시지를 삭제하시겠습니까?')) {
-      await firebaseRepository.deleteChatMessage(msgId);
+    try {
+      await adminService.deleteChatMessage(msgId, activeRoomId, user ? { id: user.id, name: user.name, role: user.role } : undefined);
       setMessages(prev => prev.filter(m => m.id !== msgId));
-      showToast('메시지가 삭제되었습니다.', 'info');
+      showToast('관리자 권한으로 메시지를 완전히 삭제했습니다.', 'info');
+    } catch (err: any) {
+      showToast(`메시지 삭제 실패: ${err.message}`, 'error');
     }
   };
 
   // Admin: Restrict (Mute/Ban) User from chat
   const handleRestrictUser = async (targetUserId: string, targetUserName: string) => {
     if (!isAdmin || !user) return;
-    const reason = prompt(`'${targetUserName}' 님의 채팅 이용을 제한하시겠습니까? 사유를 입력하세요:`, '커뮤니티 및 채팅 이용 규정 위반');
-    if (!reason) return;
-
-    await firebaseRepository.restrictChatUser(targetUserId, reason, user.id);
-    showToast(`'${targetUserName}' 님의 채팅 이용을 제한했습니다.`, 'warning');
+    try {
+      const res = await adminService.muteUser(targetUserId, '커뮤니티 및 채팅 이용 규정 위반', { id: user.id, name: user.name, role: user.role });
+      showToast(res.message, res.success ? 'warning' : 'error');
+    } catch (err: any) {
+      showToast(`채팅 이용 제한 실패: ${err.message}`, 'error');
+    }
   };
 
   return (
@@ -442,9 +447,22 @@ export const ChatView: React.FC = () => {
           </div>
 
           {isAdmin && (
-            <span className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/30">
-              관리자 모드 활성
-            </span>
+            <>
+              <AdminChatControl 
+                roomId={activeRoomId} 
+                roomName={activeRoom.name}
+                count={displayMessages.length}
+                adminUid={user?.id || ''}
+                onClearHistory={() => setMessages([])} 
+                onDeleteRoom={() => {
+                  setCustomRooms(prev => prev.filter(r => r.id !== activeRoomId));
+                  setActiveRoomId('all');
+                }}
+              />
+              <span className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/30">
+                관리자 모드 활성
+              </span>
+            </>
           )}
         </div>
       </div>

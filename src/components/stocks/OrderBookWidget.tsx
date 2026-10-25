@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Stock, OrderBook } from '../../types';
 import { stockRepository } from '../../services/stockRepository';
 import { AlertCircle } from 'lucide-react';
@@ -7,7 +7,7 @@ interface OrderBookWidgetProps {
   stock: Stock;
 }
 
-export const OrderBookWidget: React.FC<OrderBookWidgetProps> = ({ stock }) => {
+export const OrderBookWidget = React.memo(({ stock }: OrderBookWidgetProps) => {
   const [orderBook, setOrderBook] = useState<OrderBook | null>(null);
   const [currentPrice, setCurrentPrice] = useState<number>(stock.price);
   const [change, setChange] = useState<number>(stock.change);
@@ -77,13 +77,16 @@ export const OrderBookWidget: React.FC<OrderBookWidgetProps> = ({ stock }) => {
     };
   }, [stock.symbol]);
 
-  const hasRealDepth = Boolean(orderBook && Array.isArray(orderBook.asks) && orderBook.asks.length > 0);
-  const displayedAsks = hasRealDepth && orderBook ? (viewMode === '5' ? orderBook.asks.slice(-5) : orderBook.asks) : [];
-  const displayedBids = hasRealDepth && orderBook ? (viewMode === '5' ? orderBook.bids.slice(0, 5) : orderBook.bids) : [];
+  const { hasRealDepth, displayedAsks, displayedBids, total, askRatio, bidRatio } = useMemo(() => {
+    const hasRealDepth = Boolean(orderBook && Array.isArray(orderBook.asks) && orderBook.asks.length > 0);
+    const displayedAsks = hasRealDepth && orderBook ? (viewMode === '5' ? orderBook.asks.slice(-5) : orderBook.asks) : [];
+    const displayedBids = hasRealDepth && orderBook ? (viewMode === '5' ? orderBook.bids.slice(0, 5) : orderBook.bids) : [];
 
-  const total = hasRealDepth && orderBook ? (orderBook.totalAskVolume + orderBook.totalBidVolume || 1) : 1;
-  const askRatio = hasRealDepth && orderBook ? Math.round((orderBook.totalAskVolume / total) * 100) : 50;
-  const bidRatio = 100 - askRatio;
+    const total = hasRealDepth && orderBook ? (orderBook.totalAskVolume + orderBook.totalBidVolume || 1) : 1;
+    const askRatio = hasRealDepth && orderBook ? Math.round((orderBook.totalAskVolume / total) * 100) : 50;
+    const bidRatio = 100 - askRatio;
+    return { hasRealDepth, displayedAsks, displayedBids, total, askRatio, bidRatio };
+  }, [orderBook, viewMode]);
 
   return (
     <div className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm">
@@ -135,7 +138,7 @@ export const OrderBookWidget: React.FC<OrderBookWidgetProps> = ({ stock }) => {
           <>
             {/* Asks (매도 10~1호가) */}
             <div className="divide-y divide-slate-100 dark:divide-slate-800/60 bg-blue-50/20 dark:bg-blue-950/10 max-h-[260px] overflow-y-auto">
-              {displayedAsks.map((ask, i) => {
+              {displayedAsks.map((ask: any, i: number) => {
                 const isCurrent = ask.price === currentPrice;
                 const askLevel = viewMode === '5' ? 5 - i : (orderBook?.asks.length || 10) - i;
                 return (
@@ -184,7 +187,7 @@ export const OrderBookWidget: React.FC<OrderBookWidgetProps> = ({ stock }) => {
 
             {/* Bids (매수 1~10호가) */}
             <div className="divide-y divide-slate-100 dark:divide-slate-800/60 bg-rose-50/20 dark:bg-rose-950/10 max-h-[260px] overflow-y-auto">
-              {displayedBids.map((bid, i) => {
+              {displayedBids.map((bid: any, i: number) => {
                 const isCurrent = bid.price === currentPrice;
                 const bidLevel = i + 1;
                 return (
@@ -253,4 +256,5 @@ export const OrderBookWidget: React.FC<OrderBookWidgetProps> = ({ stock }) => {
       )}
     </div>
   );
-};
+});
+

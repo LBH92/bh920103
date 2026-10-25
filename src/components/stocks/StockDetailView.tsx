@@ -32,6 +32,7 @@ import { getKRXMarketStatus, getUSMarketStatus, MarketStatusInfo } from '../../u
 import { MockTradeModal } from '../portfolio/MockTradeModal';
 import { VirtualHoldingModal } from '../portfolio/VirtualHoldingModal';
 import { HistoricalTradingSimulatorModal } from './HistoricalTradingSimulatorModal';
+import { SetPriceAlertModal } from './SetPriceAlertModal';
 
 interface StockDetailViewProps {
   symbol: string;
@@ -167,27 +168,12 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
 
   // Price Alert Modal State
   const [isAlertModalOpen, setIsAlertModalOpen] = useState(false);
-  const [targetAlertPrice, setTargetAlertPrice] = useState(stock.price);
-  const [alertNote, setAlertNote] = useState('');
 
   // Mock Trade & Virtual Holding Modal States
   const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
   const [isHoldingModalOpen, setIsHoldingModalOpen] = useState(false);
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
 
-  const handleCreateAlert = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!requireAuth('알림 생성')) return;
-    storageService.addAlert({
-      symbol: stock.symbol,
-      symbolName: stock.name,
-      targetPrice: targetAlertPrice,
-      condition: targetAlertPrice >= stock.price ? 'above' : 'below',
-      note: alertNote || `${stock.name} 목표가 ${targetAlertPrice.toLocaleString()}원 도달 알림`,
-    });
-    showToast(`'${stock.name}' ${targetAlertPrice.toLocaleString()}원 목표가 알림이 등록되었습니다.`, 'success');
-    setIsAlertModalOpen(false);
-  };
 
   const handleShare = () => {
     if (navigator.clipboard) {
@@ -528,92 +514,14 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
         <StockAiBriefingWidget stock={stock} />
       </div>
 
-      {/* Price Alert Modal */}
-      {isAlertModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-150">
-          <div
-            className="w-full max-w-md bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-              <div className="flex items-center gap-2">
-                <Bell className="w-5 h-5 text-amber-500" />
-                <h3 className="font-bold text-base text-slate-900 dark:text-white">
-                  목표 주가 알림 설정
-                </h3>
-              </div>
-              <button
-                onClick={() => setIsAlertModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateAlert} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                  종목
-                </label>
-                <input
-                  type="text"
-                  disabled
-                  value={`${stock.name} (${stock.symbol})`}
-                  className="w-full px-3.5 py-2 bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-xs sm:text-sm text-slate-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                  목표 도달 가격 (원)
-                </label>
-                <input
-                  type="number"
-                  required
-                  min={100}
-                  step={50}
-                  value={targetAlertPrice}
-                  onChange={e => setTargetAlertPrice(Number(e.target.value))}
-                  className="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold text-slate-900 dark:text-white font-mono"
-                />
-                <span className="text-[11px] text-slate-400 mt-1 block">
-                  현재가 {stock.price.toLocaleString()}원 기준{' '}
-                  {targetAlertPrice >= stock.price ? '이상 돌파 시' : '이하 하락 시'} 발송됩니다.
-                </span>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                  메모 (선택)
-                </label>
-                <input
-                  type="text"
-                  value={alertNote}
-                  onChange={e => setAlertNote(e.target.value)}
-                  placeholder="예: 지지선 이탈 시 전량 손절 대응"
-                  className="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400"
-                />
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsAlertModalOpen(false)}
-                  className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300"
-                >
-                  취소
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md shadow-rose-600/20"
-                >
-                  알림 등록하기
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* 가격 알림 설정 모달 */}
+      <SetPriceAlertModal
+        isOpen={isAlertModalOpen}
+        onClose={() => setIsAlertModalOpen(false)}
+        symbol={stock.symbol}
+        symbolName={stock.name}
+        currentPrice={stock.price}
+      />
       {/* Mock Trade Modal */}
       <MockTradeModal
         isOpen={isTradeModalOpen}

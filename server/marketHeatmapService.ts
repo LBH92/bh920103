@@ -23,7 +23,7 @@ export interface HeatmapStockItem {
   sector: string;
   price: number;
   currency: 'KRW' | 'USD';
-  delayStatus?: 'realtime' | 'delayed_15m';
+  delayStatus?: 'realtime' | 'delayed_15m' | 'closed' | 'unknown';
   status?: 'realtime' | 'delayed' | 'closed';
   marketCap: number; // in KRW 억 or USD million
   formattedMarketCap: string;
@@ -82,6 +82,11 @@ const KR_HEATMAP_STOCKS: {
   { symbol: '064350', name: '현대로템', nameEn: 'Hyundai Rotem', exchange: 'KOSPI', sector: '방산/철도', approxCapKRWTrillion: 8, type: 'stock' },
   { symbol: '034020', name: '두산에너빌리티', nameEn: 'Doosan Enerbility', exchange: 'KOSPI', sector: '에너지', approxCapKRWTrillion: 12, type: 'stock' },
   { symbol: '417860', name: 'HD현대일렉트릭', nameEn: 'HD Hyundai Electric', exchange: 'KOSPI', sector: '에너지/인프라', approxCapKRWTrillion: 14, type: 'stock' },
+  { symbol: '096770', name: 'SK이노베이션', nameEn: 'SK Innovation', exchange: 'KOSPI', sector: '에너지', approxCapKRWTrillion: 8, type: 'stock' },
+  { symbol: '015760', name: '한국전력', nameEn: 'KEPCO', exchange: 'KOSPI', sector: '에너지', approxCapKRWTrillion: 11, type: 'stock' },
+  { symbol: '030200', name: 'KT', nameEn: 'KT', exchange: 'KOSPI', sector: '통신', approxCapKRWTrillion: 9, type: 'stock' },
+  { symbol: '017670', name: 'SK텔레콤', nameEn: 'SK Telecom', exchange: 'KOSPI', sector: '통신', approxCapKRWTrillion: 12, type: 'stock' },
+  { symbol: '005935', name: '삼성전자우', nameEn: 'Samsung Electronics Pfd', exchange: 'KOSPI', sector: '반도체', approxCapKRWTrillion: 30, type: 'stock' },
   { symbol: '247540', name: '에코프로비엠', nameEn: 'EcoPro BM', exchange: 'KOSDAQ', sector: '2차전지', approxCapKRWTrillion: 16, type: 'stock' },
   { symbol: '086520', name: '에코프로', nameEn: 'EcoPro', exchange: 'KOSDAQ', sector: '2차전지', approxCapKRWTrillion: 21, type: 'stock' },
   { symbol: '196170', name: '알테오젠', nameEn: 'Alteogen', exchange: 'KOSDAQ', sector: '바이오', approxCapKRWTrillion: 19, type: 'stock' },
@@ -89,6 +94,10 @@ const KR_HEATMAP_STOCKS: {
   { symbol: '277810', name: '레인보우로보틱스', nameEn: 'Rainbow Robotics', exchange: 'KOSDAQ', sector: '로봇', approxCapKRWTrillion: 4, type: 'stock' },
   { symbol: '058470', name: '리노공업', nameEn: 'Leeno Industrial', exchange: 'KOSDAQ', sector: '반도체', approxCapKRWTrillion: 3, type: 'stock' },
   { symbol: '039030', name: '이오테크닉스', nameEn: 'EO Technics', exchange: 'KOSDAQ', sector: '반도체', approxCapKRWTrillion: 2.5, type: 'stock' },
+  { symbol: '035900', name: 'JYP Ent.', nameEn: 'JYP Entertainment', exchange: 'KOSDAQ', sector: '엔터', approxCapKRWTrillion: 2, type: 'stock' },
+  { symbol: '041510', name: '에스엠', nameEn: 'SM Entertainment', exchange: 'KOSDAQ', sector: '엔터', approxCapKRWTrillion: 1.5, type: 'stock' },
+  { symbol: '036570', name: '엔씨소프트', nameEn: 'NCSoft', exchange: 'KOSPI', sector: '게임', approxCapKRWTrillion: 4, type: 'stock' },
+  { symbol: '259960', name: '크래프톤', nameEn: 'Krafton', exchange: 'KOSPI', sector: '게임', approxCapKRWTrillion: 12, type: 'stock' },
   { symbol: '000030', name: 'KODEX 200', nameEn: 'KODEX 200', exchange: 'KOSPI', sector: 'ETF', approxCapKRWTrillion: 5, type: 'etf' },
 ];
 
@@ -123,6 +132,11 @@ const US_HEATMAP_STOCKS: {
   { symbol: 'INTC', name: '인텔', nameEn: 'Intel Corp', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 95, type: 'stock' },
   { symbol: 'MU', name: '마이크론', nameEn: 'Micron Technology', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 110, type: 'stock' },
   { symbol: 'ASML', name: 'ASML 홀딩', nameEn: 'ASML Holding', exchange: 'NASDAQ', sector: '반도체', approxCapUSDBillion: 320, type: 'stock' },
+  { symbol: 'LLY', name: '일라이릴리', nameEn: 'Eli Lilly and Co.', exchange: 'NYSE', sector: '바이오', approxCapUSDBillion: 750, type: 'stock' },
+  { symbol: 'JPM', name: 'JP모건', nameEn: 'JPMorgan Chase & Co.', exchange: 'NYSE', sector: '금융', approxCapUSDBillion: 600, type: 'stock' },
+  { symbol: 'V', name: '비자', nameEn: 'Visa Inc.', exchange: 'NYSE', sector: '금융', approxCapUSDBillion: 500, type: 'stock' },
+  { symbol: 'MA', name: '마스터카드', nameEn: 'Mastercard Inc.', exchange: 'NYSE', sector: '금융', approxCapUSDBillion: 450, type: 'stock' },
+  { symbol: 'JNJ', name: '존슨앤존슨', nameEn: 'Johnson & Johnson', exchange: 'NYSE', sector: '바이오', approxCapUSDBillion: 380, type: 'stock' },
   { symbol: 'QQQ', name: '인베스코 QQQ', nameEn: 'Invesco QQQ Trust', exchange: 'NASDAQ', sector: 'ETF', approxCapUSDBillion: 280, type: 'etf' },
   { symbol: 'SPY', name: 'SPDR S&P 500', nameEn: 'SPDR S&P 500 ETF', exchange: 'NYSE', sector: 'ETF', approxCapUSDBillion: 560, type: 'etf' },
   { symbol: 'SOXL', name: '필라델피아반도체 3X', nameEn: 'Direxion Daily Semi 3X', exchange: 'NYSE', sector: 'ETF', approxCapUSDBillion: 12, type: 'etf' },
@@ -173,7 +187,7 @@ class MarketHeatmapService {
     prev1D: number;
     prev1M: number;
     prev1Y: number;
-    status: 'realtime' | 'delayed_15m' | 'closed';
+    status: 'realtime' | 'delayed_15m' | 'closed' | 'unknown';
   } | null> {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1y`;
     try {
@@ -196,22 +210,33 @@ class MarketHeatmapService {
 
       const quotes = result.indicators?.quote?.[0]?.close || [];
       const valid = quotes.filter((c: any) => typeof c === 'number' && !isNaN(c));
-      if (valid.length < 2) return null;
+      if (valid.length === 0) return null; // No price data at all
 
       const meta = result.meta || {};
       const curr = Number((meta.regularMarketPrice || valid[valid.length - 1]).toFixed(2));
-      const prev1D = Number((valid[valid.length - 2] || curr).toFixed(2));
       
-      // ~21 trading days ago for 1 month
-      const idx1M = Math.max(0, valid.length - 22);
-      const prev1M = Number((valid[idx1M] || prev1D).toFixed(2));
-
-      // 1 year ago (start of array)
+      // Default to current price if historical data points are missing
+      const prev1D = valid.length >= 2 ? Number((valid[valid.length - 2] || curr).toFixed(2)) : curr;
+      const prev1M = valid.length >= 22 ? Number((valid[Math.max(0, valid.length - 22)] || prev1D).toFixed(2)) : prev1D;
       const prev1Y = Number((valid[0] || prev1M).toFixed(2));
 
-      const change1D = Number((((curr - prev1D) / prev1D) * 100).toFixed(2));
-      const change1M = Number((((curr - prev1M) / prev1M) * 100).toFixed(2));
-      const change1Y = Number((((curr - prev1Y) / prev1Y) * 100).toFixed(2));
+      const change1D = Number((((curr - prev1D) / (prev1D || curr)) * 100).toFixed(2));
+      const change1M = Number((((curr - prev1M) / (prev1M || curr)) * 100).toFixed(2));
+      const change1Y = Number((((curr - prev1Y) / (prev1Y || curr)) * 100).toFixed(2));
+
+      let status: 'realtime' | 'delayed_15m' | 'closed' | 'unknown' = 'unknown';
+      const nowTs = Date.now() / 1000;
+      if (meta.regularMarketTime) {
+          const lastTime = meta.regularMarketTime;
+          // Regular market hours are usually when status is 'REGULAR'
+          if (meta.tradingPeriod === 'REGULAR' && (nowTs - lastTime < 60 * 20)) {
+              status = 'realtime';
+          } else if (meta.tradingPeriod === 'POST' || (nowTs - lastTime > 60 * 60 * 2)) {
+              status = 'closed';
+          } else {
+              status = 'delayed_15m'; // Yahoo provides 15m delayed data for free tier
+          }
+      }
 
       return {
         price: curr,
@@ -221,7 +246,7 @@ class MarketHeatmapService {
         prev1D,
         prev1M,
         prev1Y,
-        status: 'delayed_15m',
+        status,
       };
     } catch {
       return null;
@@ -291,8 +316,8 @@ class MarketHeatmapService {
             changePercent1D: returns.change1D,
             changePercent1M: returns.change1M,
             changePercent1Y: returns.change1Y,
-            delayStatus: isKrOpen ? ('realtime' as const) : ('delayed_15m' as const),
-            lastUpdated: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+            delayStatus: returns.status,
+            lastUpdated: returns.status === 'closed' ? '장 종료' : new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
             baseline: {
               price1DPrev: returns.prev1D,
               price1MPrev: returns.prev1M,

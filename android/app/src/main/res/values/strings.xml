@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">byeongdol-investment</string>
+    <string name="title_activity_main">byeongdol-investment</string>
+    <string name="package_name">com.byeongdol.investment</string>
+    <string name="custom_url_scheme">com.byeongdol.investment</string>
+</resources>
