@@ -83,15 +83,23 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
     };
   }, [postId]);
 
+  const handleBack = () => {
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      navigateToPostList();
+    }
+  };
+
   if (!post) {
     return (
       <div className="py-20 text-center space-y-3">
         <p className="text-slate-400">게시글을 찾을 수 없거나 이미 삭제되었습니다.</p>
         <button
-          onClick={navigateToPostList}
+          onClick={handleBack}
           className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors"
         >
-          커뮤니티 목록으로 가기
+          이전 화면으로 돌아가기
         </button>
       </div>
     );
@@ -220,11 +228,11 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
       {/* Back button & Action Menu */}
       <div className="flex items-center justify-between">
         <button
-          onClick={navigateToPostList}
+          onClick={handleBack}
           className="flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer"
         >
           <ArrowLeft className="w-4 h-4" />
-          <span>커뮤니티 목록으로 돌아가기</span>
+          <span>이전 화면으로 돌아가기</span>
         </button>
 
         <div className="flex items-center gap-2">
@@ -358,8 +366,11 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
                 <span className="text-[11px] font-bold px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-500">
                   {post.author.badge}
                 </span>
+                <span className="text-[11px] font-bold px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-500">
+                  {post.author.title}
+                </span>
               </div>
-              <span className="text-xs text-slate-400">병돌 인베스트먼트 회원</span>
+              <span className="text-xs text-slate-400">Lv.{post.author.level}</span>
             </div>
           </div>
         </div>

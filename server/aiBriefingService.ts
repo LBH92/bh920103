@@ -319,26 +319,43 @@ ${JSON.stringify(communityData, null, 2)}
   let briefingContent = '';
 
   if (userGenAI?.client) {
-    try {
-      console.log(`[AiBriefingService] Calling User Gemini (${userGenAI.model}) for query: "${query}" (${symbol})`);
-      const response = await userGenAI.client.models.generateContent({
-        model: userGenAI.model || 'gemini-3.8-flash',
-        contents: [
-          { role: 'user', parts: [{ text: `${systemPrompt}\n\n${userContext}` }] }
-        ],
-        config: {
-          temperature: 0.2, // Low temperature for high factual accuracy
-          maxOutputTokens: 1000,
-        },
-      });
+      const maxRetries = 3;
+      let attempt = 0;
+      let response: any;
+
+      while (attempt < maxRetries) {
+        try {
+          console.log(`[AiBriefingService] Calling User Gemini (${userGenAI.model}) for query: "${query}" (${symbol}), attempt: ${attempt + 1}`);
+          response = await userGenAI.client.models.generateContent({
+            model: userGenAI.model || 'gemini-3.8-flash',
+            contents: [
+              { role: 'user', parts: [{ text: `${systemPrompt}\n\n${userContext}` }] }
+            ],
+            config: {
+              temperature: 0.2, // Low temperature for high factual accuracy
+              maxOutputTokens: 1000,
+            },
+          });
+          break; // Success
+        } catch (err: any) {
+          attempt++;
+          const status = err.status || (err.response?.status);
+          const isRetryable = status === 503 || status === 429 || (status && status >= 500 && status < 600);
+
+          if (isRetryable && attempt < maxRetries) {
+            const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+            console.warn(`[AiBriefingService] Attempt ${attempt} failed with ${status}. Retrying in ${delay.toFixed(0)}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+          } else {
+            console.warn('[AiBriefingService] User Gemini API call error:', err);
+            throw new Error(`개인 Gemini API 호출 중 오류가 발생했습니다: ${err.message || String(err)}`);
+          }
+        }
+      }
 
       if (response && response.text) {
         briefingContent = response.text.trim();
       }
-    } catch (err: any) {
-      console.warn('[AiBriefingService] User Gemini API call error:', err);
-      throw new Error(`개인 Gemini API 호출 중 오류가 발생했습니다: ${err.message || String(err)}`);
-    }
   } else {
     // If user has not connected personal AI, strictly fail - do not call operator API
     throw new Error('AI_NOT_CONNECTED: 개인 AI 계정이 연결되어 있지 않습니다. 프로필 화면에서 본인의 Google AI Studio Gemini API 키를 등록한 후 이용해주세요.');

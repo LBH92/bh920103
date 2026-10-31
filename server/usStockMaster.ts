@@ -115,12 +115,14 @@ US_STOCK_MASTER.forEach(item => {
   tickerMap.set(item.symbol.toUpperCase(), item);
 });
 
+import { matchHangulSearch } from '../src/utils/hangul';
+
 export const usStockSearchService = {
   /**
    * Search US Stocks by Query (Ticker, English Name, Korean Name, Hangul Chosung, Aliases)
    */
   async search(query: string, limit: number = 20): Promise<USStockMasterItem[]> {
-    const q = query.trim().toLowerCase();
+    const q = query.trim();
     if (!q) return [];
 
     // 1. Search local curated master
@@ -128,12 +130,12 @@ export const usStockSearchService = {
     const seenSymbols = new Set<string>();
 
     for (const item of US_STOCK_MASTER) {
-      const matchTicker = item.symbol.toLowerCase().includes(q);
-      const matchNameEn = item.nameEn.toLowerCase().includes(q);
-      const matchNameKr = item.name.toLowerCase().includes(q);
-      const matchAlias = item.aliases.some(a => a.toLowerCase().includes(q));
+      const match = matchHangulSearch(item.symbol, q) ||
+                    matchHangulSearch(item.nameEn, q) ||
+                    matchHangulSearch(item.name, q) ||
+                    item.aliases.some(a => matchHangulSearch(a, q));
 
-      if (matchTicker || matchNameEn || matchNameKr || matchAlias) {
+      if (match) {
         results.push(item);
         seenSymbols.add(item.symbol);
       }

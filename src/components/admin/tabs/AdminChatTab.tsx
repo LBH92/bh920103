@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { ChatMessage, UserRole } from '../../../types';
 import { ConfirmActionModal } from '../modals/ConfirmActionModal';
+import { formatKSTDateTime } from '../../../utils/dateUtils';
 
 interface AdminChatTabProps {
   chatMessages: ChatMessage[];
@@ -203,7 +204,7 @@ export const AdminChatTab: React.FC<AdminChatTabProps> = ({
                           </span>
                         )}
                         <span className="text-[10px] text-slate-400 font-mono">
-                          {msg.timestamp}
+                          {formatKSTDateTime(msg.timestamp)}
                         </span>
                         {suspicious && (
                           <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500 text-white flex items-center gap-1">

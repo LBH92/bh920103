@@ -1,8 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { auth } from '../services/firebase';
 import { firebaseRepository } from '../services/firebaseRepository';
-import { Stock, StockIndex, ExchangeRate, MarketEvent, UserProfile, ViewTab } from '../types';
+import { Stock, StockIndex, ExchangeRate, MarketEvent, UserProfile, ViewTab, PriceAlert } from '../types';
 import { INITIAL_STOCKS, INITIAL_INDICES, INITIAL_EXCHANGE_RATE } from '../services/mockData';
 import { storageService } from '../services/storageService';
 import { stockRepository, StockDataSourceType } from '../services/stockRepository';
@@ -10,6 +10,7 @@ import { stockCache } from '../services/stockCache';
 import { notificationService } from '../services/notificationService';
 import { fcmPushService } from '../services/fcmPushService';
 import { isPreviewEnvironment } from '../utils/environment';
+import { crashlyticsService } from '../services/crashlyticsService';
 
 export interface ToastMessage {
   id: string;
@@ -69,6 +70,7 @@ interface AppContextType {
   isAuthenticated: boolean;
   isAuthLoading: boolean;
   user: UserProfile | null;
+  isAdmin: boolean;
   updateUser: (updates: Partial<UserProfile>) => void;
   logout: () => Promise<void>;
   requireAuth: (actionName?: string) => boolean;
@@ -85,6 +87,12 @@ interface AppContextType {
   toggleSideChat: () => void;
   unreadChatCount: number;
   setUnreadChatCount: React.Dispatch<React.SetStateAction<number>>;
+
+  // Price Alerts (Firestore Real-time Target Price Monitoring)
+  priceAlerts: PriceAlert[];
+  addPriceAlert: (alert: { symbol: string; symbolName: string; targetPrice: number; condition: 'above' | 'below'; note?: string }) => Promise<void>;
+  removePriceAlert: (alertId: string) => Promise<void>;
+  togglePriceAlert: (alertId: string, enabled: boolean) => Promise<void>;
 
   // Toast
   toasts: ToastMessage[];
@@ -139,7 +147,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
   const [communityAuthorFilter, setCommunityAuthorFilter] = useState<string | null>(null);
 
-  const setActiveTab = (tab: ViewTab) => {
+  const setActiveTab = useCallback((tab: ViewTab) => {
     setActiveTabState(tab);
     setSelectedIndexSymbol(null);
     setSelectedSymbol(null);
@@ -147,7 +155,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSelectedPostId(null);
     }
     window.history.pushState(null, '', `/${tab === 'home' ? '' : tab}`);
-  };
+    crashlyticsService.setCustomKey('active_tab', tab);
+    crashlyticsService.logBreadcrumb(`User navigated to tab: ${tab}`);
+  }, []);
 
   const navigateToStock = (symbol: string) => {
     setSelectedSymbol(symbol);
@@ -331,6 +341,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
 
+  // Sync authenticated user context with Firebase Crashlytics
+  useEffect(() => {
+    if (user?.id) {
+      crashlyticsService.setUserId(user.id);
+      crashlyticsService.setCustomKey('user_role', user.role || 'user');
+      crashlyticsService.setCustomKey('user_tier', user.tier || '일반회원');
+      crashlyticsService.logBreadcrumb(`User authenticated: ${user.id} (${user.name})`);
+    } else {
+      crashlyticsService.setUserId(null);
+      crashlyticsService.setCustomKey('user_role', 'guest');
+    }
+  }, [user]);
+
   // Watchlist (Per-User Isolation, Default empty, No mock data)
   const [watchlist, setWatchlist] = useState<string[]>([]);
 
@@ -366,13 +389,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     fetchWatchlistQuotes();
     const interval = setInterval(() => {
       fetchWatchlistQuotes();
-    }, 5000);
+    }, 30000); // Increased to 30s
     return () => clearInterval(interval);
   }, [watchlist.join(',')]);
 
   // Listen to Firebase Auth state
   useEffect(() => {
+    let authTimeout: NodeJS.Timeout;
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      clearTimeout(authTimeout);
       setIsAuthLoading(true);
       if (fbUser) {
         setFirebaseUser(fbUser);
@@ -405,7 +430,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsAuthLoading(false);
     });
 
-    return () => unsubscribe();
+    // Fallback: If auth takes longer than 10s, force stop loading
+    authTimeout = setTimeout(() => {
+      console.warn('[AppContext] Firebase Auth timed out, forcing load completion');
+      setIsAuthLoading(false);
+    }, 10000);
+
+    return () => {
+      unsubscribe();
+      clearTimeout(authTimeout);
+    };
   }, []);
 
   const requireAuth = (actionName?: string): boolean => {
@@ -592,16 +626,133 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  const showToast = (message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
+  const removeToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  const showToast = useCallback((message: string, type: 'success' | 'info' | 'warning' | 'error' = 'info') => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
     setToasts(prev => [...prev, { id, type, message }]);
     setTimeout(() => {
       removeToast(id);
     }, 3500);
+  }, [removeToast]);
+
+  // -------------------------------------------------------------
+  // Price Alerts: Target Price Thresholds in Firestore & Realtime Evaluation
+  // -------------------------------------------------------------
+  const [priceAlerts, setPriceAlerts] = useState<PriceAlert[]>([]);
+  const triggeredAlertIdsRef = useRef<Set<string>>(new Set());
+
+  // Subscribe to user's price alerts from Firestore
+  useEffect(() => {
+    const currentUid = firebaseUser?.uid || user?.id;
+    if (!currentUid) {
+      setPriceAlerts([]);
+      triggeredAlertIdsRef.current.clear();
+      return;
+    }
+
+    const unsubscribe = firebaseRepository.subscribeUserPriceAlerts(currentUid, (alerts) => {
+      setPriceAlerts(alerts);
+      // Synchronize already triggered alerts into the in-memory cache to prevent re-firing
+      alerts.forEach(a => {
+        if (a.isTriggered) {
+          triggeredAlertIdsRef.current.add(a.id);
+        }
+      });
+    });
+
+    return () => unsubscribe();
+  }, [firebaseUser?.uid, user?.id]);
+
+  // Real-time market price crossing evaluation & Toast notification
+  useEffect(() => {
+    if (!priceAlerts.length || !stocks.length) return;
+
+    priceAlerts.forEach(alert => {
+      // Only process enabled alerts that haven't triggered yet
+      if (alert.enabled === false || alert.isTriggered || triggeredAlertIdsRef.current.has(alert.id)) {
+        return;
+      }
+
+      const currentStock = stocks.find(s => s.symbol === alert.symbol);
+      if (!currentStock || !currentStock.price) return;
+
+      const isAboveCrossed = alert.condition === 'above' && currentStock.price >= alert.targetPrice;
+      const isBelowCrossed = alert.condition === 'below' && currentStock.price <= alert.targetPrice;
+
+      if (isAboveCrossed || isBelowCrossed) {
+        // Prevent duplicate toast notifications on subsequent real-time ticks
+        triggeredAlertIdsRef.current.add(alert.id);
+
+        const condLabel = alert.condition === 'above' ? '목표가 돌파(이상)' : '목표가 하락(이하)';
+        const toastType = alert.condition === 'above' ? 'success' : 'warning';
+        
+        // Trigger Toast Notification
+        showToast(
+          `🔔 [${alert.symbolName}] ${condLabel} 도달! 설정가: ${alert.targetPrice.toLocaleString()}원 / 현재가: ${currentStock.price.toLocaleString()}원`,
+          toastType
+        );
+
+        // Update Firestore document with triggered state
+        firebaseRepository.markAlertTriggered(alert.id, currentStock.price).catch(err => {
+          console.warn('[AppContext] Failed to update alert trigger in Firestore:', err);
+        });
+
+        // Add to persistent notification feed
+        const currentUid = firebaseUser?.uid || user?.id;
+        if (currentUid) {
+          notificationService.createNotification(
+            `[${alert.symbolName}] 목표가 도달 알림`,
+            `설정하신 목표 가격 ${alert.targetPrice.toLocaleString()}원에 도달했습니다. (현재 체결가: ${currentStock.price.toLocaleString()}원)`,
+            'price_target',
+            alert.symbol,
+            currentUid,
+            alert.symbolName
+          ).catch(() => {});
+        }
+      }
+    });
+  }, [stocks, priceAlerts]);
+
+  const addPriceAlert = async (alert: { symbol: string; symbolName: string; targetPrice: number; condition: 'above' | 'below'; note?: string }) => {
+    const currentUid = firebaseUser?.uid || user?.id;
+    if (!currentUid) {
+      showToast('로그인 후 가격 알림을 설정할 수 있습니다.', 'warning');
+      setIsAuthModalOpen(true);
+      return;
+    }
+
+    try {
+      await firebaseRepository.createAlert(currentUid, alert);
+      showToast(
+        `[${alert.symbolName}] 목표가 ${alert.targetPrice.toLocaleString()}원 ${alert.condition === 'above' ? '이상' : '이하'} 알림이 등록되었습니다.`,
+        'success'
+      );
+    } catch (err: any) {
+      showToast('가격 알림 등록 중 오류가 발생했습니다.', 'error');
+      throw err;
+    }
   };
 
-  const removeToast = (id: string) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
+  const removePriceAlert = async (alertId: string) => {
+    try {
+      await firebaseRepository.deleteAlert(alertId);
+      triggeredAlertIdsRef.current.delete(alertId);
+      showToast('가격 알림이 삭제되었습니다.', 'info');
+    } catch {
+      showToast('가격 알림 삭제에 실패했습니다.', 'error');
+    }
+  };
+
+  const togglePriceAlert = async (alertId: string, enabled: boolean) => {
+    try {
+      await firebaseRepository.toggleAlertEnabled(alertId, enabled);
+      showToast(enabled ? '가격 알림이 활성화되었습니다.' : '가격 알림이 비활성화되었습니다.', 'info');
+    } catch {
+      showToast('알림 상태 변경 실패', 'error');
+    }
   };
 
   // -------------------------------------------------------------
@@ -691,6 +842,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isAuthenticated: !!firebaseUser,
         isAuthLoading,
         user,
+        isAdmin: !!(user && ['admin', 'superadmin', 'moderator'].includes(user.role || '')),
         updateUser,
         logout,
         requireAuth,
@@ -703,6 +855,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         toggleSideChat,
         unreadChatCount,
         setUnreadChatCount,
+        priceAlerts,
+        addPriceAlert,
+        removePriceAlert,
+        togglePriceAlert,
         toasts,
         showToast,
         removeToast,

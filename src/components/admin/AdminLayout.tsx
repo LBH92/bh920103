@@ -26,6 +26,7 @@ import { AdminSubTab, UserProfile, UserRole } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { auth } from '../../services/firebase';
 import { signOut } from 'firebase/auth';
+import { KstClock } from '../common/KstClock';
 
 interface AdminLayoutProps {
   activeTab: AdminSubTab;
@@ -60,6 +61,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
     { id: 'logs', label: '관리자 로그', icon: <Lock className="w-4 h-4" /> },
     { id: 'inquiries', label: '문의 관리', icon: <MessageSquare className="w-4 h-4" />, minRole: 'admin' },
     { id: 'ads', label: '광고 관리', icon: <Megaphone className="w-4 h-4" />, minRole: 'admin' },
+    { id: 'ads_stats', label: '광고 통계', icon: <TrendingUp className="w-4 h-4" />, minRole: 'admin' },
     { id: 'settings', label: '시스템 설정', icon: <Sliders className="w-4 h-4" />, minRole: 'superadmin' },
   ];
 
@@ -120,6 +122,11 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
 
           {/* Right Admin Profile & Actions */}
           <div className="flex items-center gap-3 sm:gap-4">
+            {/* Live KST Clock (Unified standard with Home Screen) */}
+            <div className="hidden md:flex items-center">
+              <KstClock showIcon={true} className="text-xs font-mono text-slate-600 dark:text-slate-300 px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200/50 dark:border-slate-700/50 flex items-center gap-1.5 shadow-xs" />
+            </div>
+
             {/* Quick Link: "사이트 바로가기" */}
             <button
               onClick={onGoToSite}

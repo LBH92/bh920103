@@ -1,4 +1,5 @@
 import { Stock, CommunityPost, CommentItem, ChatMessage, PriceAlert, UserProfile, AdminReport, MarketEvent, ReportItem, StockSmartAlert, ChatRoomInfo } from '../types';
+import { INITIAL_POSTS } from './mockData';
 
 const STORAGE_KEYS = {
   WATCHLIST: 'bd_stock_watchlist',
@@ -63,7 +64,7 @@ export const storageService = {
 
   // Community Posts
   getPosts(): CommunityPost[] {
-    return loadFromStorage<CommunityPost[]>(STORAGE_KEYS.POSTS, []);
+    return loadFromStorage<CommunityPost[]>(STORAGE_KEYS.POSTS, INITIAL_POSTS);
   },
 
   getPostById(id: string): CommunityPost | undefined {

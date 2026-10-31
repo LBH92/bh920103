@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { AdminReport, UserRole } from '../../../types';
 import { ReportDetailModal } from '../modals/ReportDetailModal';
+import { formatKSTDateTime } from '../../../utils/dateUtils';
 
 interface AdminReportsTabProps {
   reports: AdminReport[];
@@ -182,7 +183,7 @@ export const AdminReportsTab: React.FC<AdminReportsTabProps> = ({
 
                 {/* Date */}
                 <td className="py-3.5 px-4 text-slate-400 font-mono whitespace-nowrap">
-                  {r.createdAt}
+                  {formatKSTDateTime(r.createdAt)}
                 </td>
 
                 {/* Status */}
@@ -249,7 +250,7 @@ export const AdminReportsTab: React.FC<AdminReportsTabProps> = ({
 
             <div className="flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-slate-100 dark:border-slate-800">
               <span>신고자: {r.reportedBy}</span>
-              <span className="font-mono text-[10px]">{r.createdAt}</span>
+              <span className="font-mono text-[10px]">{formatKSTDateTime(r.createdAt)}</span>
             </div>
           </div>
         ))}

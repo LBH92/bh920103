@@ -11,6 +11,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { AdminLogItem, UserRole } from '../../../types';
+import { formatKSTDateTime } from '../../../utils/dateUtils';
 
 interface AdminLogsTabProps {
   logs: AdminLogItem[];
@@ -124,7 +125,7 @@ export const AdminLogsTab: React.FC<AdminLogsTabProps> = ({
               <tr key={l.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
                 {/* Timestamp */}
                 <td className="py-3 px-4 whitespace-nowrap text-slate-400 font-mono text-[11px]">
-                  {l.createdAt}
+                  {formatKSTDateTime(l.createdAt)}
                 </td>
 
                 {/* Admin */}

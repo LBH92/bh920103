@@ -13,6 +13,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Stock } from '../../types';
 import { PriceBadge } from '../common/PriceBadge';
+import { MarketBadge } from '../common/MarketBadge';
 import { stockRepository } from '../../services/stockRepository';
 import { extractChosung, isChosungQuery } from '../../utils/hangul';
 import { MockTradeModal } from '../portfolio/MockTradeModal';
@@ -48,7 +49,7 @@ export const SearchModal: React.FC = () => {
     }
   }, [isSearchOpen]);
 
-  // Execute fast unified search via stockRepository
+  // Execute fast unified search via stockRepository with debounce
   useEffect(() => {
     if (!query.trim()) {
       setSearchResults([]);
@@ -57,15 +58,17 @@ export const SearchModal: React.FC = () => {
     }
 
     let isSubscribed = true;
-    stockRepository.searchStocks({ query, market: marketFilter, limit: 16 }).then(results => {
+    const handler = setTimeout(async () => {
+      const results = await stockRepository.searchStocks({ query, market: marketFilter, limit: 16 });
       if (isSubscribed) {
         setSearchResults(results);
         setSelectedIndex(0);
       }
-    });
+    }, 300);
 
     return () => {
       isSubscribed = false;
+      clearTimeout(handler);
     };
   }, [query, marketFilter]);
 
@@ -261,15 +264,8 @@ export const SearchModal: React.FC = () => {
                             </span>
 
                             {/* 3. 시장 / 거래소 / 상품 유형 */}
-                            <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                              stock.market === 'US'
-                                ? 'bg-purple-500/10 text-purple-500 border border-purple-500/20'
-                                : stock.market === 'KOSPI'
-                                ? 'bg-indigo-500/10 text-indigo-500 border border-indigo-500/20'
-                                : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
-                            }`}>
-                              {stock.market === 'US' ? (stock.exchange || 'US') : stock.market}
-                            </span>
+                            <MarketBadge market={stock.market} exchange={stock.exchange} />
+
 
                             {stock.productType && (
                               <span className={`text-[9px] font-bold px-1 py-0.2 rounded border ${

@@ -23,18 +23,35 @@ import {
   Edit2,
   Smartphone,
   Send,
-  Radio
+  Radio,
+  Target
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { AppNotification, UserAlertRule, AlertRuleType } from '../../types';
+import { AppNotification, UserAlertRule, AlertRuleType, Stock } from '../../types';
 import { notificationService } from '../../services/notificationService';
 import { fcmPushService, PushStatus } from '../../services/fcmPushService';
+import { SetPriceAlertModal } from '../stocks/SetPriceAlertModal';
 
 export const AlertsView: React.FC = () => {
-  const { stocks, watchlist, navigateToStock, setActiveTab, showToast, user } = useApp();
+  const { 
+    stocks, 
+    watchlist, 
+    navigateToStock, 
+    setActiveTab, 
+    showToast, 
+    user,
+    priceAlerts,
+    addPriceAlert,
+    removePriceAlert,
+    togglePriceAlert
+  } = useApp();
 
-  // Top Level Tab: 'notifications' (알림 피드) vs 'rules' (조건 설정) vs 'push_settings' (푸시 알림 설정)
-  const [activeMainTab, setActiveMainTab] = useState<'notifications' | 'rules' | 'push_settings'>('notifications');
+  // Top Level Tab: 'notifications' (알림 피드) vs 'price_alerts' (실시간 목표가 알림) vs 'rules' (조건 설정) vs 'push_settings' (푸시 알림 설정)
+  const [activeMainTab, setActiveMainTab] = useState<'notifications' | 'price_alerts' | 'rules' | 'push_settings'>('price_alerts');
+
+  // Price Alert Modal State
+  const [isPriceAlertModalOpen, setIsPriceAlertModalOpen] = useState(false);
+  const [modalStock, setModalStock] = useState<Stock | null>(null);
 
   // Push Notification State
   const [pushStatus, setPushStatus] = useState<PushStatus | null>(null);
@@ -492,6 +509,23 @@ export const AlertsView: React.FC = () => {
         </button>
 
         <button
+          onClick={() => setActiveMainTab('price_alerts')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+            activeMainTab === 'price_alerts'
+              ? 'bg-white dark:bg-[#1a1f2e] text-slate-900 dark:text-white shadow-xs'
+              : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+          }`}
+        >
+          <Target className="w-4 h-4 text-amber-500" />
+          <span>실시간 목표가 알림</span>
+          {priceAlerts.length > 0 && (
+            <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px] font-bold">
+              {priceAlerts.filter(a => !a.isTriggered && a.enabled !== false).length}개 감시 중
+            </span>
+          )}
+        </button>
+
+        <button
           onClick={() => setActiveMainTab('rules')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
             activeMainTab === 'rules'
@@ -500,7 +534,7 @@ export const AlertsView: React.FC = () => {
           }`}
         >
           <Sliders className="w-4 h-4" />
-          <span>관심종목 알림 조건 설정 ({rules.length}개)</span>
+          <span>관심종목 알림 조건 ({rules.length}개)</span>
         </button>
 
         <button
@@ -695,6 +729,218 @@ export const AlertsView: React.FC = () => {
                         <span>상세보기</span>
                         <ChevronRight className="w-4 h-4" />
                       </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* SECTION PRICE_ALERTS: 실시간 목표가 알림 관리 (Firestore) */}
+      {/* ======================================================== */}
+      {activeMainTab === 'price_alerts' && (
+        <div className="space-y-4">
+          <div className="p-5 bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h3 className="font-bold text-base text-slate-900 dark:text-white flex items-center gap-2">
+                <Target className="w-4 h-4 text-amber-500" />
+                <span>종목별 목표가 실시간 알림 (Firestore 동기화)</span>
+              </h3>
+              <p className="text-xs text-slate-400 mt-1">
+                원하는 종목의 목표 가격을 설정하면, 실시간 체결 시세가 해당 가격을 돌파하는 순간 화면 상단에 즉각 토스트 알림을 띄웁니다.
+              </p>
+            </div>
+
+            <button
+              onClick={() => {
+                const targetStock = stocks[0] || null;
+                setModalStock(targetStock);
+                setIsPriceAlertModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-600/20 transition-all cursor-pointer shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>새 목표가 알림 등록</span>
+            </button>
+          </div>
+
+          {/* Quick Metrics */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="p-4 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800">
+              <span className="text-xs font-medium text-slate-500 dark:text-slate-400">총 등록 알림</span>
+              <div className="text-xl font-black font-mono text-slate-900 dark:text-white mt-1">
+                {priceAlerts.length}건
+              </div>
+            </div>
+            <div className="p-4 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800">
+              <span className="text-xs font-medium text-slate-500 dark:text-slate-400">실시간 감시 중</span>
+              <div className="text-xl font-black font-mono text-amber-500 mt-1 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                {priceAlerts.filter(a => !a.isTriggered && a.enabled !== false).length}건
+              </div>
+            </div>
+            <div className="p-4 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800">
+              <span className="text-xs font-medium text-slate-500 dark:text-slate-400">목표가 도달 완료</span>
+              <div className="text-xl font-black font-mono text-emerald-500 mt-1 flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4" />
+                {priceAlerts.filter(a => a.isTriggered).length}건
+              </div>
+            </div>
+          </div>
+
+          {/* Price Alerts List */}
+          {priceAlerts.length === 0 ? (
+            <div className="p-12 text-center bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center mx-auto">
+                <Target className="w-6 h-6" />
+              </div>
+              <h4 className="font-bold text-base text-slate-900 dark:text-white">
+                등록된 목표가 알림이 없습니다.
+              </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
+                종목 상세 화면 또는 상단 버튼을 통해 목표 가격을 설정해보세요. 실시간 시세가 해당 가격에 도달하면 즉각 토스트 알림을 전송합니다.
+              </p>
+              <button
+                onClick={() => {
+                  const targetStock = stocks[0] || null;
+                  setModalStock(targetStock);
+                  setIsPriceAlertModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all"
+              >
+                <Plus className="w-4 h-4" />
+                <span>첫 목표가 알림 설정하기</span>
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {priceAlerts.map(alert => {
+                const currentStock = stocks.find(s => s.symbol === alert.symbol);
+                const currentPrice = currentStock?.price || 0;
+                const diffPct = currentPrice > 0 ? ((alert.targetPrice - currentPrice) / currentPrice) * 100 : 0;
+
+                return (
+                  <div
+                    key={alert.id}
+                    className={`p-4 rounded-2xl border transition-all ${
+                      alert.isTriggered
+                        ? 'bg-emerald-500/5 dark:bg-emerald-950/10 border-emerald-500/30'
+                        : alert.enabled === false
+                        ? 'bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-slate-800 opacity-60'
+                        : 'bg-white dark:bg-[#131722] border-slate-200 dark:border-slate-800 hover:border-amber-500/40 shadow-xs'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4
+                            onClick={() => navigateToStock(alert.symbol)}
+                            className="font-bold text-base text-slate-900 dark:text-white hover:text-rose-500 cursor-pointer transition-colors"
+                          >
+                            {alert.symbolName}
+                          </h4>
+                          <span className="text-xs font-mono text-slate-400">
+                            {alert.symbol}
+                          </span>
+                        </div>
+                        {alert.note && (
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            메모: {alert.note}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => togglePriceAlert(alert.id, !alert.enabled)}
+                          className={`px-2 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                            alert.enabled !== false
+                              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                              : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
+                          }`}
+                          title={alert.enabled !== false ? '알림 비활성화' : '알림 활성화'}
+                        >
+                          {alert.enabled !== false ? 'ON' : 'OFF'}
+                        </button>
+                        <button
+                          onClick={() => removePriceAlert(alert.id)}
+                          className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                          title="알림 삭제"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Price details grid */}
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200/60 dark:border-slate-800/80 mb-3 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-500 dark:text-slate-400 font-medium">알림 조건:</span>
+                        <span className={`px-2 py-0.5 rounded-md font-bold text-[11px] flex items-center gap-1 ${
+                          alert.condition === 'above'
+                            ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20'
+                            : 'bg-blue-500/10 text-blue-500 border border-blue-500/20'
+                        }`}>
+                          {alert.condition === 'above' ? (
+                            <>
+                              <TrendingUp className="w-3 h-3" />
+                              <span>상승 돌파 (이상)</span>
+                            </>
+                          ) : (
+                            <>
+                              <TrendingDown className="w-3 h-3" />
+                              <span>하락 도달 (이하)</span>
+                            </>
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-500 dark:text-slate-400 font-medium">설정 목표가:</span>
+                        <span className="font-mono font-black text-sm text-slate-900 dark:text-white">
+                          {alert.targetPrice.toLocaleString()}원
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-500 dark:text-slate-400 font-medium">실시간 현재가:</span>
+                        <span className="font-mono font-bold text-xs text-slate-700 dark:text-slate-300">
+                          {currentPrice > 0 ? `${currentPrice.toLocaleString()}원` : '-'}
+                          {diffPct !== 0 && (
+                            <span className={`ml-1.5 text-[11px] ${diffPct > 0 ? 'text-rose-500' : 'text-blue-500'}`}>
+                              ({diffPct > 0 ? `+${diffPct.toFixed(1)}%` : `${diffPct.toFixed(1)}%`})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Status Badge */}
+                    <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-100 dark:border-slate-800/60">
+                      <div>
+                        {alert.isTriggered ? (
+                          <span className="inline-flex items-center gap-1 font-bold text-emerald-600 dark:text-emerald-400">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>목표가 도달 완료</span>
+                            {alert.triggeredPrice && (
+                              <span className="font-mono text-slate-400">({alert.triggeredPrice.toLocaleString()}원)</span>
+                            )}
+                          </span>
+                        ) : alert.enabled === false ? (
+                          <span className="text-slate-400">일시 정지됨</span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 font-bold text-amber-500">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                            <span>실시간 호가 감시 중</span>
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-slate-400 font-mono text-[10px]">
+                        {alert.createdAt}
+                      </span>
                     </div>
                   </div>
                 );
@@ -1276,6 +1522,20 @@ export const AlertsView: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Target Price Alert Setting Modal */}
+      {modalStock && (
+        <SetPriceAlertModal
+          isOpen={isPriceAlertModalOpen}
+          onClose={() => {
+            setIsPriceAlertModalOpen(false);
+            setModalStock(null);
+          }}
+          symbol={modalStock.symbol}
+          symbolName={modalStock.name}
+          currentPrice={modalStock.price}
+        />
       )}
     </div>
   );

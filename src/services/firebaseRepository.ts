@@ -17,7 +17,7 @@ import {
   increment
 } from 'firebase/firestore';
 import { db, auth, OperationType, handleFirestoreError } from './firebase';
-import { UserProfile, UserRole, CommunityPost, CommentItem, ChatMessage, PriceAlert, AdminReport, ReportItem, ChatRoomInfo } from '../types';
+import { UserProfile, UserRole, CommunityPost, CommentItem, ChatMessage, PriceAlert, AdminReport, ReportItem, ChatRoomInfo, WatchlistBuyEntry } from '../types';
 
 export const firebaseRepository = {
   // 1. Users
@@ -25,20 +25,26 @@ export const firebaseRepository = {
     const userRef = doc(db, 'users', uid);
     try {
       const snap = await getDoc(userRef);
-      const isOwnerAdmin = email === 'byunghyunlim92@gmail.com';
+      const isOwnerAdmin = email === 'byunghyunlim92@gmail.com' || uid === 'lr018vf8CcW5fAv707vsl77qJy53';
       if (!snap.exists()) {
         const newUser: UserProfile = {
           id: uid,
           email,
-          name: displayName || email.split('@')[0],
+          name: displayName || (isOwnerAdmin ? '총괄관리자 (임병현)' : email.split('@')[0]),
           avatar: photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
-          role: isOwnerAdmin ? 'admin' : 'user',
-          tier: isOwnerAdmin ? '총괄관리자' : '일반회원',
+          role: isOwnerAdmin ? 'superadmin' : 'user',
+          tier: isOwnerAdmin ? '최고 관리자' : '일반회원',
           joinedDate: new Date().toLocaleDateString('ko-KR'),
-          bio: '스마트한 가치 투자를 지향합니다.',
+          bio: isOwnerAdmin ? 'Stock Insight 총괄 시스템 관리자' : '스마트한 가치 투자를 지향합니다.',
           postCount: 0,
           commentCount: 0,
           winRate: 70,
+          level: 1,
+          title: '주린이',
+          badge: '',
+          badges: [],
+          status: 'active',
+          chatRestricted: false,
         };
         await setDoc(userRef, {
           uid,
@@ -47,45 +53,87 @@ export const firebaseRepository = {
           displayName: newUser.name,
           photoURL: newUser.avatar,
           role: newUser.role,
+          tier: newUser.tier,
+          level: 1,
+          title: '주린이',
+          badge: '',
+          badges: [],
           createdAt: new Date().toISOString(),
           lastLoginAt: new Date().toISOString(),
           isActive: true,
           status: 'active',
+          chatRestricted: false,
         });
         return newUser;
       } else {
         const data = snap.data();
-        await updateDoc(userRef, {
-          lastLoginAt: new Date().toISOString(),
-        });
+        
+        // Auto-heal superadmin account: ensure chat restrictions are permanently removed
+        if (isOwnerAdmin) {
+          if (data.chatRestricted || data.chatMutedUntil) {
+            await updateDoc(userRef, {
+              chatRestricted: false,
+              chatMutedUntil: null,
+              lastLoginAt: new Date().toISOString(),
+            }).catch(() => {});
+          } else {
+            await updateDoc(userRef, {
+              lastLoginAt: new Date().toISOString(),
+            }).catch(() => {});
+          }
+          // Ensure any lingering restriction document is deleted
+          await Promise.allSettled([
+            deleteDoc(doc(db, 'chatRestrictions', uid)),
+            deleteDoc(doc(db, 'chat_restrictions', uid)),
+          ]);
+        } else {
+          await updateDoc(userRef, {
+            lastLoginAt: new Date().toISOString(),
+          }).catch(() => {});
+        }
+
         return {
           id: uid,
-          email: data.email,
-          name: data.nickname || data.displayName || '투자자',
+          email: data.email || email,
+          name: data.nickname || data.displayName || (isOwnerAdmin ? '총괄관리자 (임병현)' : '투자자'),
           avatar: data.photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
-          role: isOwnerAdmin ? 'admin' : (data.role || 'user'),
-          tier: isOwnerAdmin ? '총괄관리자' : (data.tier || '일반회원'),
+          role: isOwnerAdmin ? 'superadmin' : (data.role || 'user'),
+          tier: isOwnerAdmin ? '최고 관리자' : (data.tier || '일반회원'),
           joinedDate: data.createdAt ? new Date(data.createdAt).toLocaleDateString('ko-KR') : '2026.01.15',
-          bio: data.bio || '스마트한 가치 투자를 지향합니다.',
+          bio: data.bio || (isOwnerAdmin ? 'Stock Insight 총괄 시스템 관리자' : '스마트한 가치 투자를 지향합니다.'),
           postCount: data.postCount || 0,
           commentCount: data.commentCount || 0,
           winRate: data.winRate || 70,
+          status: data.status || 'active',
+          chatRestricted: isOwnerAdmin ? false : Boolean(data.chatRestricted),
+          chatMutedUntil: isOwnerAdmin ? undefined : data.chatMutedUntil,
+          level: data.level || 1,
+          title: data.title || '주린이',
+          badge: data.badge || '',
+          badges: data.badges || [],
         };
       }
     } catch (err) {
       console.warn('Firebase user sync failed, using local profile:', err);
+      const isOwnerAdmin = email === 'byunghyunlim92@gmail.com' || uid === 'lr018vf8CcW5fAv707vsl77qJy53';
       return {
         id: uid,
         email,
-        name: displayName || '병돌투자자',
+        name: displayName || (isOwnerAdmin ? '총괄관리자 (임병현)' : '병돌투자자'),
         avatar: photoURL || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
-        role: email === 'byunghyunlim92@gmail.com' ? 'admin' : 'user',
-        tier: email === 'byunghyunlim92@gmail.com' ? '총괄관리자' : '다이아 VIP',
-        joinedDate: '2026.01.15',
-        bio: '데이터 기반 퀀트 & 모멘텀 스윙 트레이더.',
-        postCount: 14,
-        commentCount: 86,
-        winRate: 72.5,
+        role: isOwnerAdmin ? 'superadmin' : 'user',
+        tier: isOwnerAdmin ? '최고 관리자' : '일반회원',
+        joinedDate: '2026.01.01',
+        bio: '스마트한 가치 투자를 지향합니다.',
+        postCount: 0,
+        commentCount: 0,
+        winRate: 70,
+        status: 'active',
+        chatRestricted: false,
+        level: 1,
+        title: '주린이',
+        badge: '',
+        badges: [],
       };
     }
   },
@@ -121,6 +169,10 @@ export const firebaseRepository = {
             lastLoginAt: data.lastLoginAt ? new Date(data.lastLoginAt).toLocaleString('ko-KR') : undefined,
             reportedCount: data.reportedCount || 0,
             reportSubmitCount: data.reportSubmitCount || 0,
+            level: data.level || 1,
+            title: data.title || '주린이',
+            badge: data.badge || '',
+            badges: data.badges || [],
           });
         });
         // Guarantee root superadmin presence
@@ -142,6 +194,10 @@ export const firebaseRepository = {
             lastLoginAt: new Date().toLocaleString('ko-KR'),
             reportedCount: 0,
             reportSubmitCount: 0,
+            level: 99,
+            title: '시스템 총괄',
+            badge: '최고 관리자',
+            badges: ['superadmin'],
           });
         }
         callback(list);
@@ -314,23 +370,26 @@ export const firebaseRepository = {
   // 3. Community Posts & Comments
   async getPosts(): Promise<CommunityPost[]> {
     try {
-      const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100), where('isDeleted', '!=', true));
+      const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100));
       const snap = await getDocs(q);
       const list: CommunityPost[] = [];
       snap.forEach(docSnap => {
         const d = docSnap.data();
+        if (d.isDeleted) return;
         list.push({
           id: docSnap.id,
           author: {
-            id: d.authorId,
+            id: d.authorId || 'anon',
             name: d.authorName || '투자자',
             avatar: d.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
             badge: d.authorBadge || '정회원',
             tier: d.authorTier || '골드',
+            level: d.authorLevel || 0,
+            title: d.authorTitle || '주린이',
           },
           category: d.category || 'free',
-          title: d.title,
-          content: d.content,
+          title: d.title || '제목 없음',
+          content: d.content || '',
           symbol: d.stockSymbol,
           symbolName: d.stockName || d.stockSymbolName,
           likes: d.likeCount || 0,
@@ -356,13 +415,14 @@ export const firebaseRepository = {
     errorCallback?: (error: any) => void
   ): () => void {
     try {
-      const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100), where('isDeleted', '!=', true));
+      const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100));
       return onSnapshot(
         q,
         snap => {
           const list: CommunityPost[] = [];
           snap.forEach(docSnap => {
             const d = docSnap.data();
+            if (d.isDeleted) return;
             list.push({
               id: docSnap.id,
               author: {
@@ -371,6 +431,8 @@ export const firebaseRepository = {
                 avatar: d.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
                 badge: d.authorBadge || '정회원',
                 tier: d.authorTier || '골드',
+                level: d.authorLevel || 0,
+                title: d.authorTitle || '주린이',
               },
               category: d.category || 'free',
               title: d.title || '제목 없음',
@@ -421,6 +483,8 @@ export const firebaseRepository = {
           avatar: d.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
           badge: d.authorBadge || '정회원',
           tier: d.authorTier || '골드',
+          level: d.authorLevel || 0,
+          title: d.authorTitle || '주린이',
         },
         category: d.category || 'free',
         title: d.title,
@@ -454,6 +518,8 @@ export const firebaseRepository = {
         authorAvatar: post.author.avatar,
         authorBadge: post.author.badge,
         authorTier: post.author.tier,
+        authorLevel: post.author.level,
+        authorTitle: post.author.title,
         category: post.category,
         title: post.title,
         content: post.content,
@@ -470,6 +536,12 @@ export const firebaseRepository = {
         isDeleted: false,
         tags: post.tags || [],
       });
+      // Server-side verification
+      fetch('/api/user/verify-activity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: post.author.id, activityType: 'post' }),
+      }).catch(console.error);
       return docRef.id;
     } catch (err) {
       console.warn('Firebase create post failed:', err);
@@ -571,6 +643,12 @@ export const firebaseRepository = {
           comments: curComments,
           commentCount: curComments.length,
         });
+        // Server-side verification
+        fetch('/api/user/verify-activity', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uid: comment.author.id, activityType: 'comment' }),
+        }).catch(console.error);
       }
     } catch (err) {
       console.warn('Firebase addComment failed:', err);
@@ -933,31 +1011,41 @@ export const firebaseRepository = {
   },
 
   async restrictChatUser(uid: string, reason: string, adminUid: string): Promise<void> {
-    try {
-      const docRef = doc(db, 'chatRestrictions', uid);
-      await setDoc(docRef, {
+    if (uid === 'lr018vf8CcW5fAv707vsl77qJy53') {
+      throw new Error('최고 운영자 계정은 채팅을 제한할 수 없습니다.');
+    }
+    const docRef = doc(db, 'chatRestrictions', uid);
+    const userRef = doc(db, 'users', uid);
+    await Promise.all([
+      setDoc(docRef, {
         uid,
         reason,
         restrictedBy: adminUid,
         createdAt: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.warn('Firebase restrict chat user failed:', err);
-    }
+      }),
+      updateDoc(userRef, {
+        chatRestricted: true,
+        chatMutedUntil: reason || '24시간 발언 제한',
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {})
+    ]);
   },
 
   async unrestrictChatUser(uid: string): Promise<void> {
-    try {
-      await Promise.all([
-        deleteDoc(doc(db, 'chatRestrictions', uid)).catch(() => {}),
-        deleteDoc(doc(db, 'chat_restrictions', uid)).catch(() => {})
-      ]);
-    } catch (err) {
-      console.warn('Firebase unrestrict chat user failed:', err);
-    }
+    const userRef = doc(db, 'users', uid);
+    await Promise.allSettled([
+      deleteDoc(doc(db, 'chatRestrictions', uid)),
+      deleteDoc(doc(db, 'chat_restrictions', uid)),
+      updateDoc(userRef, {
+        chatRestricted: false,
+        chatMutedUntil: null,
+        updatedAt: new Date().toISOString(),
+      })
+    ]);
   },
 
   async isUserChatRestricted(uid: string): Promise<boolean> {
+    if (uid === 'lr018vf8CcW5fAv707vsl77qJy53') return false;
     try {
       const snap = await getDoc(doc(db, 'chatRestrictions', uid));
       return snap.exists();
@@ -974,16 +1062,24 @@ export const firebaseRepository = {
       
       const unsub = onSnapshot(col, snap => {
         const uids: string[] = [];
-        snap.forEach(d => uids.push(d.id));
-        console.log('[firebaseRepository] Restricted users (chatRestrictions):', uids);
+        snap.forEach(d => {
+          if (d.id !== 'lr018vf8CcW5fAv707vsl77qJy53') {
+            uids.push(d.id);
+          }
+        });
         
         // Check legacy
         getDocs(colLegacy).then(snapLegacy => {
-            if (!snapLegacy.empty) {
-                console.warn('[firebaseRepository] Found restricted users in LEGACY chat_restrictions collection!');
-                snapLegacy.forEach(d => { if(!uids.includes(d.id)) uids.push(d.id); });
-            }
-            callback(uids);
+          if (!snapLegacy.empty) {
+            snapLegacy.forEach(d => {
+              if (d.id !== 'lr018vf8CcW5fAv707vsl77qJy53' && !uids.includes(d.id)) {
+                uids.push(d.id);
+              }
+            });
+          }
+          callback(uids);
+        }).catch(() => {
+          callback(uids);
         });
       }, err => {
         console.warn('subscribeChatRestrictions error:', err);
@@ -995,7 +1091,46 @@ export const firebaseRepository = {
     }
   },
 
-  // 5. Alerts
+  // 5. Price Alerts (Target Price Thresholds in Firestore)
+  subscribeUserPriceAlerts(uid: string, onUpdate: (alerts: PriceAlert[]) => void): () => void {
+    if (!uid) return () => {};
+    try {
+      const q = query(collection(db, 'alerts'), where('uid', '==', uid));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        const list: PriceAlert[] = [];
+        snap.forEach(docSnap => {
+          const d = docSnap.data();
+          list.push({
+            id: docSnap.id,
+            uid: d.uid,
+            symbol: d.symbol,
+            symbolName: d.symbolName || d.symbol,
+            targetPrice: Number(d.targetPrice ?? d.value ?? 0),
+            condition: d.condition || 'above',
+            createdAt: d.createdAt ? new Date(d.createdAt).toLocaleDateString('ko-KR') : new Date().toLocaleDateString('ko-KR'),
+            isTriggered: Boolean(d.isTriggered),
+            triggeredAt: d.triggeredAt,
+            triggeredPrice: d.triggeredPrice ? Number(d.triggeredPrice) : undefined,
+            enabled: d.enabled !== false,
+            note: d.note || '',
+          });
+        });
+        // Sort: active first, then by createdAt desc
+        list.sort((a, b) => {
+          if (a.isTriggered !== b.isTriggered) return a.isTriggered ? 1 : -1;
+          return (b.createdAt || '').localeCompare(a.createdAt || '');
+        });
+        onUpdate(list);
+      }, (err) => {
+        console.warn('Firebase subscribeUserPriceAlerts error:', err);
+      });
+      return unsubscribe;
+    } catch (err) {
+      console.warn('Firebase subscribeUserPriceAlerts init error:', err);
+      return () => {};
+    }
+  },
+
   async getUserAlerts(uid: string): Promise<PriceAlert[]> {
     try {
       const q = query(collection(db, 'alerts'), where('uid', '==', uid));
@@ -1005,13 +1140,17 @@ export const firebaseRepository = {
         const d = docSnap.data();
         list.push({
           id: docSnap.id,
+          uid: d.uid,
           symbol: d.symbol,
           symbolName: d.symbolName || d.symbol,
-          targetPrice: d.value,
+          targetPrice: Number(d.targetPrice ?? d.value ?? 0),
           condition: d.condition,
-          createdAt: d.createdAt ? new Date(d.createdAt).toLocaleDateString('ko-KR') : '2026.10.01',
-          isTriggered: false,
-          note: d.note,
+          createdAt: d.createdAt ? new Date(d.createdAt).toLocaleDateString('ko-KR') : new Date().toLocaleDateString('ko-KR'),
+          isTriggered: Boolean(d.isTriggered),
+          triggeredAt: d.triggeredAt,
+          triggeredPrice: d.triggeredPrice ? Number(d.triggeredPrice) : undefined,
+          enabled: d.enabled !== false,
+          note: d.note || '',
         });
       });
       return list;
@@ -1021,23 +1160,48 @@ export const firebaseRepository = {
     }
   },
 
-  async createAlert(uid: string, alert: Omit<PriceAlert, 'id' | 'createdAt' | 'isTriggered'>): Promise<void> {
+  async createAlert(uid: string, alert: { symbol: string; symbolName: string; targetPrice: number; condition: 'above' | 'below'; note?: string }): Promise<string> {
     try {
       const docRef = doc(collection(db, 'alerts'));
+      const targetVal = Number(alert.targetPrice);
       await setDoc(docRef, {
         id: docRef.id,
         uid,
         symbol: alert.symbol,
         symbolName: alert.symbolName,
-        type: 'price',
+        type: 'price_target',
         condition: alert.condition,
-        value: alert.targetPrice,
+        targetPrice: targetVal,
+        value: targetVal,
         enabled: true,
+        isTriggered: false,
         note: alert.note || '',
         createdAt: new Date().toISOString(),
       });
+      return docRef.id;
     } catch (err) {
       console.warn('Firebase create alert failed:', err);
+      throw err;
+    }
+  },
+
+  async markAlertTriggered(alertId: string, triggeredPrice: number): Promise<void> {
+    try {
+      await updateDoc(doc(db, 'alerts', alertId), {
+        isTriggered: true,
+        triggeredAt: new Date().toISOString(),
+        triggeredPrice: Number(triggeredPrice),
+      });
+    } catch (err) {
+      console.warn('Firebase markAlertTriggered failed:', err);
+    }
+  },
+
+  async toggleAlertEnabled(alertId: string, enabled: boolean): Promise<void> {
+    try {
+      await updateDoc(doc(db, 'alerts', alertId), { enabled });
+    } catch (err) {
+      console.warn('Firebase toggleAlertEnabled failed:', err);
     }
   },
 
@@ -1141,6 +1305,57 @@ export const firebaseRepository = {
       }, { merge: true });
     } catch (err) {
       console.warn('Firebase incrementAdStats failed:', err);
+    }
+  },
+
+  async awardBadge(uid: string, badgeId: string): Promise<void> {
+    try {
+      const userRef = doc(db, 'users', uid);
+      const snap = await getDoc(userRef);
+      if (snap.exists()) {
+        const data = snap.data();
+        const badges = data.badges || [];
+        if (!badges.includes(badgeId)) {
+          await updateDoc(userRef, {
+            badges: [...badges, badgeId],
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[firebaseRepository] awardBadge failed:', err);
+    }
+  },
+
+  // 6. User Stock Purchases
+  async getUserStockPurchases(uid: string): Promise<Record<string, WatchlistBuyEntry[]>> {
+    const path = 'userStockPurchases';
+    try {
+      const q = query(collection(db, path), where('uid', '==', uid));
+      const snap = await getDocs(q);
+      const purchases: Record<string, WatchlistBuyEntry[]> = {};
+      snap.forEach(docSnap => {
+        const d = docSnap.data();
+        purchases[d.symbol] = d.buyEntries || [];
+      });
+      return purchases;
+    } catch (err) {
+      console.warn('Firebase get user stock purchases failed:', err);
+      return {};
+    }
+  },
+
+  async saveUserStockPurchases(uid: string, symbol: string, entries: WatchlistBuyEntry[]): Promise<void> {
+    const docId = `${uid}_${symbol}`;
+    try {
+      await setDoc(doc(db, 'userStockPurchases', docId), {
+        uid,
+        symbol,
+        buyEntries: entries,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+    } catch (err) {
+      console.warn('Firebase save user stock purchases error:', err);
     }
   },
 };

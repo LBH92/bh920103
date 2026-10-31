@@ -18,6 +18,9 @@ const app = !getApps().length
     })
   : getApp();
 
+console.log('Firebase Admin Config:', config);
+console.log('Project ID:', config.projectId || 'calm-coder-vkx2q');
+
 export const adminAuth = getAuth(app);
 export const adminDb = config.firestoreDatabaseId
   ? getFirestore(app, config.firestoreDatabaseId)

@@ -440,6 +440,10 @@
     "/systemMetrics/{metricId}": {
       "schema": "SystemMetric",
       "description": "시스템 성능 지표 컬렉션"
+    },
+    "/userGeminiKeys/{uid}": {
+      "schema": "UserGeminiKey",
+      "description": "사용자별 개인 Gemini API 키"
     }
   }
 }

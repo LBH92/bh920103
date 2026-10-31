@@ -13,6 +13,7 @@ import {
 import { AdminNotice, UserRole } from '../../../types';
 import { NoticeEditorModal } from '../modals/NoticeEditorModal';
 import { ConfirmActionModal } from '../modals/ConfirmActionModal';
+import { formatKSTDate } from '../../../utils/dateUtils';
 
 interface AdminNoticesTabProps {
   notices: AdminNotice[];
@@ -116,7 +117,7 @@ export const AdminNoticesTab: React.FC<AdminNoticesTabProps> = ({
                   {notice.author}
                 </span>
                 <span className="text-[10px] text-slate-400 font-mono">
-                  · {notice.createdAt}
+                  · {formatKSTDate(notice.createdAt)}
                 </span>
               </div>
 

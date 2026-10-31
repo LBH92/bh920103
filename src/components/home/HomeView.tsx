@@ -43,32 +43,13 @@ import { MarketEventDetailModal } from '../common/MarketEventDetailModal';
 import { MarketHeatmap } from '../stocks/MarketHeatmap';
 import { MarketSentimentCard } from './MarketSentimentCard';
 import { AdSlot } from '../common/AdSlot';
+import { RollingAdBanner } from '../common/RollingAdBanner';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { firebaseRepository } from '../../services/firebaseRepository';
 
 export const HomeView: React.FC = () => {
-  const [adBanner, setAdBanner] = useState<{ active: boolean; text: string; link: string } | null>(null);
 
-  useEffect(() => {
-    const fetchAd = async () => {
-      const docSnap = await getDoc(doc(db, 'systemConfig', 'ads'));
-      if (docSnap.exists()) {
-        const data = docSnap.data() as any;
-        setAdBanner(data);
-        if (data.active) {
-          firebaseRepository.incrementAdStats('home-banner', 'impressions');
-        }
-      }
-    };
-    fetchAd();
-  }, []);
-
-  const handleAdClick = () => {
-    if (adBanner) {
-      firebaseRepository.incrementAdStats('home-banner', 'clicks');
-    }
-  };
 
   const { 
     indices, 
@@ -119,7 +100,7 @@ export const HomeView: React.FC = () => {
     fetchGlobalMarket();
     const interval = setInterval(() => {
       fetchGlobalMarket();
-    }, 25000);
+    }, 60000); // Increased to 60s
     return () => clearInterval(interval);
   }, []);
 
@@ -184,7 +165,7 @@ export const HomeView: React.FC = () => {
     marketMonitorClient.getEvents().then(res => setLiveMonitorEvents(res)).catch(() => {});
     const interval = setInterval(() => {
       marketMonitorClient.getEvents().then(res => setLiveMonitorEvents(res)).catch(() => {});
-    }, 4500);
+    }, 30000); // Increased to 30s
     return () => clearInterval(interval);
   }, []);
 
@@ -198,26 +179,30 @@ export const HomeView: React.FC = () => {
   const totalDeclineCount = kospi.declineCount + kosdaq.declineCount;
 
   // 3. Market Movers Data (Criteria: 급등 +5% 이상, 급락 -5% 이하, 거래량 급증 200% 이상)
-  // 급등 종목 (+5% 이상)
-  const surgeGainersStrict = [...stocks].filter(s => isSurgeGain(s.changePercent)).sort((a, b) => b.changePercent - a.changePercent);
-  const surgeGainers = surgeGainersStrict.length > 0 
-    ? surgeGainersStrict.slice(0, 5) 
-    : [...stocks].sort((a, b) => b.changePercent - a.changePercent).slice(0, 5);
+  const [surgeGainers, surgeLosers, volumeSurge, popularStocks] = useMemo(() => {
+    // 급등 종목 (+5% 이상)
+    const surgeGainersStrict = [...stocks].filter(s => isSurgeGain(s.changePercent)).sort((a, b) => b.changePercent - a.changePercent);
+    const gainers = surgeGainersStrict.length > 0 
+      ? surgeGainersStrict.slice(0, 5) 
+      : [...stocks].sort((a, b) => b.changePercent - a.changePercent).slice(0, 5);
 
-  // 급락 종목 (-5% 이하)
-  const surgeLosersStrict = [...stocks].filter(s => isSurgeLoss(s.changePercent)).sort((a, b) => a.changePercent - b.changePercent);
-  const surgeLosers = surgeLosersStrict.length > 0 
-    ? surgeLosersStrict.slice(0, 5) 
-    : [...stocks].sort((a, b) => a.changePercent - b.changePercent).slice(0, 5);
+    // 급락 종목 (-5% 이하)
+    const surgeLosersStrict = [...stocks].filter(s => isSurgeLoss(s.changePercent)).sort((a, b) => a.changePercent - b.changePercent);
+    const losers = surgeLosersStrict.length > 0 
+      ? surgeLosersStrict.slice(0, 5) 
+      : [...stocks].sort((a, b) => a.changePercent - b.changePercent).slice(0, 5);
 
-  // 거래량 급증 종목 (평균 대비 200% 이상)
-  const volumeSurgeStrict = [...stocks].filter(s => isVolumeSurge(s.volumeRatio)).sort((a, b) => b.volumeRatio - a.volumeRatio);
-  const volumeSurge = volumeSurgeStrict.length > 0 
-    ? volumeSurgeStrict.slice(0, 5) 
-    : [...stocks].sort((a, b) => b.volumeRatio - a.volumeRatio).slice(0, 5);
+    // 거래량 급증 종목 (평균 대비 200% 이상)
+    const volumeSurgeStrict = [...stocks].filter(s => isVolumeSurge(s.volumeRatio)).sort((a, b) => b.volumeRatio - a.volumeRatio);
+    const volume = volumeSurgeStrict.length > 0 
+      ? volumeSurgeStrict.slice(0, 5) 
+      : [...stocks].sort((a, b) => b.volumeRatio - a.volumeRatio).slice(0, 5);
 
-  // 인기 종목 (거래대금 상위)
-  const popularStocks = [...stocks].sort((a, b) => b.tradingValue - a.tradingValue).slice(0, 5);
+    // 인기 종목 (거래대금 상위)
+    const popular = [...stocks].sort((a, b) => b.tradingValue - a.tradingValue).slice(0, 5);
+    
+    return [gainers, losers, volume, popular];
+  }, [stocks]);
 
   // 10. 사용자의 관심종목
   const watchlistStocks = stocks.filter(s => watchlist.includes(s.symbol));
@@ -326,11 +311,7 @@ export const HomeView: React.FC = () => {
             </div>
           </div>
 
-          {adBanner?.active && (
-            <a href={adBanner.link || '#'} onClick={handleAdClick} className="block my-4 p-4 rounded-xl border border-dashed border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/10 text-center hover:bg-rose-100 dark:hover:bg-rose-900/20 transition-colors">
-              <p className="text-sm font-bold text-rose-600 dark:text-rose-400">{adBanner.text}</p>
-            </a>
-          )}
+          <RollingAdBanner location="top_banner" />
 
           {/* Auto-complete Dropdown */}
           {homeSearchQuery.trim() && (

@@ -19,6 +19,7 @@ import { useApp } from '../../context/AppContext';
 import { Stock } from '../../types';
 import { stockRepository } from '../../services/stockRepository';
 import { PriceBadge } from '../common/PriceBadge';
+import { MarketBadge } from '../common/MarketBadge';
 import { InteractiveStockChart } from './InteractiveStockChart';
 import { OrderBookWidget } from './OrderBookWidget';
 import { StockAiBriefingWidget } from './StockAiBriefingWidget';
@@ -33,6 +34,8 @@ import { MockTradeModal } from '../portfolio/MockTradeModal';
 import { VirtualHoldingModal } from '../portfolio/VirtualHoldingModal';
 import { HistoricalTradingSimulatorModal } from './HistoricalTradingSimulatorModal';
 import { SetPriceAlertModal } from './SetPriceAlertModal';
+import { useStockPurchases } from '../../hooks/useStockPurchases';
+import { WatchlistBuyEntry } from '../../types';
 
 interface StockDetailViewProps {
   symbol: string;
@@ -46,8 +49,11 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
     isWatchlisted, 
     setActiveTab, 
     showToast,
-    requireAuth
+    requireAuth,
+    user
   } = useApp();
+
+  const { purchases } = useStockPurchases(user?.id);
 
   const initialStock = stocks.find(s => s.symbol === symbol);
   const [stockDetail, setStockDetail] = useState<Stock | null>(initialStock || null);
@@ -280,9 +286,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
                 {stock.symbol}
               </span>
               {/* 3. 시장 */}
-              <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 font-mono">
-                {stock.market}
-              </span>
+              <MarketBadge market={stock.market} exchange={stock.exchange} />
               <span className="text-xs text-slate-400 font-medium">
                 {stock.sector}
               </span>
@@ -450,6 +454,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
             stockPrice={stock.price}
             prevClose={stock.prevClose}
             currency={stock.currency}
+            buyEntries={purchases[symbol] || []}
           />
         </div>
 

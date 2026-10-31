@@ -8,6 +8,7 @@ import {
   AlertTriangle 
 } from 'lucide-react';
 import { AdminSettingItem, UserRole } from '../../../types';
+import { formatKSTDateTime } from '../../../utils/dateUtils';
 
 interface AdminSettingsTabProps {
   settings: AdminSettingItem[];
@@ -136,7 +137,7 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
 
               {/* Setting Footer & Save Button */}
               <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
-                <span>수정자: {setting.updatedBy} ({setting.updatedAt})</span>
+                <span>수정자: {setting.updatedBy} ({formatKSTDateTime(setting.updatedAt)})</span>
                 {isSuperAdmin && (
                   <button
                     disabled={!isDirty}

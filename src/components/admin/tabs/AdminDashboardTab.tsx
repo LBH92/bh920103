@@ -19,6 +19,7 @@ import {
 import { adminService } from '../../../services/adminService';
 import { AdminSubTab, UserProfile, CommunityPost, AdminReport, ChatMessage } from '../../../types';
 import { RefreshCw } from 'lucide-react';
+import { formatKSTDateTime, formatKSTDate, getKstParts } from '../../../utils/dateUtils';
 
 interface AdminDashboardTabProps {
   onNavigateTab: (tab: AdminSubTab) => void;
@@ -56,18 +57,15 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
   const recentUsers = users.slice(0, 4);
   const recentPosts = posts.filter(p => p.status !== 'deleted').slice(0, 4);
 
-  // Dynamic 7-day Activity Trend Data from real entities
+  // Dynamic 7-day Activity Trend Data from real entities in KST
   const now = new Date();
   const dayBuckets = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(now);
-    d.setDate(now.getDate() - (6 - i));
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
+    const d = new Date(now.getTime() - (6 - i) * 86400000);
+    const parts = getKstParts(d);
     return {
-      label: i === 6 ? '오늘' : i === 5 ? '어제' : `${d.getMonth() + 1}/${d.getDate()}`,
-      prefix1: `${y}.${m}.${day}`,
-      prefix2: `${y}-${m}-${day}`,
+      label: i === 6 ? '오늘' : i === 5 ? '어제' : `${Number(parts.month)}/${Number(parts.day)}`,
+      prefix1: `${parts.year}.${parts.month}.${parts.day}`,
+      prefix2: `${parts.year}-${parts.month}-${parts.day}`,
     };
   });
 
@@ -491,7 +489,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
                     <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500">
                       {r.reason}
                     </span>
-                    <span className="text-[10px] text-slate-400 font-mono">{r.createdAt}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">{formatKSTDateTime(r.createdAt)}</span>
                   </div>
                   <p className="font-semibold text-slate-800 dark:text-slate-200 line-clamp-1">
                     {r.targetTitle}
@@ -547,7 +545,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
                     }`}>
                       {u.status === 'suspended' ? '정지' : '정상'}
                     </span>
-                    <div className="text-[10px] text-slate-400 mt-0.5 font-mono">{u.joinedDate}</div>
+                    <div className="text-[10px] text-slate-400 mt-0.5 font-mono">{formatKSTDate(u.joinedDate)}</div>
                   </div>
                 </div>
               ))}
@@ -583,7 +581,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
                 <div key={p.id} className="py-2.5 first:pt-0 last:pb-0 space-y-1">
                   <div className="flex items-center justify-between text-[11px]">
                     <span className="font-bold text-slate-700 dark:text-slate-300">{p.author.name}</span>
-                    <span className="text-[10px] text-slate-400 font-mono">{p.createdAt}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">{formatKSTDateTime(p.createdAt)}</span>
                   </div>
                   <p className="font-semibold text-slate-800 dark:text-slate-200 line-clamp-1">
                     {p.title}

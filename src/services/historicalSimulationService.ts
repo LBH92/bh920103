@@ -48,6 +48,37 @@ function saveLocalSimulations(list: HistoricalSimulationRecord[]): void {
 
 export const historicalSimulationService = {
   /**
+   * Helper: Calculate Maximum Drawdown (MDD)
+   * MDD = (Lowest Price after Peak - Peak Price) / Peak Price
+   */
+  calculateMDD(candles: CandleData[]): number {
+    if (candles.length < 2) return 0;
+    let peak = -Infinity;
+    let mdd = 0;
+    for (const candle of candles) {
+      if (candle.high > peak) peak = candle.high;
+      const dd = (candle.low - peak) / peak;
+      if (dd < mdd) mdd = dd;
+    }
+    return Number((mdd * 100).toFixed(2));
+  },
+
+  /**
+   * Helper: Calculate Compound Annual Growth Rate (CAGR)
+   * CAGR = (Ending Value / Beginning Value)^(1/n) - 1
+   * n = years
+   */
+  calculateCAGR(
+    beginningValue: number,
+    endingValue: number,
+    years: number
+  ): number {
+    if (beginningValue <= 0 || years <= 0) return 0;
+    const cagr = Math.pow(endingValue / beginningValue, 1 / years) - 1;
+    return Number((cagr * 100).toFixed(2));
+  },
+
+  /**
    * Run Scenario Analysis on a series of historical candles
    * Strictly evaluates day-by-day starting from entry date.
    */
@@ -66,6 +97,8 @@ export const historicalSimulationService = {
     }>;
     commissionRate?: number; // e.g. 0.00015
     taxRate?: number; // e.g. 0.0018
+    investmentType: 'LUMP_SUM' | 'RECURRING';
+    recurringAmount?: number;
   }): HistoricalSimulationScenario[] {
     const {
       entryDate,
@@ -75,21 +108,47 @@ export const historicalSimulationService = {
       scenariosConfig,
       commissionRate = 0.00015,
       taxRate = 0.0018,
+      investmentType,
+      recurringAmount,
     } = params;
 
     const entryIdx = candles.findIndex(c => c.time === entryDate);
-    if (entryIdx === -1 || entryPrice <= 0 || quantity <= 0) {
+    if (entryIdx === -1) {
       return [];
     }
 
-    const grossBuyAmount = Math.round(entryPrice * quantity);
+    let totalQty = 0;
+    let totalCost = 0;
+
+    if (investmentType === 'RECURRING' && recurringAmount) {
+      // Recurring investment: Monthly buys (roughly every 20 trading days)
+      for (let i = entryIdx; i < candles.length; i++) {
+        if ((i - entryIdx) % 20 === 0) {
+          const buyQty = Math.floor(recurringAmount / candles[i].close);
+          if (buyQty > 0) {
+            totalQty += buyQty;
+            totalCost += buyQty * candles[i].close;
+          }
+        }
+      }
+    } else {
+      // Lump sum
+      if (entryPrice <= 0 || quantity <= 0) return [];
+      totalQty = quantity;
+      totalCost = entryPrice * quantity;
+    }
+
+    if (totalQty === 0) return [];
+
+    const avgEntryPrice = totalCost / totalQty;
+    const grossBuyAmount = Math.round(totalCost);
     const buyFee = Math.round(grossBuyAmount * commissionRate);
     const subsequentCandles = candles.slice(entryIdx + 1);
 
     return scenariosConfig.map((sc, scIdx) => {
       const scenarioId = sc.id || `sc_${scIdx}_${Date.now()}`;
-      const targetPrice = sc.targetRate !== undefined ? Math.round(entryPrice * (1 + sc.targetRate / 100)) : undefined;
-      const stopLossPrice = sc.stopLossRate !== undefined ? Math.round(entryPrice * (1 + sc.stopLossRate / 100)) : undefined;
+      const targetPrice = sc.targetRate !== undefined ? Math.round(avgEntryPrice * (1 + sc.targetRate / 100)) : undefined;
+      const stopLossPrice = sc.stopLossRate !== undefined ? Math.round(avgEntryPrice * (1 + sc.stopLossRate / 100)) : undefined;
 
       let exitDate = '';
       let exitPrice = 0;
@@ -119,7 +178,7 @@ export const historicalSimulationService = {
 
           if (hitTarget && hitStop) {
             // Both breached in the same candle: if opened below entry, stop loss hit first
-            if (candle.open <= entryPrice) {
+            if (candle.open <= avgEntryPrice) {
               exitPrice = stopLossPrice!;
               exitReason = '손절가 이탈';
             } else {
@@ -158,18 +217,24 @@ export const historicalSimulationService = {
           holdingDays = subsequentCandles.length;
         } else {
           exitDate = entryDate;
-          exitPrice = entryPrice;
+          exitPrice = avgEntryPrice;
           exitReason = '당일 진입(익일 데이터 없음)';
           holdingDays = 0;
         }
       }
 
-      const grossSellAmount = Math.round(exitPrice * quantity);
+      const grossSellAmount = Math.round(exitPrice * totalQty);
       const sellFee = Math.round(grossSellAmount * commissionRate);
       const sellTax = Math.round(grossSellAmount * taxRate);
       const totalFees = buyFee + sellFee;
       const netProfit = (grossSellAmount - grossBuyAmount) - totalFees - sellTax;
       const returnRate = grossBuyAmount > 0 ? Number(((netProfit / grossBuyAmount) * 100).toFixed(2)) : 0;
+      
+      // Calculate MDD/CAGR for this scenario
+      const scenarioCandles = [candles[entryIdx], ...subsequentCandles.slice(0, holdingDays || subsequentCandles.length)];
+      const mdd = this.calculateMDD(scenarioCandles);
+      const years = Math.max(holdingDays / 252, 0.01);
+      const cagr = this.calculateCAGR(grossBuyAmount, grossSellAmount, years);
 
       return {
         id: scenarioId,
@@ -190,6 +255,8 @@ export const historicalSimulationService = {
         returnRate,
         holdingDays,
         isHit,
+        mdd,
+        cagr,
       };
     });
   },

@@ -28,6 +28,7 @@ import { matchHangulSearch } from '../../utils/hangul';
 import { PostEditorModal } from './PostEditorModal';
 import { PostDetailView } from './PostDetailView';
 import { ErrorBoundary } from '../common/ErrorBoundary';
+import { INITIAL_POSTS } from '../../services/mockData';
 
 const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80';
 
@@ -46,9 +47,10 @@ export const CommunityView: React.FC = () => {
 
   const [posts, setPosts] = useState<CommunityPost[]>(() => {
     try {
-      return storageService.getPosts() || [];
+      const stored = storageService.getPosts();
+      return (stored && stored.length > 0) ? stored : INITIAL_POSTS;
     } catch {
-      return [];
+      return INITIAL_POSTS;
     }
   });
   const [activeCategory, setActiveCategory] = useState<string>('all');
@@ -60,6 +62,14 @@ export const CommunityView: React.FC = () => {
   const [errorType, setErrorType] = useState<'PERMISSION_DENIED' | 'NETWORK_ERROR' | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Pagination hook unconditionally declared at top
+  const PAGE_SIZE = 10;
+  const [displayLimit, setDisplayLimit] = useState(PAGE_SIZE);
+
+  useEffect(() => {
+    setDisplayLimit(PAGE_SIZE);
+  }, [activeCategory, searchQuery, searchTarget, sortField, communityAuthorFilter]);
+
   // Subscribe to real-time posts from Firebase Firestore with complete error & lifecycle handling
   useEffect(() => {
     let isMounted = true;
@@ -69,7 +79,16 @@ export const CommunityView: React.FC = () => {
       .then(remotePosts => {
         if (!isMounted) return;
         if (remotePosts && Array.isArray(remotePosts) && remotePosts.length > 0) {
-          setPosts(remotePosts);
+          setPosts(prev => {
+            const notices = prev.filter(p => p.category === 'notice' || p.isNotice);
+            const combined = [...notices];
+            remotePosts.forEach(rp => {
+              if (!combined.some(c => c.id === rp.id)) {
+                combined.push(rp);
+              }
+            });
+            return combined;
+          });
         }
         setIsLoading(false);
         setErrorType(null);
@@ -91,8 +110,17 @@ export const CommunityView: React.FC = () => {
     const unsubscribe = firebaseRepository.subscribePosts(
       remotePosts => {
         if (!isMounted) return;
-        if (remotePosts && Array.isArray(remotePosts)) {
-          setPosts(remotePosts);
+        if (remotePosts && Array.isArray(remotePosts) && remotePosts.length > 0) {
+          setPosts(prev => {
+            const notices = prev.filter(p => p.category === 'notice' || p.isNotice);
+            const combined = [...notices];
+            remotePosts.forEach(rp => {
+              if (!combined.some(c => c.id === rp.id)) {
+                combined.push(rp);
+              }
+            });
+            return combined;
+          });
         }
         setIsLoading(false);
         setErrorType(null);
@@ -118,10 +146,11 @@ export const CommunityView: React.FC = () => {
     };
   }, []);
 
-  // If a post is selected, render PostDetailView
+  // If a post is selected, render PostDetailView ONLY AFTER ALL HOOKS HAVE BEEN CALLED
   if (selectedPostId) {
     return <PostDetailView postId={selectedPostId} />;
   }
+
 
   // Categories (6 official categories + all)
   const categories: { id: string; label: string }[] = [
@@ -142,6 +171,8 @@ export const CommunityView: React.FC = () => {
       avatar: post.author?.avatar || DEFAULT_AVATAR,
       badge: post.author?.badge || '정회원',
       tier: post.author?.tier || '일반회원',
+      level: post.author?.level || 1,
+      title: post.author?.title || '주린이',
     };
   };
 
@@ -216,15 +247,6 @@ export const CommunityView: React.FC = () => {
         return (b.id || '').localeCompare(a.id || '');
     }
   });
-
-  // Pagination for high-volume performance (10 posts per batch)
-  const PAGE_SIZE = 10;
-  const [displayLimit, setDisplayLimit] = useState(PAGE_SIZE);
-
-  useEffect(() => {
-    setDisplayLimit(PAGE_SIZE);
-  }, [activeCategory, searchQuery, searchTarget, sortField, communityAuthorFilter]);
-
   const paginatedPosts = sortedPosts.slice(0, displayLimit);
   const hasMore = sortedPosts.length > displayLimit;
 
@@ -473,6 +495,9 @@ export const CommunityView: React.FC = () => {
                           </span>
                           <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-500 font-bold">
                             {author.badge}
+                          </span>
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-500 font-bold">
+                            {author.title}
                           </span>
                         </div>
 

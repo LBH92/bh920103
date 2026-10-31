@@ -17,8 +17,10 @@ import { AdminMarketTab } from './tabs/AdminMarketTab';
 import { AdminLogsTab } from './tabs/AdminLogsTab';
 import { AdminSettingsTab } from './tabs/AdminSettingsTab';
 import { AdminAdsTab } from './tabs/AdminAdsTab';
+import { AdminAdsStatsTab } from './tabs/AdminAdsStatsTab';
 import { AdminInquiriesTab } from './tabs/AdminInquiriesTab';
 import { ShieldAlert, ArrowLeft, LogIn } from 'lucide-react';
+import { formatKST } from '../../utils/dateUtils';
 
 export const AdminView: React.FC = () => {
   const { user, isAuthenticated, setActiveTab: setPublicTab, showToast, setIsAuthModalOpen } = useApp();
@@ -31,7 +33,7 @@ export const AdminView: React.FC = () => {
 
     const validTabs: AdminSubTab[] = [
       'dashboard', 'users', 'posts', 'comments', 'reports', 
-      'chat', 'notices', 'filters', 'alerts', 'market', 'logs', 'settings', 'ads'
+      'chat', 'notices', 'filters', 'alerts', 'market', 'logs', 'settings', 'ads', 'ads_stats'
     ];
 
     return validTabs.includes(target) ? target : 'dashboard';
@@ -72,7 +74,7 @@ export const AdminView: React.FC = () => {
   const [logs, setLogs] = useState(() => adminService.getAdminLogs());
   const [settings, setSettings] = useState(() => adminService.getSettings());
   const [serverStats, setServerStats] = useState<any>(null);
-  const [lastSyncTime, setLastSyncTime] = useState<string>(() => new Date().toLocaleTimeString('ko-KR'));
+  const [lastSyncTime, setLastSyncTime] = useState<string>(() => formatKST(new Date()));
   const [connectionStatus, setConnectionStatus] = useState<'CONNECTED' | 'RECONNECTING' | 'ERROR'>('CONNECTED');
 
   // Manual refresh callback
@@ -81,7 +83,7 @@ export const AdminView: React.FC = () => {
     try {
       const stats = await adminService.fetchDashboardStats();
       if (stats) setServerStats(stats);
-      setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+      setLastSyncTime(formatKST(new Date()));
       setConnectionStatus('CONNECTED');
       showToast('통계 및 서버 연결 상태를 최신 데이터로 동기화했습니다.', 'info');
     } catch {
@@ -100,7 +102,7 @@ export const AdminView: React.FC = () => {
         const stats = await adminService.fetchDashboardStats();
         if (isMounted && stats) {
           setServerStats(stats);
-          setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+          setLastSyncTime(formatKST(new Date()));
           setConnectionStatus('CONNECTED');
         }
       } catch (e) {
@@ -108,7 +110,7 @@ export const AdminView: React.FC = () => {
       }
     };
     syncServerStats();
-    const interval = setInterval(syncServerStats, 10000);
+    const interval = setInterval(syncServerStats, 60000);
 
     // 2. Real-time Firebase Firestore Users Subscription
     const unsubUsers = firebaseRepository.subscribeUsers(
@@ -116,7 +118,7 @@ export const AdminView: React.FC = () => {
         if (!isMounted) return;
         setUsers(liveUsers);
         adminService.saveUsers(liveUsers);
-        setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+        setLastSyncTime(formatKST(new Date()));
         setConnectionStatus('CONNECTED');
       },
       err => {
@@ -131,7 +133,7 @@ export const AdminView: React.FC = () => {
         if (!isMounted) return;
         setPosts(livePosts);
         setComments(adminService.getAllComments(livePosts));
-        setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+        setLastSyncTime(formatKST(new Date()));
         setConnectionStatus('CONNECTED');
       },
       err => {
@@ -146,7 +148,7 @@ export const AdminView: React.FC = () => {
         if (!isMounted) return;
         setReports(liveReports);
         adminService.saveReports(liveReports);
-        setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+        setLastSyncTime(formatKST(new Date()));
         setConnectionStatus('CONNECTED');
       },
       err => {
@@ -160,7 +162,7 @@ export const AdminView: React.FC = () => {
       liveChat => {
         if (!isMounted) return;
         setChatMessages(liveChat);
-        setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+        setLastSyncTime(formatKST(new Date()));
         setConnectionStatus('CONNECTED');
       },
       100,
@@ -237,6 +239,7 @@ export const AdminView: React.FC = () => {
             onSuspend={async (uid, reason) => {
               const res = await adminService.suspendUser(uid, reason, callerProfile);
               if (res.success) {
+                setUsers(prev => prev.map(u => u.id === uid ? { ...u, status: 'suspended', suspendedReason: reason, chatRestricted: true, chatMutedUntil: '영구 정지' } : u));
                 showToast(res.message, 'info');
               } else {
                 showToast(res.message, 'error');
@@ -246,6 +249,7 @@ export const AdminView: React.FC = () => {
             onUnsuspend={async uid => {
               const res = await adminService.unsuspendUser(uid, callerProfile);
               if (res.success) {
+                setUsers(prev => prev.map(u => u.id === uid ? { ...u, status: 'active', suspendedReason: undefined, chatRestricted: false, chatMutedUntil: undefined } : u));
                 showToast(res.message, 'success');
               } else {
                 showToast(res.message, 'error');
@@ -255,6 +259,7 @@ export const AdminView: React.FC = () => {
             onMute={async (uid, dur) => {
               const res = await adminService.muteUser(uid, dur, callerProfile);
               if (res.success) {
+                setUsers(prev => prev.map(u => u.id === uid ? { ...u, chatRestricted: true, chatMutedUntil: dur } : u));
                 showToast(res.message, 'info');
               } else {
                 showToast(res.message, 'error');
@@ -264,6 +269,7 @@ export const AdminView: React.FC = () => {
             onUnmute={async uid => {
               const res = await adminService.unmuteUser(uid, callerProfile);
               if (res.success) {
+                setUsers(prev => prev.map(u => u.id === uid ? { ...u, chatRestricted: false, chatMutedUntil: undefined } : u));
                 showToast(res.message, 'success');
               } else {
                 showToast(res.message, 'error');
@@ -513,6 +519,8 @@ export const AdminView: React.FC = () => {
         );
       case 'ads':
         return <AdminAdsTab />;
+      case 'ads_stats':
+        return <AdminAdsStatsTab />;
       case 'inquiries':
         return <AdminInquiriesTab />;
 

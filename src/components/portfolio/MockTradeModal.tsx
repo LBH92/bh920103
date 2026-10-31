@@ -72,7 +72,7 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
       // 2. Resolve quote
       portfolioService.resolveQuote(symbol).then(q => {
         if (q) {
-          setQuote(q);
+          setQuote(q as any);
           setInputPrice(String(q.price));
         } else if (defaultPrice) {
           setQuote({

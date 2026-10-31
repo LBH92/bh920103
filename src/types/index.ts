@@ -202,6 +202,17 @@ export interface UserProfile {
   lastLoginAt?: string;
   reportedCount?: number;
   reportSubmitCount?: number;
+  level: number;
+  title: string; // Current selected title
+  badge: string; // Current selected badge
+  badges: string[]; // List of all acquired badges
+}
+
+export interface WatchlistBuyEntry {
+  id: string;
+  price: number;
+  quantity: number;
+  date: string; // YYYY-MM-DD
 }
 
 export interface WatchlistItem {
@@ -210,7 +221,7 @@ export interface WatchlistItem {
   addedAt: string;
   memo?: string;
   targetPrice?: number;
-  buyPrice?: number;
+  buyEntries: WatchlistBuyEntry[];
 }
 
 export type PostCategory = 'free' | 'discussion' | 'market' | 'invest' | 'qa' | 'notice';
@@ -223,6 +234,8 @@ export interface CommunityPost {
     avatar: string;
     badge: string;
     tier: string;
+    level: number;
+    title: string;
   };
   category: PostCategory;
   title: string;
@@ -317,12 +330,16 @@ export interface ChatMessage {
 
 export interface PriceAlert {
   id: string;
+  uid?: string;
   symbol: string;
   symbolName: string;
   targetPrice: number;
   condition: 'above' | 'below';
   createdAt: string;
   isTriggered: boolean;
+  triggeredAt?: string;
+  triggeredPrice?: number;
+  enabled?: boolean;
   note?: string;
 }
 
@@ -459,6 +476,7 @@ export type AdminSubTab =
   | 'logs'
   | 'settings'
   | 'ads'
+  | 'ads_stats'
   | 'inquiries';
 
 export interface AdminLogItem {
@@ -740,6 +758,10 @@ export interface HistoricalSimulationScenario {
   returnRate: number;
   holdingDays: number;
   isHit: boolean;
+  
+  // New Fields for MDD/CAGR
+  mdd?: number; // %
+  cagr?: number; // %
 }
 
 export interface HistoricalSimulationRecord {
@@ -752,6 +774,9 @@ export interface HistoricalSimulationRecord {
   entryPrice: number;
   quantity: number;
   totalInvestment: number;
+  investmentType: 'LUMP_SUM' | 'RECURRING'; // New Field
+  recurringAmount?: number; // New Field
+  recurringFrequency?: 'MONTHLY'; // New Field
   selectedExitDate?: string;
   selectedExitPrice?: number;
   netProfit?: number;
@@ -891,7 +916,84 @@ export interface Inquiry {
   createdAt: string;
   updatedAt?: string;
 }
+export interface Advertisement {
+  id: string;
+  name: string;
+  advertiser: string;
+  type: 'image' | 'text';
+  location: 'top_banner' | 'sidebar' | 'content_card';
+  imageUrl?: string;
+  textTitle?: string;
+  textDescription?: string;
+  ctaText?: string;
+  url: string;
+  startDate: string;
+  endDate: string;
+  priority: number;
+  intervalMs?: number;
+  isActive: boolean;
+  createdAt: string;
+}
 
 
 
 
+export interface PortfolioSummary {
+  totalAssets: number; // 평가금액 + 현금
+  totalCash: number;
+  totalInvested: number;
+  evaluationAmount: number; // 보유 종목 평가 합계
+  unrealizedPnL: number;
+  realizedPnL: number;
+  totalPnL: number;
+  roi: number;
+  currency: 'KRW' | 'USD';
+  holdings: PortfolioHolding[];
+  sectorAllocations: { sector: string; amount: number; weight: number }[];
+  marketAllocations: { market: string; amount: number; weight: number }[];
+  lastUpdated: string;
+}
+
+export interface PortfolioHolding {
+  symbol: string;
+  name: string;
+  quantity: number;
+  avgBuyPrice: number;
+  currentPrice: number;
+  marketValue: number;
+  unrealizedPnL: number;
+  unrealizedPnLRate: number;
+  weight: number; // 포트폴리오 내 비중 (%)
+  sector: string;
+  market: 'KOSPI' | 'KOSDAQ' | 'US';
+  currency: 'KRW' | 'USD';
+}
+
+export interface DisclosureEvent {
+  id: string;
+  symbol: string;
+  title: string;
+  date: string;
+  type: '유상증자' | '전환사채' | '신주인수권부사채' | '자사주' | '계약' | '실적' | '기타';
+  link: string;
+  summary?: string;
+  riskLevel: 'high' | 'medium' | 'low';
+}
+
+export interface QuoteResult {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  currency: 'KRW' | 'USD';
+  market: string;
+  delayLabel: string;
+  isRealtime: boolean;
+  provider: string;
+  status: 'ok' | 'delayed' | 'error';
+  asOf: string;
+  quoteTimestamp: number;
+  bestAskPrice: number;
+  bestBidPrice: number;
+}

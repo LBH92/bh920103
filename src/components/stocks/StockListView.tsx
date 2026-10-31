@@ -18,6 +18,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Stock } from '../../types';
 import { PriceBadge } from '../common/PriceBadge';
+import { MarketBadge } from '../common/MarketBadge';
 import { matchHangulSearch } from '../../utils/hangul';
 import { isSurgeGain, isSurgeLoss, isVolumeSurge } from '../../utils/marketThresholds';
 import { MarketHeatmap } from './MarketHeatmap';
@@ -385,9 +386,8 @@ export const StockListView: React.FC = () => {
                             <span className="text-xs font-mono text-slate-400">
                               {stock.symbol}
                             </span>
-                            <span className="text-[10px] px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
-                              {stock.market}
-                            </span>
+                            <MarketBadge market={stock.market} exchange={stock.exchange} />
+
                             {isSurgeGain(stock.changePercent) && (
                               <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">
                                 급등

@@ -157,8 +157,12 @@ export class MockStockRepository implements IStockRepository {
     if (!q) return [];
 
     let filtered = this.localStocks.filter(s => {
-      if (options.market && options.market !== 'ALL' && s.market !== options.market) {
-        return false;
+      if (options.market && options.market !== 'ALL') {
+        if (options.market === 'KR') {
+          if (s.market !== 'KOSPI' && s.market !== 'KOSDAQ') return false;
+        } else if (s.market !== options.market) {
+          return false;
+        }
       }
       return (
         s.name.toLowerCase().includes(q) ||

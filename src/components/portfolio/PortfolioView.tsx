@@ -35,6 +35,8 @@ import { VirtualHoldingModal } from './VirtualHoldingModal';
 import { MockTradeModal } from './MockTradeModal';
 import { FeeSettingsModal } from './FeeSettingsModal';
 import { PortfolioCharts } from './PortfolioCharts';
+import { PortfolioAnalyzer } from './PortfolioAnalyzer';
+import { DividendCalculator } from './DividendCalculator';
 import { stockRepository } from '../../services/stockRepository';
 
 
@@ -425,6 +427,12 @@ export const PortfolioView: React.FC = () => {
 
           {/* Portfolio Charts */}
           <PortfolioCharts holdings={virtualHoldings} quotesMap={quotesMap} exchangeRate={exchangeRate} />
+          {user?.id && (
+            <>
+              <PortfolioAnalyzer uid={user.id} />
+              <DividendCalculator uid={user.id} />
+            </>
+          )}
 
           {/* Virtual Holdings Table / Card List */}
           <div className="rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">

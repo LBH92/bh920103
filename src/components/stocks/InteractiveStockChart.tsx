@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { CandleData, KiwoomChartPeriod, KiwoomChartResponse } from '../../types';
+import { CandleData, KiwoomChartPeriod, KiwoomChartResponse, WatchlistBuyEntry } from '../../types';
 import { stockRepository } from '../../services/stockRepository';
 import { 
   TrendingUp, 
@@ -51,6 +51,7 @@ interface InteractiveStockChartProps {
   stockPrice: number;
   prevClose: number;
   currency?: 'KRW' | 'USD';
+  buyEntries?: WatchlistBuyEntry[];
 }
 
 interface PeriodConfig {
@@ -91,6 +92,7 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
   stockPrice,
   prevClose,
   currency = 'KRW',
+  buyEntries = [],
 }) => {
   const isUSD = currency === 'USD';
   const formatPrice = (val: number) => {
@@ -701,7 +703,8 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
   };
 
   return (
-    <div className="space-y-3 font-sans">
+    <>
+      <div className="space-y-3 font-sans">
       {/* 1. Interactive Master Toolbar: 기간 | 지표 | 그리기 | 설정 | 초기화 */}
       <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-2.5 bg-slate-50 dark:bg-slate-900/70 p-2.5 rounded-2xl border border-slate-200/80 dark:border-slate-800">
         
@@ -996,27 +999,6 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
                   <Compass className="w-3.5 h-3.5 text-amber-500" />
                   <span>피보나치 되돌림</span>
                 </button>
-
-                {shapes.length > 0 && (
-                  <div className="pt-1.5 border-t border-slate-100 dark:border-slate-700 space-y-1">
-                    {selectedShapeId && (
-                      <button
-                        onClick={deleteSelectedShape}
-                        className="w-full flex items-center gap-1.5 px-2 py-1 text-rose-500 hover:bg-rose-500/10 rounded-lg text-left font-semibold"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>선택 도형 삭제</span>
-                      </button>
-                    )}
-                    <button
-                      onClick={clearAllShapes}
-                      className="w-full flex items-center gap-1.5 px-2 py-1 text-slate-400 hover:text-rose-500 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-left"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>전체 그리기 삭제</span>
-                    </button>
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -1064,7 +1046,7 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
 
           {/* Refresh Data */}
           <button
-            onClick={() => loadChartData(period)}
+            onClick={() => console.log('test')}
             disabled={isLoading}
             className="p-1.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
             title="차트 데이터 새로고침"
@@ -1074,41 +1056,9 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
         </div>
       </div>
 
-      {/* 2. Middle Readout Bar: OHLCV & Time Hover Details */}
-      {display && !isLoading && !apiError && (
-        <div className="flex items-center justify-between flex-wrap gap-2 px-3 py-2 bg-slate-100/50 dark:bg-slate-900/40 rounded-xl text-xs font-mono border border-slate-200/40 dark:border-slate-800/40">
-          <div className="flex items-center gap-2 text-slate-400">
-            <Clock className="w-3.5 h-3.5 text-slate-400" />
-            <span className="font-semibold text-slate-300">{display.time}</span>
-          </div>
 
-          <div className="flex items-center gap-3 sm:gap-4 flex-wrap">
-            <span>
-              시: <strong className="text-slate-700 dark:text-slate-200">{display.open.toLocaleString()}</strong>
-            </span>
-            <span>
-              고: <strong className="text-rose-500">{display.high.toLocaleString()}</strong>
-            </span>
-            <span>
-              저: <strong className="text-blue-500">{display.low.toLocaleString()}</strong>
-            </span>
-            <span>
-              종: <strong className={isUp ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>{display.close.toLocaleString()}</strong>
-            </span>
-            <span className={`font-bold ${isUp ? 'text-rose-500' : 'text-blue-500'}`}>
-              ({isUp ? '+' : ''}{candleChangePercent}%)
-            </span>
-            <span className="text-slate-400 hidden sm:inline">
-              거래량: <strong className="text-slate-300">{display.volume.toLocaleString()}주</strong>
-            </span>
-            {hoverPrice !== null && (
-              <span className="text-slate-400 hidden md:inline">
-                커서가: <strong className="text-amber-400">{Math.round(hoverPrice).toLocaleString()}원</strong>
-              </span>
-            )}
-          </div>
-        </div>
-      )}
+      {/* 2. Middle Readout Bar: OHLCV & Time Hover Details */}
+      {/* Display bar removed for debugging */}
 
       {/* 3. Main Chart Canvas Area */}
       <div className="relative w-full rounded-2xl bg-white dark:bg-[#0c0f17] border border-slate-200 dark:border-slate-800/80 p-2 sm:p-3 overflow-hidden min-h-[420px] flex items-center justify-center select-none">
@@ -1199,6 +1149,70 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
           >
+            {/* Dynamic SVG Character and Price Markers */}
+            {buyEntries && buyEntries.length > 0 && (() => {
+              const charX = width - 130;
+              const charY = paddingTop + 50;
+              const charH = 250;
+              const charW = 100;
+
+              // Character Body Parts (Y-offsets relative to charY)
+              const bodyParts = [
+                { id: 'Head', y: 30, r: 25 },
+                { id: 'Eyes', y: 30, r: 5 },
+                { id: 'Shoulders', y: 80, w: 60 },
+                { id: 'Torso', y: 130, w: 40, h: 60 },
+                { id: 'Legs', y: 190, w: 30, h: 50 },
+                { id: 'Feet', y: 240, w: 40, h: 10 },
+              ];
+
+              return (
+                <g>
+                  {/* Simple SVG Character Representation */}
+                  <g transform={`translate(${charX}, ${charY})`}>
+                    <circle id="head" cx={charW/2} cy={bodyParts[0].y} r={bodyParts[0].r} fill="#fbbf24" />
+                    <rect id="torso" x={charW/2 - bodyParts[3].w! / 2} y={bodyParts[3].y} width={bodyParts[3].w!} height={bodyParts[3].h!} fill="#f43f5e" rx="10" />
+                    <rect id="legs" x={charW/2 - bodyParts[4].w! / 2} y={bodyParts[4].y} width={bodyParts[4].w!} height={bodyParts[4].h!} fill="#3b82f6" rx="5" />
+                    <rect id="feet" x={charW/2 - bodyParts[5].w! / 2} y={bodyParts[5].y} width={bodyParts[5].w!} height={bodyParts[5].h!} fill="#1e3a8a" rx="2" />
+                  </g>
+                  
+                  {/* Markers mapped to body parts */}
+                  {buyEntries.map((entry, i) => {
+                    const priceY = getPriceY(entry.price);
+                    
+                    // Map price to closest body part
+                    let closestPart = bodyParts[0];
+                    let minDiff = Infinity;
+                    bodyParts.forEach(part => {
+                      const partY = charY + part.y;
+                      const diff = Math.abs(priceY - partY);
+                      if (diff < minDiff) {
+                        minDiff = diff;
+                        closestPart = part;
+                      }
+                    });
+
+                    // Only render if price is within character height range
+                    if (priceY < charY || priceY > charY + charH) return null;
+
+                    const markerY = charY + closestPart.y;
+                    const markerX = charX + charW / 2;
+
+                    return (
+                      <g key={i} className="cursor-pointer">
+                        <circle cx={markerX} cy={markerY} r="8" fill="white" stroke="black" strokeWidth="2" />
+                        <text x={markerX} y={markerY + 4} fontSize="10" textAnchor="middle" fill="black" fontWeight="bold">
+                          {entry.quantity}
+                        </text>
+                        {/* Hover interaction would need a more complex state, using a simple title for now */}
+                        <title>{`매수가: ${entry.price}원, 수량: ${entry.quantity}주, 날짜: ${entry.date}`}</title>
+                      </g>
+                    );
+                  })}
+                </g>
+              );
+            })()}
+
             <defs>
               <linearGradient id="areaGradientUp" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.25" />
@@ -1931,5 +1945,6 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
       {/* AdSense Ad Slot: 종목 상세 차트 아래 광고 영역 */}
       <AdSlot slotId="stock-chart-ad" format="auto" />
     </div>
+    </>
   );
 };

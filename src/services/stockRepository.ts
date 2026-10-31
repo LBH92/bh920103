@@ -30,15 +30,12 @@ class StockRepositoryDelegator implements IStockRepository {
   private activeSource: StockDataSourceType;
 
   constructor() {
-    // Default strictly to REAL data repository (server API -> Live Exchange & Yahoo Finance feeds)
-    this.activeSource = 'REAL';
+    // Default to MOCK data repository to avoid Kiwoom API auth failures in container environment
+    this.activeSource = 'MOCK';
 
-    // Respect user's explicit preference if saved in localStorage
+    // Set storage to MOCK
     try {
-      const saved = localStorage.getItem('bd_stock_data_source') as StockDataSourceType | null;
-      if (saved === 'MOCK' || saved === 'REAL') {
-        this.activeSource = saved;
-      }
+      localStorage.setItem('bd_stock_data_source', 'MOCK');
     } catch {}
   }
 

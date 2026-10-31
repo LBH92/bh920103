@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
 import { 
-  User, 
-  Mail, 
-  Calendar, 
-  Award, 
-  TrendingUp, 
-  Bookmark, 
-  FileText, 
-  MessageSquare, 
-  Edit2, 
-  ShieldCheck, 
-  Check, 
+  User,
+  Mail,
+  Calendar,
+  Award,
+  TrendingUp,
+  Bookmark,
+  FileText,
+  MessageSquare,
+  Edit2,
+  ShieldCheck,
+  Check,
   LogOut,
   Bell,
   LogIn,
@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { storageService } from '../../services/storageService';
+import { BADGES } from '../../services/badgeService';
 import { UserAiSettingsModal } from './UserAiSettingsModal';
 import { InquiryForm } from '../user/InquiryForm';
 import { MyInquiries } from '../user/MyInquiries';
@@ -97,16 +98,39 @@ export const ProfileView: React.FC = () => {
             />
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-xl font-black text-slate-900 dark:text-white">
+                <h2 className="text-xl font-black text-slate-900 dark:text-white mb-1">
                   {user.name}
                 </h2>
-                <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-amber-500/10 text-amber-500">
-                  {user.tier}
-                </span>
-                {user.role === 'admin' && (
-                  <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-rose-500/10 text-rose-500">
-                    총괄관리자
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-amber-500/10 text-amber-500">
+                    {user.tier} (Lv.{user.level})
                   </span>
+                  <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-blue-500/10 text-blue-500">
+                    칭호: {user.title}
+                  </span>
+                </div>
+                
+                {/* Badges List */}
+                {user.badges && user.badges.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {user.badges.map((badgeId) => {
+                      const badgeInfo = Object.values(BADGES).find(b => b.id === badgeId);
+                      return badgeInfo ? (
+                        <span key={badgeId} className="px-2 py-1 rounded-md text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center gap-1">
+                          <Award className="w-3 h-3" />
+                          {badgeInfo.name}
+                        </span>
+                      ) : null;
+                    })}
+                  </div>
+                )}
+                
+                {user.role === 'admin' && (
+                  <div className="mt-2">
+                    <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-rose-500/10 text-rose-500">
+                      총괄관리자
+                    </span>
+                  </div>
                 )}
               </div>
               <p className="text-xs text-slate-400 mt-1 flex items-center gap-3">

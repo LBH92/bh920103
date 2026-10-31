@@ -41,7 +41,10 @@ import {
   MockOrderFill,
   TradingFeeSettings,
   Stock,
-  OrderBook
+  OrderBook,
+  PortfolioSummary,
+  PortfolioHolding,
+  QuoteResult
 } from '../types';
 import { stockRepository } from './stockRepository';
 import { globalMarketClient } from './globalMarketClient';
@@ -1134,8 +1137,8 @@ export const portfolioService = {
             fee: filledQty > 0 ? fee : 0,
             tax: filledQty > 0 ? tax : 0,
             settledAmount: filledQty > 0 ? netProceeds : 0,
-            realizedProfit: filledQty > 0 ? realizedProfit : undefined,
-            realizedProfitRate: filledQty > 0 ? realizedProfitRate : undefined,
+            realizedProfit: filledQty > 0 ? realizedProfit : 0,
+            realizedProfitRate: filledQty > 0 ? realizedProfitRate : 0,
             reason: reason || (executionStatus === 'FILLED' ? '목표 달성 및 차익 실현 매도' : executionStatus === 'PARTIALLY_FILLED' ? `호가 잔량 순차 체결 (${filledQty}/${quantity}주)` : '정규장 대기 접수'),
             executedAt: now,
             currency,
@@ -1258,24 +1261,7 @@ export const portfolioService = {
   // 3. Live Quote & Currency Helpers
   // ==========================================
 
-  // 국내/해외 시세 일괄 조회 및 검증 (호가 기준가 및 신선도 타임스탬프 포함)
-  async resolveQuote(symbol: string): Promise<{
-    symbol: string;
-    name: string;
-    price: number;
-    change: number;
-    changePercent: number;
-    currency: 'KRW' | 'USD';
-    market: string;
-    delayLabel: string;
-    isRealtime: boolean;
-    provider: string;
-    status: 'ok' | 'delayed' | 'error';
-    asOf: string;
-    quoteTimestamp: number;
-    bestAskPrice?: number;
-    bestBidPrice?: number;
-  } | null> {
+  async resolveQuote(symbol: string): Promise<QuoteResult | null> {
     try {
       // 1. Try domestic stock first
       const stock = await stockRepository.getStock(symbol);

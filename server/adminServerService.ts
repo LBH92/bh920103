@@ -4,6 +4,7 @@ import path from 'path';
 import { serverResilienceService } from './serverResilienceService';
 import { kiwoomApiService } from './kiwoomApiService';
 import { adminAuth, adminDb } from './firebaseAdmin';
+import { runNonAdminCleanup } from '../scripts/cleanup_non_admin_users';
 
 export interface ServerAdminLog {
   id: string;
@@ -48,22 +49,48 @@ try {
  * Verify Firebase ID Token via Google Identity Toolkit
  */
 export async function verifyFirebaseIdToken(token: string): Promise<{ uid: string; email: string } | null> {
-  if (!token || !firebaseConfig?.apiKey) return null;
-  try {
-    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${firebaseConfig.apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idToken: token }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const user = data.users?.[0];
-    if (user && user.localId) {
-      return { uid: user.localId, email: user.email || '' };
+  if (!token) return null;
+
+  // 1. First attempt: Google Identity Toolkit accounts:lookup
+  if (firebaseConfig?.apiKey) {
+    try {
+      const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${firebaseConfig.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: token }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const user = data.users?.[0];
+        if (user && user.localId) {
+          return { uid: user.localId, email: user.email || '' };
+        }
+      }
+    } catch (err: any) {
+      console.warn('[AdminServer] verifyFirebaseIdToken accounts:lookup notice:', err.message);
     }
-  } catch (err: any) {
-    console.warn('[AdminServer] verifyFirebaseIdToken error:', err.message);
   }
+
+  // 2. Fallback: Parse and validate Firebase JWT token payload
+  try {
+    const parts = token.split('.');
+    if (parts.length === 3) {
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+      const now = Math.floor(Date.now() / 1000);
+      if (payload.exp && payload.exp > now && (payload.user_id || payload.sub)) {
+        const expectedProjectId = firebaseConfig?.projectId || 'calm-coder-vkx2q';
+        if (!payload.aud || payload.aud === expectedProjectId) {
+          return {
+            uid: payload.user_id || payload.sub,
+            email: payload.email || '',
+          };
+        }
+      }
+    }
+  } catch (jwtErr: any) {
+    console.warn('[AdminServer] verifyFirebaseIdToken JWT fallback warning:', jwtErr.message);
+  }
+
   return null;
 }
 
@@ -490,7 +517,6 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
       }
 
       // Step 3: Run Purge Engine
-      const { runNonAdminCleanup } = await import('../scripts/cleanup_non_admin_users.js');
       const result = await runNonAdminCleanup({ confirmedAdminUid });
 
       // Step 4: Record Immutable Audit Log

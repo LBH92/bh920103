@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { AdminFilterItem, UserRole } from '../../../types';
 import { ConfirmActionModal } from '../modals/ConfirmActionModal';
+import { formatKSTDate } from '../../../utils/dateUtils';
 
 interface AdminFiltersTabProps {
   bannedWords: AdminFilterItem[];
@@ -199,7 +200,7 @@ export const AdminFiltersTab: React.FC<AdminFiltersTabProps> = ({
                 </td>
                 <td className="py-3.5 px-4 text-slate-500">
                   <div>{w.category}</div>
-                  <div className="text-[10px] text-slate-400 font-mono">{w.createdBy} · {w.createdAt}</div>
+                  <div className="text-[10px] text-slate-400 font-mono">{w.createdBy} · {formatKSTDate(w.createdAt)}</div>
                 </td>
                 <td className="py-3.5 px-4 text-center">
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${

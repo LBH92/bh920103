@@ -136,17 +136,28 @@ export class RealStockRepository implements IStockRepository {
         if (Array.isArray(results)) {
           return results;
         }
+      } else {
+        console.warn(`[RealStockRepository] Search API returned error: ${res.status}`);
       }
     } catch (err) {
       console.warn('[RealStockRepository] /api/stocks/search failed, using client fallback:', err);
+    }
+
+    // 3. Score and prioritize matches
+    if (options.market === 'US') {
+      return []; // Return empty instead of falling back to domestic data
     }
 
     const all = await this.getAllStocks();
     const lowerQ = q.toLowerCase();
 
     let filtered = all.filter(s => {
-      if (options.market && options.market !== 'ALL' && s.market !== options.market) {
-        return false;
+      if (options.market && options.market !== 'ALL') {
+        if (options.market === 'KR') {
+          if (s.market !== 'KOSPI' && s.market !== 'KOSDAQ') return false;
+        } else if (s.market !== options.market) {
+          return false;
+        }
       }
       return (
         s.name.toLowerCase().includes(lowerQ) ||
@@ -155,6 +166,8 @@ export class RealStockRepository implements IStockRepository {
         matchHangulSearch(s.name, lowerQ)
       );
     });
+
+    console.log(`[RealStockRepository] Filtered ${filtered.length} results from fallback`);
 
     if (options.limit && options.limit > 0) {
       filtered = filtered.slice(0, options.limit);
@@ -317,7 +330,7 @@ export class RealStockRepository implements IStockRepository {
           const freshStocks = await this.getAllStocks(true);
           this.subscribers.forEach(cb => cb(freshStocks));
         } catch {}
-      }, 4000);
+      }, 10000);
     }
 
     return () => {
@@ -486,7 +499,7 @@ export class RealStockRepository implements IStockRepository {
               }).catch(() => {});
             };
             pushLiveOrderBook();
-            const timer = setInterval(pushLiveOrderBook, 3000);
+            const timer = setInterval(pushLiveOrderBook, 5000);
             fallbackUnsub = () => clearInterval(timer);
           }
           // Auto-reconnect after 8s

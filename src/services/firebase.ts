@@ -11,6 +11,7 @@ import {
 } from 'firebase/auth';
 import { 
   getFirestore, 
+  initializeFirestore,
   doc, 
   getDocFromServer,
   collection,
@@ -55,7 +56,17 @@ export interface FirestoreErrorInfo {
 }
 
 export const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); /* CRITICAL: Required for multi-db */
+
+// Use long-polling to prevent 10s WebChannel stream timeout in Cloud Run / iframe environments
+try {
+  initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+  }, firebaseConfig.firestoreDatabaseId);
+} catch {
+  // Instance already initialized
+}
+
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 

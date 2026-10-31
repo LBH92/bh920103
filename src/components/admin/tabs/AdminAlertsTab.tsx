@@ -10,6 +10,7 @@ import {
   CheckCircle2 
 } from 'lucide-react';
 import { AdminNotificationItem, UserRole } from '../../../types';
+import { formatKSTDateTime } from '../../../utils/dateUtils';
 
 interface AdminAlertsTabProps {
   notifications: AdminNotificationItem[];
@@ -221,7 +222,7 @@ export const AdminAlertsTab: React.FC<AdminAlertsTabProps> = ({
                 </td>
                 <td className="py-3.5 px-4 whitespace-nowrap text-slate-400 font-mono text-[11px]">
                   <div>{n.createdBy}</div>
-                  <div>{n.createdAt}</div>
+                  <div>{formatKSTDateTime(n.createdAt)}</div>
                 </td>
                 <td className="py-3.5 px-4 text-center whitespace-nowrap">
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">

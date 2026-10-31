@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { CommentItem, UserRole } from '../../../types';
 import { ConfirmActionModal } from '../modals/ConfirmActionModal';
+import { formatKSTDateTime } from '../../../utils/dateUtils';
 
 interface AdminCommentsTabProps {
   comments: { comment: CommentItem; postTitle: string; postId: string }[];
@@ -149,7 +150,7 @@ export const AdminCommentsTab: React.FC<AdminCommentsTabProps> = ({
 
                   {/* Date */}
                   <td className="py-3.5 px-4 text-slate-400 font-mono whitespace-nowrap">
-                    {comment.createdAt}
+                    {formatKSTDateTime(comment.createdAt)}
                   </td>
 
                   {/* Status */}
@@ -225,7 +226,7 @@ export const AdminCommentsTab: React.FC<AdminCommentsTabProps> = ({
           >
             <div className="flex items-center justify-between text-xs">
               <span className="font-bold text-slate-800 dark:text-slate-200">{comment.author.name}</span>
-              <span className="text-[10px] text-slate-400 font-mono">{comment.createdAt}</span>
+              <span className="text-[10px] text-slate-400 font-mono">{formatKSTDateTime(comment.createdAt)}</span>
             </div>
 
             <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { 
   fetchRealStockData, 
@@ -77,6 +78,8 @@ import { calendarAlertService } from './server/calendarAlertService';
 import { marketHeatmapService } from './server/marketHeatmapService';
 import { chatImageUploadService } from './server/chatImageUploadService';
 import multer from 'multer';
+import { verifyAndAward } from './server/activityService';
+import { disclosureApiService } from './server/disclosureApiService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -224,6 +227,33 @@ async function startServer() {
   // Serve static public assets (icons, etc.)
   app.use(express.static(path.join(__dirname, 'public')));
 
+  // Fallback SVG placeholder for missing images (Clean dark mode card)
+  const FALLBACK_IMAGE_SVG = Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200" fill="none">` +
+    `<rect width="320" height="200" rx="12" fill="#131722" stroke="#2a2e39" stroke-width="1.5"/>` +
+    `<path d="M160 70v35m0 20h.01" stroke="#94a3b8" stroke-width="3" stroke-linecap="round"/>` +
+    `<text x="160" y="150" fill="#94a3b8" font-size="12" font-weight="500" text-anchor="middle" font-family="-apple-system, sans-serif">이미지를 찾을 수 없습니다</text>` +
+    `</svg>`,
+    'utf-8'
+  );
+
+  // Serve static uploaded media safely with directory existence fallback
+  const uploadsDir = path.join(process.cwd(), 'public', 'uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+  app.use('/uploads', express.static(uploadsDir));
+  app.use('/upload', express.static(uploadsDir));
+
+  // If uploaded file is missing from disk, return valid SVG image with 404
+  app.use(['/uploads', '/upload'], (req, res) => {
+    console.log(`[404] Resource not found: ${req.url}, Initiator: ${req.headers['referer'] || 'unknown'}`);
+    res.status(404)
+       .setHeader('Content-Type', 'image/svg+xml; charset=utf-8')
+       .setHeader('Cache-Control', 'public, max-age=60')
+       .send(FALLBACK_IMAGE_SVG);
+  });
+
   // -------------------------------------------------------------
   // 1. Health & Readiness Monitoring Endpoints (Zero secrets exposed)
   // -------------------------------------------------------------
@@ -313,6 +343,7 @@ async function startServer() {
       res.setHeader('X-RateLimit-Remaining', Math.max(0, maxRequests - record.count));
 
       if (record.count > maxRequests) {
+        console.log(`[RateLimiter] 429 triggered for: ${req.path}, IP: ${ip}`);
         const retryAfterSec = Math.ceil((record.resetAt - now) / 1000);
         res.setHeader('Retry-After', retryAfterSec);
         return res.status(429).json({
@@ -324,8 +355,8 @@ async function startServer() {
     };
   };
 
-  const generalLimiter = createRateLimiter(150, 60 * 1000); // 150 requests per minute
-  const aiLimiter = createRateLimiter(30, 60 * 1000);       // 30 requests per minute for AI
+  const generalLimiter = createRateLimiter(500, 60 * 1000); // 500 requests per minute
+  const aiLimiter = createRateLimiter(100, 60 * 1000);       // 100 requests per minute for AI
 
   // Apply general rate limit to all /api routes
   app.use('/api', generalLimiter);
@@ -719,6 +750,8 @@ async function startServer() {
     const market = sanitizeInputText(req.query.market as string, 10);
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 12, 50);
 
+    console.log(`[ServerSearch] API called: q="${query}", market="${market}"`);
+
     if (!query) {
       return res.json([]);
     }
@@ -730,6 +763,7 @@ async function startServer() {
     if (!market || market === 'ALL' || market === 'US') {
       try {
         const usSearchResults = await usStockSearchService.search(query, limit);
+        console.log(`[ServerSearch] US search service returned ${usSearchResults.length} items for "${query}"`);
         usMatches = await Promise.all(
           usSearchResults.map(async u => {
             // Attempt to enrich with real price and change percent if in cache or fast fetch
@@ -765,6 +799,7 @@ async function startServer() {
         console.warn('[ServerSearch] usStockSearchService error:', err.message);
       }
     }
+    console.log(`[ServerSearch] Final US matches: ${usMatches.length}`);
 
     // 2. Search Domestic Korean Stocks (KOSPI, KOSDAQ, ETF/ETN via Kiwoom master or TRACKED_STOCKS)
     let domesticResults: any[] = [];
@@ -869,6 +904,7 @@ async function startServer() {
 
     res.setHeader('X-Data-Source', 'combined');
     res.setHeader('Cache-Control', 'no-cache');
+    console.log(`[ServerSearch] Returning ${combined.length} results for query "${query}"`);
     return res.json(combined);
   });
 
@@ -1092,21 +1128,39 @@ async function startServer() {
         console.warn(`[Server] Kiwoom fetchOrderBook fallback for ${symbol}:`, err.message);
       }
     }
-
-    // 2. If real Kiwoom API is not connected, return clear disconnected state (no fake mock depth)
-    const stock = mockServerStocks.find(s => s.symbol === symbol) || TRACKED_STOCKS.find(s => s.symbol === symbol);
-    return res.json({
-      symbol,
-      currentPrice: stock ? (stock as any).price || 0 : 0,
-      totalAskVolume: 0,
-      totalBidVolume: 0,
-      asks: [],
-      bids: [],
-      supported: false,
-      connected: false,
-      message: '실시간 10단계 호가 데이터 미연결 (키움증권 REST API 연동 필요)',
-    });
+    
+    // Fallback to generated Order Book
+    const mockStock = mockServerStocks.find(s => s.symbol === symbol) || INITIAL_STOCKS.find(s => s.symbol === symbol);
+    res.json(generateOrderBook(mockStock || { symbol, price: 10000, change: 0, changePercent: 0 } as any));
   });
+
+  // 3-2. Stock Disclosures Analysis
+  app.get('/api/disclosures/:symbol', async (req, res) => {
+    const symbol = req.params.symbol;
+    if (!isValidStockSymbol(symbol)) {
+      return res.status(400).json({ error: '올바르지 않은 종목 코드 형식입니다.' });
+    }
+    try {
+      const disclosures = await disclosureApiService.getDisclosures(symbol);
+      res.json(disclosures);
+    } catch (err: any) {
+      console.error(`[Server] Disclosure fetch error for ${symbol}:`, err.message);
+      res.status(500).json({ error: '공시 데이터를 조회하는 중 오류가 발생했습니다.' });
+    }
+  });
+
+  // 3-3. Summarize Disclosure
+  app.post('/api/disclosures/summarize', async (req, res) => {
+    const { title, link } = req.body;
+    try {
+      const summary = await disclosureApiService.summarizeDisclosure(title, link);
+      res.json({ summary });
+    } catch (err: any) {
+      console.error('[Server] Summarize error:', err.message);
+      res.status(500).json({ error: '요약 중 오류가 발생했습니다.' });
+    }
+  });
+
 
   // 3-2. Stock News & Market News Endpoints (Real News API & Server Caching)
   // A. All Market News by Category ('all' | 'breaking' | 'kospi' | 'kosdaq' | 'economy' | 'market')
@@ -1506,8 +1560,8 @@ async function startServer() {
       const isAdmin = adminRole === 'admin' || adminRole === 'superadmin';
 
       let userGenAI = null;
-      if (uid && userAiVaultService.hasConnection(uid)) {
-        userGenAI = userAiVaultService.getUserGenAIClient(uid);
+      if (uid && await userAiVaultService.hasConnection(uid)) {
+        userGenAI = await userAiVaultService.getUserGenAIClient(uid);
       } else if (!isAdmin) {
         return res.status(403).json({
           error: 'AI_NOT_CONNECTED',
@@ -1727,12 +1781,12 @@ async function startServer() {
   // 8.5 User Personal AI Connection Vault Endpoints
   // -------------------------------------------------------------
   // Get connection status (masked, safe)
-  app.get('/api/ai/connection/status', (req, res) => {
+  app.get('/api/ai/connection/status', async (req, res) => {
     const uid = (req.headers['x-user-uid'] as string) || (req.query.uid as string);
     if (!uid) {
       return res.status(401).json({ error: '인증이 필요합니다 (UID 누락).' });
     }
-    const status = userAiVaultService.getConnectionStatus(uid);
+    const status = await userAiVaultService.getConnectionStatus(uid);
     res.json(status);
   });
 
@@ -1761,16 +1815,16 @@ async function startServer() {
   });
 
   // Disconnect personal Gemini API key
-  app.post('/api/ai/connection/disconnect', (req, res) => {
+  app.post('/api/ai/connection/disconnect', async (req, res) => {
     const uid = (req.headers['x-user-uid'] as string) || req.body?.uid;
     if (!uid) {
       return res.status(401).json({ error: '인증이 필요합니다 (UID 누락).' });
     }
-    const removed = userAiVaultService.disconnectUser(uid);
+    const removed = await userAiVaultService.disconnectUser(uid);
     res.json({
       success: true,
       removed,
-      status: userAiVaultService.getConnectionStatus(uid),
+      status: await userAiVaultService.getConnectionStatus(uid),
     });
   });
 
@@ -1788,14 +1842,14 @@ async function startServer() {
         return res.status(400).json({ error: '질문(query)을 입력해주세요.' });
       }
 
-      if (!uid || !userAiVaultService.hasConnection(uid)) {
+      if (!uid || !(await userAiVaultService.hasConnection(uid))) {
         return res.status(403).json({
           error: 'AI_NOT_CONNECTED',
           message: '개인 Gemini AI 계정이 연결되지 않았습니다. 운영자 공용 API는 비용 보호 정책에 따라 차단되며, 프로필 설정에서 본인의 Google AI Studio 키를 연결한 후 이용할 수 있습니다.',
         });
       }
 
-      const userGenAI = userAiVaultService.getUserGenAIClient(uid);
+      const userGenAI = await userAiVaultService.getUserGenAIClient(uid);
       const briefing = await generateAiStockBriefing(query, symbol, userGenAI);
       res.json(briefing);
     } catch (err: any) {
@@ -1854,14 +1908,14 @@ async function startServer() {
         return res.status(400).json({ error: '질문(query)을 입력해주세요.' });
       }
 
-      if (!uid || !userAiVaultService.hasConnection(uid)) {
+      if (!uid || !(await userAiVaultService.hasConnection(uid))) {
         return res.status(403).json({
           error: 'AI_NOT_CONNECTED',
           message: '개인 Gemini AI 계정이 연결되지 않았습니다. 운영자 공용 API는 비용 보호 정책에 따라 차단되며, 프로필 설정에서 본인의 Google AI Studio 키를 연결한 후 이용할 수 있습니다.',
         });
       }
 
-      const userGenAI = userAiVaultService.getUserGenAIClient(uid);
+      const userGenAI = await userAiVaultService.getUserGenAIClient(uid);
       const result = await processStockDataQuery(query, watchlist, userGenAI);
       res.json(result);
     } catch (err: any) {
@@ -2005,10 +2059,38 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(path.join(__dirname, 'dist')));
+
+    // Guard against static asset 404s returning index.html
+    app.use(['/assets', '/icons'], (req, res) => {
+      res.status(404).setHeader('Content-Type', 'text/plain; charset=utf-8').send(`Static asset not found: ${req.path}`);
+    });
+
+    // Guard missing files by extension
+    app.use((req, res, next) => {
+      const ext = path.extname(req.path).toLowerCase();
+      if (['.js', '.css', '.map', '.woff', '.woff2', '.ttf', '.json'].includes(ext)) {
+        return res.status(404).setHeader('Content-Type', 'text/plain; charset=utf-8').send(`Resource not found: ${req.path}`);
+      }
+      if (['.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg'].includes(ext)) {
+        return res.status(404).setHeader('Content-Type', 'image/svg+xml; charset=utf-8').send(FALLBACK_IMAGE_SVG);
+      }
+      next();
+    });
+
     app.get('*', (req, res) => {
       res.sendFile(path.join(__dirname, 'dist', 'index.html'));
     });
   }
+
+  // 4. Activity Verification
+  app.post('/api/user/verify-activity', async (req, res) => {
+    const { uid, activityType } = req.body;
+    if (!uid || !activityType) {
+        return res.status(400).json({ error: 'Missing parameters' });
+    }
+    await verifyAndAward(uid, activityType);
+    res.json({ success: true });
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Byeongdol Investment] Full-stack Server listening on port ${PORT}`);
@@ -2025,5 +2107,6 @@ async function startServer() {
     }
   });
 }
+
 
 startServer();

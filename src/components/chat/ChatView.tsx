@@ -303,8 +303,10 @@ export const ChatView: React.FC = () => {
     if (!rawText) return;
 
     // Check if user is restricted
-    if (restrictedUsers.includes(user.id)) {
-      showToast('관리자에 의해 채팅 이용이 제한된 계정입니다.', 'error');
+    const isSuperAdminAccount = user.id === 'lr018vf8CcW5fAv707vsl77qJy53' || user.email === 'byunghyunlim92@gmail.com' || user.role === 'superadmin';
+    const isUserRestricted = Boolean(!isSuperAdminAccount && (user.chatRestricted || restrictedUsers.includes(user.id)));
+    if (isUserRestricted) {
+      showToast('현재 계정은 관리자 조치에 의해 채팅 이용이 제한되어 발언할 수 없습니다.', 'error');
       return;
     }
 
@@ -703,6 +705,9 @@ export const ChatView: React.FC = () => {
                             <img
                               src={msg.imageUrl}
                               alt="채팅 업로드 이미지"
+                              onError={e => {
+                                (e.currentTarget as HTMLElement).style.display = 'none';
+                              }}
                               className="max-w-[240px] max-h-[200px] rounded-xl object-cover border border-white/20 shadow-sm"
                             />
                           </div>
@@ -799,6 +804,11 @@ export const ChatView: React.FC = () => {
                   <LogIn className="w-3.5 h-3.5" />
                   <span>로그인 / 회원가입</span>
                 </button>
+              </div>
+            ) : (!isAdmin && user && (user.chatRestricted || restrictedUsers.includes(user.id))) ? (
+              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center gap-2 text-xs font-bold text-amber-600 dark:text-amber-400">
+                <VolumeX className="w-4 h-4 shrink-0" />
+                <span>현재 계정은 관리자에 의해 채팅 이용이 제한된 상태입니다.</span>
               </div>
             ) : (
               <form onSubmit={handleSendMessage} className="space-y-2">

@@ -15,6 +15,7 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { AdminReport, UserRole } from '../../../types';
+import { formatKSTDateTime } from '../../../utils/dateUtils';
 
 interface ReportDetailModalProps {
   report: AdminReport | null;
@@ -95,7 +96,7 @@ export const ReportDetailModal: React.FC<ReportDetailModalProps> = ({
             </div>
             <div className="flex justify-between items-center py-1">
               <span className="text-slate-400">접수 일시:</span>
-              <span className="text-slate-600 dark:text-slate-400 font-mono">{report.createdAt}</span>
+              <span className="text-slate-600 dark:text-slate-400 font-mono">{formatKSTDateTime(report.createdAt)}</span>
             </div>
           </div>
 

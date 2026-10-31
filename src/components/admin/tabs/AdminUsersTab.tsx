@@ -20,6 +20,8 @@ import {
 import { UserProfile, UserRole, ROOT_SUPERADMIN_UID, ROOT_SUPERADMIN_EMAIL } from '../../../types';
 import { UserDetailModal } from '../modals/UserDetailModal';
 import { ConfirmActionModal } from '../modals/ConfirmActionModal';
+import { formatKSTDate, formatKSTDateTime } from '../../../utils/dateUtils';
+import { safeFetchJson } from '../../../utils/api';
 
 interface AdminUsersTabProps {
   users: UserProfile[];
@@ -51,6 +53,25 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
   const [purgeResult, setPurgeResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
   const [memberStatuses, setMemberStatuses] = useState<Record<string, any>>({});
   const [isVerifying, setIsVerifying] = useState(false);
+  const [actionLoadingUid, setActionLoadingUid] = useState<string | null>(null);
+
+  // Keep selectedUser in sync with real-time users state
+  React.useEffect(() => {
+    if (selectedUser) {
+      const fresh = users.find(u => u.id === selectedUser.id);
+      if (fresh) setSelectedUser(fresh);
+    }
+  }, [users]);
+
+  const executeWithLock = async (uid: string, actionFn: () => Promise<void> | void) => {
+    if (actionLoadingUid) return;
+    setActionLoadingUid(uid);
+    try {
+      await actionFn();
+    } finally {
+      setActionLoadingUid(null);
+    }
+  };
 
   // Confirmation modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -92,14 +113,11 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
   const verifyMembers = async () => {
     setIsVerifying(true);
     try {
-      const res = await fetch('/api/admin/members/verify');
-      const data = await res.json();
-      if (res.ok) {
-        const statuses: Record<string, any> = {};
-        data.forEach((m: any) => statuses[m.uid] = m);
-        setMemberStatuses(statuses);
-      }
-    } catch (err) {
+      const data = await safeFetchJson('/api/admin/members/verify');
+      const statuses: Record<string, any> = {};
+      data.forEach((m: any) => statuses[m.uid] = m);
+      setMemberStatuses(statuses);
+    } catch (err: any) {
       console.error('Verification failed', err);
     } finally {
       setIsVerifying(false);
@@ -142,7 +160,7 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                     setIsPurging(true);
                     setPurgeResult(null);
                     try {
-                      const res = await fetch('/api/admin/cleanup-non-admins', {
+                      const data = await safeFetchJson('/api/admin/cleanup-non-admins', {
                         method: 'POST',
                         headers: {
                           'Content-Type': 'application/json',
@@ -151,19 +169,11 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                           'x-admin-role': 'superadmin',
                         },
                       });
-                      const data = await res.json();
-                      if (!res.ok) {
-                        setPurgeResult({
-                          success: false,
-                          message: data.error || '초기화 작업이 서버에서 거부되었습니다.',
-                        });
-                      } else {
-                        setPurgeResult({
-                          success: true,
-                          message: `초기화 완료: Firestore ${data.deletedDocsCount}건 삭제, 최고 운영자 계정 완전 보존됨. (인증/스토리지 영구 정리는 Admin SDK 환경 필요)`,
-                          data,
-                        });
-                      }
+                      setPurgeResult({
+                        success: true,
+                        message: `초기화 완료: Firestore ${data.deletedDocsCount}건 삭제, 최고 운영자 계정 완전 보존됨. (인증/스토리지 영구 정리는 Admin SDK 환경 필요)`,
+                        data,
+                      });
                     } catch (err: any) {
                       setPurgeResult({
                         success: false,
@@ -356,8 +366,8 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                 
                 {/* Dates */}
                 <td className="py-3.5 px-4 text-slate-500">
-                  <div>{u.joinedDate}</div>
-                  <div className="text-[10px] text-slate-400 font-mono">{u.lastLoginAt || '-'}</div>
+                  <div>{formatKSTDate(u.joinedDate)}</div>
+                  <div className="text-[10px] text-slate-400 font-mono">{u.lastLoginAt ? formatKSTDateTime(u.lastLoginAt) : '-'}</div>
                 </td>
                 
                 {/* Role */}
@@ -401,90 +411,101 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                     >
                       <Eye className="w-3.5 h-3.5" />
                     </button>
-                    {u.chatRestricted ? (
-                      <button
-                        onClick={() => {
-                          setConfirmModal({
-                            isOpen: true,
-                            title: '채팅 제한 해제',
-                            description: `'${u.name}' 회원의 채팅 발언 제한을 즉시 해제하시겠습니까?`,
-                            isDestructive: false,
-                            onConfirm: () => onUnmute(u.id),
-                          });
-                        }}
-                        className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors"
-                        title="채팅 제한 해제"
-                      >
-                        <Volume2 className="w-3.5 h-3.5" />
-                      </button>
+                    {actionLoadingUid === u.id ? (
+                      <div className="p-1.5 flex items-center justify-center">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-500" />
+                      </div>
                     ) : (
-                      <button
-                        disabled={u.role === 'superadmin' || u.id === 'lr018vf8CcW5fAv707vsl77qJy53'}
-                        onClick={() => {
-                          setConfirmModal({
-                            isOpen: true,
-                            title: '채팅 24시간 제한',
-                            description: `'${u.name}' 회원의 채팅 발언을 24시간 동안 제한하시겠습니까?`,
-                            isDestructive: true,
-                            onConfirm: () => onMute(u.id, '24시간 발언 제한'),
-                          });
-                        }}
-                        className="p-1.5 rounded-lg bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 transition-colors disabled:opacity-20"
-                        title="채팅 제한"
-                      >
-                        <VolumeX className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                    {u.status === 'suspended' ? (
-                      <button
-                        onClick={() => {
-                          setConfirmModal({
-                            isOpen: true,
-                            title: '회원 정지 해제',
-                            description: `'${u.name}' 회원의 이용 정지를 해제하고 정상 상태로 복원하시겠습니까?`,
-                            isDestructive: false,
-                            onConfirm: () => onUnsuspend(u.id),
-                          });
-                        }}
-                        className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors"
-                        title="정지 해제"
-                      >
-                        <UserCheck className="w-3.5 h-3.5" />
-                      </button>
-                    ) : (
-                      <button
-                        disabled={u.role === 'superadmin'}
-                        onClick={() => {
-                          setConfirmModal({
-                            isOpen: true,
-                            title: '회원 이용 정지',
-                            description: `정말로 '${u.name}' 회원을 정지하시겠습니까? 로그인 및 커뮤니티 작성이 차단됩니다.`,
-                            isDestructive: true,
-                            onConfirm: () => onSuspend(u.id, '관리자 일괄 조치'),
-                          });
-                        }}
-                        className="p-1.5 rounded-lg bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 transition-colors disabled:opacity-20"
-                        title="회원 정지"
-                      >
-                        <UserX className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                    {isSuperAdmin && u.role !== 'superadmin' && onDeleteUser && (
-                      <button
-                        onClick={() => {
-                          setConfirmModal({
-                            isOpen: true,
-                            title: '회원 영구 삭제',
-                            description: `정말로 '${u.name}' 회원의 계정과 모든 데이터를 영구 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`,
-                            isDestructive: true,
-                            onConfirm: () => onDeleteUser(u.id),
-                          });
-                        }}
-                        className="p-1.5 rounded-lg bg-red-600/10 text-red-600 hover:bg-red-600/20 transition-colors"
-                        title="회원 삭제"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <>
+                        {u.chatRestricted ? (
+                          <button
+                            disabled={Boolean(actionLoadingUid)}
+                            onClick={() => {
+                              setConfirmModal({
+                                isOpen: true,
+                                title: '채팅 제한 해제',
+                                description: `'${u.name}' 회원의 채팅 발언 제한을 즉시 해제하시겠습니까?`,
+                                isDestructive: false,
+                                onConfirm: () => executeWithLock(u.id, async () => { await onUnmute(u.id); }),
+                              });
+                            }}
+                            className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors cursor-pointer disabled:opacity-30"
+                            title="채팅 제한 해제"
+                          >
+                            <Volume2 className="w-3.5 h-3.5" />
+                          </button>
+                        ) : (
+                          <button
+                            disabled={Boolean(actionLoadingUid) || u.role === 'superadmin' || u.id === 'lr018vf8CcW5fAv707vsl77qJy53'}
+                            onClick={() => {
+                              setConfirmModal({
+                                isOpen: true,
+                                title: '채팅 24시간 제한',
+                                description: `'${u.name}' 회원의 채팅 발언을 24시간 동안 제한하시겠습니까?`,
+                                isDestructive: true,
+                                onConfirm: () => executeWithLock(u.id, async () => { await onMute(u.id, '24시간 발언 제한'); }),
+                              });
+                            }}
+                            className="p-1.5 rounded-lg bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 transition-colors cursor-pointer disabled:opacity-20"
+                            title="채팅 제한"
+                          >
+                            <VolumeX className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {u.status === 'suspended' ? (
+                          <button
+                            disabled={Boolean(actionLoadingUid)}
+                            onClick={() => {
+                              setConfirmModal({
+                                isOpen: true,
+                                title: '회원 정지 해제',
+                                description: `'${u.name}' 회원의 이용 정지를 해제하고 정상 상태로 복원하시겠습니까?`,
+                                isDestructive: false,
+                                onConfirm: () => executeWithLock(u.id, async () => { await onUnsuspend(u.id); }),
+                              });
+                            }}
+                            className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors cursor-pointer disabled:opacity-30"
+                            title="정지 해제"
+                          >
+                            <UserCheck className="w-3.5 h-3.5" />
+                          </button>
+                        ) : (
+                          <button
+                            disabled={Boolean(actionLoadingUid) || u.role === 'superadmin' || u.id === 'lr018vf8CcW5fAv707vsl77qJy53'}
+                            onClick={() => {
+                              setConfirmModal({
+                                isOpen: true,
+                                title: '회원 이용 정지',
+                                description: `정말로 '${u.name}' 회원을 정지하시겠습니까? 로그인 및 커뮤니티 작성이 차단됩니다.`,
+                                isDestructive: true,
+                                onConfirm: () => executeWithLock(u.id, async () => { await onSuspend(u.id, '관리자 일괄 조치'); }),
+                              });
+                            }}
+                            className="p-1.5 rounded-lg bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 transition-colors cursor-pointer disabled:opacity-20"
+                            title="회원 정지"
+                          >
+                            <UserX className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {isSuperAdmin && u.role !== 'superadmin' && onDeleteUser && (
+                          <button
+                            disabled={Boolean(actionLoadingUid)}
+                            onClick={() => {
+                              setConfirmModal({
+                                isOpen: true,
+                                title: '회원 영구 삭제',
+                                description: `정말로 '${u.name}' 회원의 계정과 모든 데이터를 영구 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`,
+                                isDestructive: true,
+                                onConfirm: () => executeWithLock(u.id, async () => { await onDeleteUser(u.id); }),
+                              });
+                            }}
+                            className="p-1.5 rounded-lg bg-red-600/10 text-red-600 hover:bg-red-600/20 transition-colors cursor-pointer disabled:opacity-30"
+                            title="회원 삭제"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 </td>

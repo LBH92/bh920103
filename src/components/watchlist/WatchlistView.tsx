@@ -19,6 +19,8 @@ import {
 import { useApp } from '../../context/AppContext';
 import { PriceBadge } from '../common/PriceBadge';
 import { MockTradeModal } from '../portfolio/MockTradeModal';
+import { useStockPurchases } from '../../hooks/useStockPurchases';
+import { WatchlistBuyEntry } from '../../types';
 
 export const WatchlistView: React.FC = () => {
   const { 
@@ -35,6 +37,19 @@ export const WatchlistView: React.FC = () => {
     isSimulatingLiveTicks,
     refreshWatchlistQuotes
   } = useApp();
+
+  const { purchases, savePurchases } = useStockPurchases(user?.id);
+
+  // Helper for stats
+  const getPurchasesStats = (entries: WatchlistBuyEntry[], currentPrice: number) => {
+    const totalQty = entries.reduce((acc, cur) => acc + cur.quantity, 0);
+    const totalCost = entries.reduce((acc, cur) => acc + cur.price * cur.quantity, 0);
+    const avgPrice = totalQty > 0 ? Math.round(totalCost / totalQty) : 0;
+    const evaluationAmount = totalQty * currentPrice;
+    const profit = evaluationAmount - totalCost;
+    const profitRate = totalCost > 0 ? (profit / totalCost) * 100 : 0;
+    return { totalQty, avgPrice, totalCost, evaluationAmount, profit, profitRate };
+  };
 
   // Current timestamp for last update time
   const [lastUpdateTime, setLastUpdateTime] = useState(() => new Date().toLocaleTimeString('ko-KR'));
@@ -227,6 +242,7 @@ export const WatchlistView: React.FC = () => {
                   <th className="py-3.5 px-4 text-right">등락률</th>
                   <th className="py-3.5 px-4 text-right">거래량</th>
                   <th className="py-3.5 px-4 text-right">거래대금</th>
+                  <th className="py-3.5 px-4 text-right">평가손익 / 수익률</th>
                   <th className="py-3.5 px-4 text-right">오늘의 변동 (고/저)</th>
                   <th className="py-3.5 px-4 text-right">마지막 업데이트</th>
                   <th className="py-3.5 px-4 text-center w-20">삭제</th>
@@ -235,6 +251,7 @@ export const WatchlistView: React.FC = () => {
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-sans">
                 {watchlistStocks.map((stock, idx) => {
                   const isUp = stock.change >= 0;
+                  const stats = getPurchasesStats(purchases[stock.symbol] || [], stock.price);
                   return (
                     <tr
                       key={stock.symbol}
@@ -299,6 +316,22 @@ export const WatchlistView: React.FC = () => {
                         {stock.tradingValue >= 10000 
                           ? `${(stock.tradingValue / 10000).toFixed(1)}조 원`
                           : `${stock.tradingValue.toLocaleString()}억 원`}
+                      </td>
+                      
+                      {/* NEW: 평가손익 / 수익률 */}
+                      <td className="py-4 px-4 text-right font-mono text-xs">
+                        {stats.totalQty > 0 ? (
+                          <>
+                            <div className={stats.profit >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
+                              {stats.profit >= 0 ? '+' : ''}{stats.profit.toLocaleString()}원
+                            </div>
+                            <div className={stats.profitRate >= 0 ? 'text-rose-500' : 'text-blue-500'}>
+                              {stats.profitRate >= 0 ? '+' : ''}{stats.profitRate.toFixed(2)}%
+                            </div>
+                          </>
+                        ) : (
+                          <span className="text-slate-400">-</span>
+                        )}
                       </td>
 
                       {/* 6. 오늘의 변동 */}

@@ -34,6 +34,7 @@ import {
 import { storageService } from './storageService';
 import { firebaseRepository } from './firebaseRepository';
 import { auth } from './firebase';
+import { safeFetchJson } from '../utils/api';
 
 async function getAdminHeaders(): Promise<Record<string, string>> {
   const token = await auth.currentUser?.getIdToken().catch(() => null);
@@ -77,6 +78,10 @@ const INITIAL_ADMIN_USERS: UserProfile[] = [
     lastLoginAt: '2026.10.12 18:00',
     reportedCount: 0,
     reportSubmitCount: 0,
+    level: 99,
+    title: '시스템 총괄',
+    badge: '최고 관리자',
+    badges: ['superadmin'],
   },
   {
     id: 'u-mod-1',
@@ -94,6 +99,10 @@ const INITIAL_ADMIN_USERS: UserProfile[] = [
     lastLoginAt: '2026.10.12 17:30',
     reportedCount: 0,
     reportSubmitCount: 0,
+    level: 50,
+    title: '커뮤니티 관리',
+    badge: '운영진',
+    badges: ['moderator'],
   },
 ];
 
@@ -245,10 +254,7 @@ export const adminService = {
   async fetchDashboardStats(): Promise<any> {
     try {
       const headers = await getAdminHeaders();
-      const res = await fetch('/api/admin/dashboard-stats', { headers });
-      if (res.ok) {
-        return await res.json();
-      }
+      return await safeFetchJson('/api/admin/dashboard-stats', { headers });
     } catch (e: any) {
       console.warn('[adminService] fetchDashboardStats error:', e.message);
     }
@@ -310,25 +316,28 @@ export const adminService = {
       return { success: false, message: '최고 운영자 계정은 이용 정지할 수 없습니다.' };
     }
 
+    // 1. Authoritative Server Check & Audit
     try {
       const headers = await getAdminHeaders();
       headers['x-admin-name'] = adminProfile?.name || '운영관리자';
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/status`, {
+      const data = await safeFetchJson(`/api/admin/users/${encodeURIComponent(userId)}/status`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ status: 'suspended', reason }),
       });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        return { success: false, message: errData.error || '회원 정지 요청 실패' };
-      }
     } catch (e: any) {
       console.warn('[adminService] suspendUser server notice:', e.message);
+      return { success: false, message: e.message || '회원 정지 요청이 서버에서 거부되었습니다.' };
     }
 
-    // 1. Real Firestore Persistence
-    await firebaseRepository.updateUserStatus(userId, 'suspended', reason);
-    await firebaseRepository.restrictChatUser(userId, reason, adminProfile?.id || 'admin');
+    // 2. Real Firestore Persistence
+    try {
+      await firebaseRepository.updateUserStatus(userId, 'suspended', reason);
+      await firebaseRepository.restrictChatUser(userId, reason, adminProfile?.id || 'admin');
+    } catch (fsErr: any) {
+      console.error('[adminService] Firestore suspend error:', fsErr);
+      return { success: false, message: `Firestore 저장 실패: ${fsErr.message || '권한 부족 또는 네트워크 오류'}` };
+    }
 
     target.status = 'suspended';
     target.suspendedReason = reason;
@@ -356,25 +365,28 @@ export const adminService = {
     const target = users.find(u => u.id === userId);
     if (!target) return { success: false, message: '사용자를 찾을 수 없습니다.' };
 
+    // 1. Authoritative Server Check & Audit
     try {
       const headers = await getAdminHeaders();
       headers['x-admin-name'] = adminProfile?.name || '운영관리자';
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/status`, {
+      const data = await safeFetchJson(`/api/admin/users/${encodeURIComponent(userId)}/status`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ status: 'active' }),
       });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        return { success: false, message: errData.error || '정지 해제 요청 실패' };
-      }
     } catch (e: any) {
       console.warn('[adminService] unsuspendUser server notice:', e.message);
+      return { success: false, message: e.message || '정지 해제 요청이 서버에서 거부되었습니다.' };
     }
 
-    // 1. Real Firestore Persistence
-    await firebaseRepository.updateUserStatus(userId, 'active');
-    await firebaseRepository.unrestrictChatUser(userId);
+    // 2. Real Firestore Persistence
+    try {
+      await firebaseRepository.updateUserStatus(userId, 'active');
+      await firebaseRepository.unrestrictChatUser(userId);
+    } catch (fsErr: any) {
+      console.error('[adminService] Firestore unsuspend error:', fsErr);
+      return { success: false, message: `Firestore 저장 실패: ${fsErr.message || '권한 부족 또는 네트워크 오류'}` };
+    }
 
     target.status = 'active';
     target.suspendedReason = undefined;
@@ -404,6 +416,7 @@ export const adminService = {
       return { success: false, message: '최고 운영자 계정은 채팅을 제한할 수 없습니다.' };
     }
 
+    // 1. Authoritative Server Check & Audit
     try {
       const headers = await getAdminHeaders();
       headers['x-admin-name'] = adminProfile?.name || '운영관리자';
@@ -414,15 +427,20 @@ export const adminService = {
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        return { success: false, message: errData.error || '채팅 제한 요청 실패' };
+        return { success: false, message: errData.error || '채팅 제한 요청이 서버에서 거부되었습니다.' };
       }
     } catch (e: any) {
       console.warn('[adminService] muteUser server notice:', e.message);
     }
 
-    // 1. Real Firestore Persistence
-    await firebaseRepository.restrictChatUser(userId, durationDesc, adminProfile?.id || 'admin');
-    await firebaseRepository.updateUserChatRestricted(userId, true, durationDesc);
+    // 2. Real Firestore Persistence
+    try {
+      await firebaseRepository.restrictChatUser(userId, durationDesc, adminProfile?.id || 'admin');
+      await firebaseRepository.updateUserChatRestricted(userId, true, durationDesc);
+    } catch (fsErr: any) {
+      console.error('[adminService] Firestore mute error:', fsErr);
+      return { success: false, message: `Firestore 저장 실패: ${fsErr.message || '권한 부족 또는 네트워크 오류'}` };
+    }
 
     if (target) {
       target.chatRestricted = true;
@@ -449,6 +467,7 @@ export const adminService = {
     const users = this.getUsers();
     const target = users.find(u => u.id === userId);
 
+    // 1. Authoritative Server Check & Audit
     try {
       const headers = await getAdminHeaders();
       headers['x-admin-name'] = adminProfile?.name || '운영관리자';
@@ -459,15 +478,20 @@ export const adminService = {
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        return { success: false, message: errData.error || '채팅 제한 해제 요청 실패' };
+        return { success: false, message: errData.error || '채팅 제한 해제 요청이 서버에서 거부되었습니다.' };
       }
     } catch (e: any) {
       console.warn('[adminService] unmuteUser server notice:', e.message);
     }
 
-    // 1. Real Firestore Persistence
-    await firebaseRepository.unrestrictChatUser(userId);
-    await firebaseRepository.updateUserChatRestricted(userId, false);
+    // 2. Real Firestore Persistence
+    try {
+      await firebaseRepository.unrestrictChatUser(userId);
+      await firebaseRepository.updateUserChatRestricted(userId, false);
+    } catch (fsErr: any) {
+      console.error('[adminService] Firestore unmute error:', fsErr);
+      return { success: false, message: `Firestore 저장 실패: ${fsErr.message || '권한 부족 또는 네트워크 오류'}` };
+    }
 
     if (target) {
       target.chatRestricted = false;
@@ -1302,6 +1326,8 @@ export const adminService = {
         avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
         badge: '공식 공지',
         tier: '운영팀',
+        level: 99,
+        title: '관리자',
       },
       category: 'notice',
       title: newNotice.title,

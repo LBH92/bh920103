@@ -17,6 +17,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { UserProfile, UserRole } from '../../../types';
+import { formatKSTDate, formatKSTDateTime } from '../../../utils/dateUtils';
 
 interface UserDetailModalProps {
   user: UserProfile | null;
@@ -52,7 +53,7 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
 
   const isSuperAdmin = callerRole === 'superadmin';
   const isAdmin = isSuperAdmin || callerRole === 'admin';
-  const isOwnerAccount = user.email === 'byunghyunlim92@gmail.com';
+  const isOwnerAccount = user.email === 'byunghyunlim92@gmail.com' || user.id === 'lr018vf8CcW5fAv707vsl77qJy53' || user.role === 'superadmin';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
@@ -159,16 +160,16 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
                 </div>
                 <div className="flex justify-between items-center py-1 border-b border-slate-100 dark:border-slate-800/60">
                   <span className="text-slate-400">가입 일자:</span>
-                  <span className="text-slate-700 dark:text-slate-300">{user.joinedDate}</span>
+                  <span className="text-slate-700 dark:text-slate-300">{formatKSTDate(user.joinedDate)}</span>
                 </div>
                 <div className="flex justify-between items-center py-1 border-b border-slate-100 dark:border-slate-800/60">
                   <span className="text-slate-400">최근 접속:</span>
-                  <span className="text-slate-700 dark:text-slate-300">{user.lastLoginAt || '기록 없음'}</span>
+                  <span className="text-slate-700 dark:text-slate-300">{user.lastLoginAt ? formatKSTDateTime(user.lastLoginAt) : '기록 없음'}</span>
                 </div>
                 <div className="flex justify-between items-center py-1 border-b border-slate-100 dark:border-slate-800/60">
                   <span className="text-slate-400">채팅 제한 여부:</span>
                   <span className={user.chatRestricted ? 'text-rose-500 font-bold' : 'text-emerald-500'}>
-                    {user.chatRestricted ? `제한됨 (${user.chatMutedUntil || '상세 사유 확인'})` : '정상 발언 가능'}
+                    {user.chatRestricted ? `제한됨 (${user.chatMutedUntil ? formatKSTDateTime(user.chatMutedUntil) : '상세 사유 확인'})` : '정상 발언 가능'}
                   </span>
                 </div>
                 <div className="flex justify-between items-center py-1">

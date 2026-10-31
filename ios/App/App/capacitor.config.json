@@ -18,6 +18,8 @@
 		}
 	},
 	"packageClassList": [
+		"FirebaseCrashlyticsPlugin",
+		"AppPlugin",
 		"SplashScreenPlugin"
 	]
 }

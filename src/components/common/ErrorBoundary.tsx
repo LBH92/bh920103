@@ -1,5 +1,6 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { AlertTriangle, RefreshCw, Home } from 'lucide-react';
+import { crashlyticsService } from '../../services/crashlyticsService';
 
 interface Props {
   children: ReactNode;
@@ -24,6 +25,11 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('[ErrorBoundary caught error]:', error, errorInfo);
+    crashlyticsService.recordException(error, {
+      type: 'react_error_boundary',
+      component_stack: (errorInfo.componentStack || '').slice(0, 500),
+      fallback_title: this.props.fallbackTitle || 'Default Error',
+    });
   }
 
   private handleReload = () => {

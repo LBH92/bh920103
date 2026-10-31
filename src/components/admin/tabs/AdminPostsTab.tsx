@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { CommunityPost, UserRole } from '../../../types';
 import { ConfirmActionModal } from '../modals/ConfirmActionModal';
+import { formatKSTDateTime } from '../../../utils/dateUtils';
 
 interface AdminPostsTabProps {
   posts: CommunityPost[];
@@ -213,7 +214,7 @@ export const AdminPostsTab: React.FC<AdminPostsTabProps> = ({
 
                   {/* Date */}
                   <td className="py-3.5 px-4 text-slate-400 whitespace-nowrap font-mono">
-                    {p.createdAt}
+                    {formatKSTDateTime(p.createdAt)}
                   </td>
 
                   {/* Actions */}
@@ -298,7 +299,7 @@ export const AdminPostsTab: React.FC<AdminPostsTabProps> = ({
               }`}>
                 {p.isNotice ? '📌 공지' : p.category}
               </span>
-              <span className="text-[10px] text-slate-400 font-mono">{p.createdAt}</span>
+              <span className="text-[10px] text-slate-400 font-mono">{formatKSTDateTime(p.createdAt)}</span>
             </div>
 
             <h4 className="font-bold text-sm text-slate-900 dark:text-white leading-snug">
