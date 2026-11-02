@@ -2071,6 +2071,8 @@ async function startServer() {
       server: { 
         middlewareMode: true,
         hmr: false,
+        ws: false,
+        watch: null,
       },
       appType: 'spa',
     });
@@ -2110,7 +2112,7 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Byeongdol Investment] Full-stack Server listening on port ${PORT}`);
     console.log(`[Data Pipeline] Browser -> Backend API -> Stock API -> Backend -> Browser`);
     console.log(`[Source Mode] ${DEFAULT_SOURCE}`);
@@ -2124,6 +2126,28 @@ async function startServer() {
       });
     }
   });
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`[Server] Port ${PORT} already in use. Terminating stale process cleanly...`);
+      process.exit(1);
+    } else {
+      console.error('[Server] Fatal HTTP server error:', err);
+      process.exit(1);
+    }
+  });
+
+  const handleTermination = () => {
+    console.log('[Server] Gracefully closing HTTP server...');
+    server.close(() => {
+      console.log('[Server] Port 3000 released cleanly.');
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 1500).unref();
+  };
+
+  process.on('SIGTERM', handleTermination);
+  process.on('SIGINT', handleTermination);
 }
 
 

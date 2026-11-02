@@ -17,8 +17,9 @@ export default defineConfig(() => {
     server: {
       port: 3000,
       host: true,
-      // HMR is disabled in AI Studio environment
+      // HMR and standalone WS disabled in AI Studio environment
       hmr: false,
+      ws: false as const,
       watch: null,
     },
     build: {

@@ -15,27 +15,40 @@ import { Suspense, lazy } from 'react';
 
 
 
-// Views - Lazy Loaded
-// Views - Lazy Loaded
-const HomeView = lazy(() => import('./components/home/HomeView').then(m => ({ default: m.HomeView })));
-const StockListView = lazy(() => import('./components/stocks/StockListView').then(m => ({ default: m.StockListView })));
-const StockDetailView = lazy(() => import('./components/stocks/StockDetailView').then(m => ({ default: m.StockDetailView })));
-const WatchlistView = lazy(() => import('./components/watchlist/WatchlistView').then(m => ({ default: m.WatchlistView })));
-const CommunityView = lazy(() => import('./components/community/CommunityView').then(m => ({ default: m.CommunityView })));
-const PostDetailView = lazy(() => import('./components/community/PostDetailView').then(m => ({ default: m.PostDetailView })));
-const ChatView = lazy(() => import('./components/chat/ChatView').then(m => ({ default: m.ChatView })));
-const AlertsView = lazy(() => import('./components/alerts/AlertsView').then(m => ({ default: m.AlertsView })));
-const StockInsightView = lazy(() => import('./components/insight/StockInsightView').then(m => ({ default: m.StockInsightView })));
-const ProfileView = lazy(() => import('./components/profile/ProfileView').then(m => ({ default: m.ProfileView })));
-const AdminView = lazy(() => import('./components/admin/AdminView').then(m => ({ default: m.AdminView })));
-const NewsView = lazy(() => import('./components/news/NewsView').then(m => ({ default: m.NewsView })));
-const StockRankingView = lazy(() => import('./components/stocks/StockRankingView').then(m => ({ default: m.StockRankingView })));
-const IndexDetailView = lazy(() => import('./components/indices/IndexDetailView').then(m => ({ default: m.IndexDetailView })));
-const PortfolioView = lazy(() => import('./components/portfolio/PortfolioView').then(m => ({ default: m.PortfolioView })));
-const StockComparisonView = lazy(() => import('./components/stocks/StockComparisonView').then(m => ({ default: m.StockComparisonView })));
-const CalendarView = lazy(() => import('./components/calendar/CalendarView').then(m => ({ default: m.CalendarView })));
-const InquiryPage = lazy(() => import('./components/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })));
-const MiniGames = lazy(() => import('./components/games/MiniGames').then(m => ({ default: m.MiniGames })));
+// Resilient Lazy Loader with automatic retry on temporary network/module load hiccups
+const lazyWithRetry = <T extends React.ComponentType<any>>(
+  factory: () => Promise<{ default: T }>
+) =>
+  lazy(async () => {
+    try {
+      return await factory();
+    } catch (err) {
+      console.warn('[LazyLoader] Dynamic import failed, retrying after short backoff...', err);
+      await new Promise(res => setTimeout(res, 400));
+      return await factory();
+    }
+  });
+
+// Views - Lazy Loaded with retry resilience
+const HomeView = lazyWithRetry(() => import('./components/home/HomeView').then(m => ({ default: m.HomeView })));
+const StockListView = lazyWithRetry(() => import('./components/stocks/StockListView').then(m => ({ default: m.StockListView })));
+const StockDetailView = lazyWithRetry(() => import('./components/stocks/StockDetailView').then(m => ({ default: m.StockDetailView })));
+const WatchlistView = lazyWithRetry(() => import('./components/watchlist/WatchlistView').then(m => ({ default: m.WatchlistView })));
+const CommunityView = lazyWithRetry(() => import('./components/community/CommunityView').then(m => ({ default: m.CommunityView })));
+const PostDetailView = lazyWithRetry(() => import('./components/community/PostDetailView').then(m => ({ default: m.PostDetailView })));
+const ChatView = lazyWithRetry(() => import('./components/chat/ChatView').then(m => ({ default: m.ChatView })));
+const AlertsView = lazyWithRetry(() => import('./components/alerts/AlertsView').then(m => ({ default: m.AlertsView })));
+const StockInsightView = lazyWithRetry(() => import('./components/insight/StockInsightView').then(m => ({ default: m.StockInsightView })));
+const ProfileView = lazyWithRetry(() => import('./components/profile/ProfileView').then(m => ({ default: m.ProfileView })));
+const AdminView = lazyWithRetry(() => import('./components/admin/AdminView').then(m => ({ default: m.AdminView })));
+const NewsView = lazyWithRetry(() => import('./components/news/NewsView').then(m => ({ default: m.NewsView })));
+const StockRankingView = lazyWithRetry(() => import('./components/stocks/StockRankingView').then(m => ({ default: m.StockRankingView })));
+const IndexDetailView = lazyWithRetry(() => import('./components/indices/IndexDetailView').then(m => ({ default: m.IndexDetailView })));
+const PortfolioView = lazyWithRetry(() => import('./components/portfolio/PortfolioView').then(m => ({ default: m.PortfolioView })));
+const StockComparisonView = lazyWithRetry(() => import('./components/stocks/StockComparisonView').then(m => ({ default: m.StockComparisonView })));
+const CalendarView = lazyWithRetry(() => import('./components/calendar/CalendarView').then(m => ({ default: m.CalendarView })));
+const InquiryPage = lazyWithRetry(() => import('./components/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })));
+const MiniGames = lazyWithRetry(() => import('./components/games/MiniGames').then(m => ({ default: m.MiniGames || m.default })));
 import { SideChatPanel } from './components/chat/SideChatPanel';
 
 // Loading component
@@ -188,7 +201,7 @@ const MainLayout: React.FC = () => {
         {/* Center Content - Flex 1, independent scroll */}
         <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
           <div className="flex-1 p-2 sm:p-4 lg:p-6 pb-24 md:pb-6">
-            <ErrorBoundary fallbackTitle="화면을 불러오는 중 문제가 발생했습니다.">
+            <ErrorBoundary key={`${activeTab}-${selectedSymbol || ''}-${selectedIndexSymbol || ''}-${selectedPostId || ''}`} fallbackTitle="화면을 불러오는 중 문제가 발생했습니다.">
               {renderActiveView()}
             </ErrorBoundary>
           </div>

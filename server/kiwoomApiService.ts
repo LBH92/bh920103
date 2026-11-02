@@ -172,6 +172,8 @@ export function parseCleanFloat(val: any, fallback: number = 0): number {
   return isNaN(n) ? fallback : n;
 }
 
+export type KiwoomTrCategory = 'CHART' | 'QUOTE' | 'RANKING' | 'SECTOR' | 'MASTER' | 'DEFAULT';
+
 class KiwoomApiService {
   private config: KiwoomConfig;
   private tokenState: KiwoomTokenState = {
@@ -186,12 +188,180 @@ class KiwoomApiService {
   private publicServerIp: string = '';
   private publicServerIpVerifiedAt: number = 0;
   private chartServerCache = new Map<string, { data: KiwoomChartResponse; expiresAt: number }>();
-  private requestQueue: Promise<any> = Promise.resolve();
 
-  private async enqueueRequest<T>(requestFn: () => Promise<T>): Promise<T> {
-    const result = this.requestQueue.then(requestFn);
-    this.requestQueue = result.catch(() => {}); // Continue queue on error
-    return result;
+  // ---------------------------------------------------------------------------
+  // Rate Limiter Architecture & Concurrency Model (PM2 Scope & Limits):
+  // 1. [PM2 Fork / Single Process Scope]:
+  //    - In single-process environments (PM2 fork mode, single container, default Node.js),
+  //      this central in-memory Rate Limiter strictly serializes all Kiwoom REST calls via
+  //      `rateLimitQueue` and deduplicates concurrent identical queries via `inFlightRequests`.
+  //    - FIFO order and start-time spacing are guaranteed within the Node.js event loop.
+  // 2. [PM2 Cluster / Multi-Process Scope & Limitation]:
+  //    - In multi-process environments (PM2 cluster mode with multiple worker processes or multi-pod k8s),
+  //      each Node.js process has its own isolated heap memory and separate queue instance.
+  //    - Limitation: Combined throughput across N worker processes can exceed Kiwoom's per-account limit (5 req/sec).
+  //    - Recommended deployment: Run stock data fetcher/workers in PM2 fork (single instance) mode,
+  //      or coordinate across clusters using a shared Redis-backed Token Bucket / Leaky Bucket.
+  // ---------------------------------------------------------------------------
+
+  // Kiwoom REST API Rate Limits: Official Limits vs Conservative Operational Margins
+  // - [공식 기준 (Official Limit)]:
+  //   - 초당 총 요청 상한: 전체 계정/AppKey당 최대 5건/초 (최소 200ms 간격 필수, 초과 시 Error 1700 반환)
+  //   - Error 1700: 게이트웨이 초당 호출 제한 초과 시 발생하는 키움 공식 오류 코드
+  // - [보수적 안전 설정 (Conservative Operational Margins)]:
+  //   - 아래 카테고리별 세부 간격(ms)은 네트워크 지연, 왕복시간(RTT), 서버 내부 지터 및 버스트 방지를 위해
+  //     키움의 초당 제한을 보수적으로 안전하게 여유를 두어 설정한 운영 기준값입니다. (공식 문서에 명시된 고정 ms가 아님)
+  private readonly CATEGORY_INTERVALS: Record<KiwoomTrCategory, number> = {
+    CHART: 800,    // ka10080, ka10081 (차트 TR: 키움 서버 대용량 DB 부하로 초당 1~2건 권고에 맞춘 보수적 800ms 간격)
+    QUOTE: 250,    // ka10001, ka10004 (현재가/호가 TR: 공식 초당 5건에 50ms 버퍼를 둔 보수적 250ms 간격)
+    RANKING: 350,  // ka10027, ka10030, ka10032 (순위 TR: 초당 ~2.8건 보수적 350ms 간격)
+    SECTOR: 350,   // ka20001 (업종/지수 TR: 초당 ~2.8건 보수적 350ms 간격)
+    MASTER: 500,   // ka10099 (종목 마스터 TR: 초당 ~2건 보수적 500ms 간격)
+    DEFAULT: 300,  // 기타 REST 요청 보수적 기본 간격
+  };
+
+  private readonly GLOBAL_MIN_INTERVAL = 200; // 전체 키움 REST 요청 간 최소 시작 간격 (공식 5 req/sec 절대 상한 준수)
+  private lastCategoryStartTime: Record<KiwoomTrCategory, number> = {
+    CHART: 0,
+    QUOTE: 0,
+    RANKING: 0,
+    SECTOR: 0,
+    MASTER: 0,
+    DEFAULT: 0,
+  };
+  private lastGlobalStartTime: number = 0;
+  private globalCooldownUntil: number = 0; // 1700 발생 시 전체 큐 대기를 위한 글로벌 쿨다운 타임스탬프
+  private rateLimitQueue: Promise<any> = Promise.resolve();
+  private inFlightRequests: Map<string, Promise<any>> = new Map();
+
+  /**
+   * Helper: Check if error corresponds to Kiwoom 1700 (API call rate limit exceeded)
+   */
+  private isRateLimitError(err: any): boolean {
+    if (!err) return false;
+    if (err.status === 429) return true;
+    if (err.return_code === 1700 || err.return_code === '1700') return true;
+    const msg = String(err.message || err.return_msg || err.msg1 || '');
+    if (msg.includes('1700') || msg.includes('허용된 API 요청 개수') || msg.includes('초당 허용된')) return true;
+    return false;
+  }
+
+  /**
+   * Central Rate-Limited Queue Executor with interval enforcement, in-flight deduplication, and exponential backoff on 1700
+   * 
+   * Queue Serialization & Retry Guarantee:
+   * - Retries happen within the serialized queue turn, holding queue order so that subsequent requests
+   *   do not bypass or overtake the waiting retry.
+   * - Sets `globalCooldownUntil` to block any other requests from firing during the backoff period.
+   */
+  public async executeWithRateLimit<T>(options: {
+    category: KiwoomTrCategory;
+    dedupKey?: string;
+    fn: () => Promise<T>;
+    maxRetries?: number;
+  }): Promise<T> {
+    const { category, dedupKey, fn, maxRetries = 3 } = options;
+
+    // 1. In-flight request deduplication: return existing promise if identical request is pending
+    if (dedupKey && this.inFlightRequests.has(dedupKey)) {
+      return this.inFlightRequests.get(dedupKey) as Promise<T>;
+    }
+
+    const taskPromise = this.scheduleInRateLimiter(category, dedupKey, fn, maxRetries);
+
+    if (dedupKey) {
+      this.inFlightRequests.set(dedupKey, taskPromise);
+      taskPromise.finally(() => {
+        this.inFlightRequests.delete(dedupKey);
+      }).catch(() => {});
+    }
+
+    return taskPromise;
+  }
+
+  /**
+   * Guarantees serialization and minimum start-time interval per TR category and globally.
+   * Retries on 1700 are executed within the serial turn with exponential backoff.
+   */
+  private async scheduleInRateLimiter<T>(
+    category: KiwoomTrCategory,
+    dedupKey: string | undefined,
+    executeFn: () => Promise<T>,
+    maxRetries: number
+  ): Promise<T> {
+    let runTask: () => Promise<T | void>;
+    const resultPromise = new Promise<T>((resolve, reject) => {
+      runTask = async () => {
+        let attempts = 0;
+        while (true) {
+          try {
+            const now = Date.now();
+            const waitCooldown = Math.max(0, this.globalCooldownUntil - now);
+            const catInterval = this.CATEGORY_INTERVALS[category] || 300;
+            const catLast = this.lastCategoryStartTime[category] || 0;
+            const waitCat = Math.max(0, catInterval - (now - catLast));
+            const waitGlobal = Math.max(0, this.GLOBAL_MIN_INTERVAL - (now - this.lastGlobalStartTime));
+            const waitMs = Math.max(waitCooldown, waitCat, waitGlobal);
+
+            if (waitMs > 0) {
+              await new Promise(r => setTimeout(r, waitMs));
+            }
+
+            // Crucial: Record request start time BEFORE executing request
+            const startTime = Date.now();
+            this.lastCategoryStartTime[category] = startTime;
+            this.lastGlobalStartTime = startTime;
+
+            const res = await executeFn();
+            resolve(res);
+            return res;
+          } catch (err: any) {
+            attempts++;
+            const is1700 = this.isRateLimitError(err);
+            if (is1700 && attempts <= maxRetries) {
+              const jitter = Math.floor(Math.random() * 100) + 50; // 50~150ms jitter
+              const backoffMs = Math.min(2500, (600 * Math.pow(2, attempts - 1)) + jitter);
+              console.warn(
+                `[Kiwoom API RateLimiter] 1700 초당 요청 제한 감지 (${category}, key=${dedupKey || 'none'}). ` +
+                `${backoffMs}ms 지수 백오프 대기 후 재시도 (${attempts}/${maxRetries})...`
+              );
+
+              // Advance global cooldown to lock out subsequent executions across all categories
+              this.globalCooldownUntil = Date.now() + backoffMs;
+              this.lastCategoryStartTime[category] = Date.now() + backoffMs;
+              this.lastGlobalStartTime = Date.now() + backoffMs;
+
+              await new Promise(r => setTimeout(r, backoffMs));
+              continue; // Retries immediately within this queue turn, preserving strict serialization
+            }
+            reject(err);
+            return;
+          }
+        }
+      };
+    });
+
+    // Chain to serial rateLimitQueue ensuring strict concurrency serialization
+    this.rateLimitQueue = this.rateLimitQueue
+      .then(() => runTask())
+      .catch(() => {});
+
+    return resultPromise;
+  }
+
+  /**
+   * Legacy queue compatibility helper (routes through central rate limiter)
+   */
+  private async enqueueRequest<T>(
+    requestFn: () => Promise<T>,
+    category: KiwoomTrCategory = 'CHART',
+    dedupKey?: string
+  ): Promise<T> {
+    return this.executeWithRateLimit({
+      category,
+      dedupKey,
+      fn: requestFn,
+    });
   }
 
   constructor() {
@@ -510,33 +680,59 @@ class KiwoomApiService {
         const token = await this.getAccessToken();
         const url = `${this.config.baseUrl}/api/dostk/stkinfo`;
 
-        const [kospiRes, kosdaqRes] = await Promise.all([
-          fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json;charset=UTF-8',
-              'authorization': `Bearer ${token}`,
-              'appkey': this.config.appKey,
-              'appsecret': this.config.appSecret,
-              'api-id': 'ka10099',
-            },
-            body: JSON.stringify({ mrkt_tp: '0' }),
-          }),
-          fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json;charset=UTF-8',
-              'authorization': `Bearer ${token}`,
-              'appkey': this.config.appKey,
-              'appsecret': this.config.appSecret,
-              'api-id': 'ka10099',
-            },
-            body: JSON.stringify({ mrkt_tp: '10' }),
-          }),
-        ]);
+        const kospiData = await this.executeWithRateLimit({
+          category: 'MASTER',
+          dedupKey: 'master:kospi',
+          fn: async () => {
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json;charset=UTF-8',
+                'authorization': `Bearer ${token}`,
+                'appkey': this.config.appKey,
+                'appsecret': this.config.appSecret,
+                'api-id': 'ka10099',
+              },
+              body: JSON.stringify({ mrkt_tp: '0' }),
+            });
+            const data = await res.json();
+            if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
+              const err: any = new Error(`Kiwoom 코스피 마스터 조회(ka10099) 실패: ${data.return_msg || res.status}`);
+              err.return_code = data.return_code;
+              err.return_msg = data.return_msg;
+              err.status = res.status;
+              throw err;
+            }
+            return data;
+          },
+        });
 
-        const kospiData = await kospiRes.json();
-        const kosdaqData = await kosdaqRes.json();
+        const kosdaqData = await this.executeWithRateLimit({
+          category: 'MASTER',
+          dedupKey: 'master:kosdaq',
+          fn: async () => {
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json;charset=UTF-8',
+                'authorization': `Bearer ${token}`,
+                'appkey': this.config.appKey,
+                'appsecret': this.config.appSecret,
+                'api-id': 'ka10099',
+              },
+              body: JSON.stringify({ mrkt_tp: '10' }),
+            });
+            const data = await res.json();
+            if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
+              const err: any = new Error(`Kiwoom 코스닥 마스터 조회(ka10099) 실패: ${data.return_msg || res.status}`);
+              err.return_code = data.return_code;
+              err.return_msg = data.return_msg;
+              err.status = res.status;
+              throw err;
+            }
+            return data;
+          },
+        });
 
         const all: KiwoomMasterStock[] = [];
         const map = new Map<string, KiwoomMasterStock>();
@@ -772,98 +968,73 @@ class KiwoomApiService {
       return cached.data;
     }
 
-    const token = await this.getAccessToken();
-    const url = `${this.config.baseUrl}/api/dostk/stkinfo`;
-
-    // 1. Inquire Basic Price Info via ka10001 (with rate-limit retry)
-    let data1: any = null;
-    let attempts = 0;
-    const maxAttempts = 3;
-
-    while (attempts < maxAttempts) {
-      attempts++;
-      const res1 = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json;charset=UTF-8',
-          'authorization': `Bearer ${token}`,
-          'appkey': this.config.appKey,
-          'appsecret': this.config.appSecret,
-          'secretkey': this.config.appSecret,
-          'api-id': 'ka10001',
-        },
-        body: JSON.stringify({ stk_cd: symbol }),
-      });
-
-      try {
-        data1 = await res1.json();
-      } catch {
-        data1 = { return_code: -1, return_msg: `HTTP ${res1.status}` };
-      }
-
-      if (
-        data1 &&
-        (data1.return_code === 1700 ||
-          data1.return_code === '1700' ||
-          (data1.return_msg && data1.return_msg.includes('허용된 API 요청 개수')))
-      ) {
-        if (attempts < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 250 * attempts));
-          continue;
+    const dedupKey = `quote:ka10001:${symbol}`;
+    return this.executeWithRateLimit({
+      category: 'QUOTE',
+      dedupKey,
+      fn: async () => {
+        // Double check cache in case a queued request already resolved and cached it
+        const innerCached = this.stockPriceCache.get(symbol);
+        if (innerCached && innerCached.expiresAt > Date.now()) {
+          return innerCached.data;
         }
-      }
 
-      if (!res1.ok || (data1.return_code !== undefined && data1.return_code !== 0 && data1.return_code !== '0')) {
-        throw new Error(`Kiwoom 시세 조회(ka10001) 실패: ${data1.return_msg || res1.status}`);
-      }
-      break;
-    }
+        const token = await this.getAccessToken();
+        const url = `${this.config.baseUrl}/api/dostk/stkinfo`;
 
-    // Standardized Parsing with sign correction, comma stripping, and weekend closing price fallback
-    const stockResult = this.parseKiwoomStockQuote(symbol, data1);
+        // 1. Inquire Basic Price Info via ka10001 (central rate-limited)
+        const res1 = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'authorization': `Bearer ${token}`,
+            'appkey': this.config.appKey,
+            'appsecret': this.config.appSecret,
+            'secretkey': this.config.appSecret,
+            'api-id': 'ka10001',
+          },
+          body: JSON.stringify({ stk_cd: symbol }),
+        });
 
-    // 2. Inquire Execution Info via ka10003 for acc_trde_prica (원 단위)
-    let tradingValue = 0;
-    try {
-      const res3 = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json;charset=UTF-8',
-          'authorization': `Bearer ${token}`,
-          'appkey': this.config.appKey,
-          'appsecret': this.config.appSecret,
-          'secretkey': this.config.appSecret,
-          'api-id': 'ka10003',
-        },
-        body: JSON.stringify({ stk_cd: symbol }),
-      });
-      if (res3.ok) {
-        const data3 = await res3.json();
-        const latestCntr = data3.cntr_infr?.[0] || data3.output?.[0] || data3.data?.[0];
-        if (latestCntr && latestCntr.acc_trde_prica) {
-          const rawWon = parseCleanInt(latestCntr.acc_trde_prica, 0);
-          if (rawWon > 0) {
-            // 원 -> 억원 변환
-            tradingValue = Math.round(rawWon / 100000000);
-          }
+        let data1: any = null;
+        try {
+          data1 = await res1.json();
+        } catch {
+          data1 = { return_code: -1, return_msg: `HTTP ${res1.status}` };
         }
-      }
-    } catch {
-      // Fallback if ka10003 fails
-    }
 
-    if (tradingValue <= 0 && stockResult.price && stockResult.volume) {
-      tradingValue = Math.round((stockResult.price * stockResult.volume) / 100000000);
-    }
-    stockResult.tradingValue = tradingValue;
+        if (!res1.ok || (data1.return_code !== undefined && data1.return_code !== 0 && data1.return_code !== '0')) {
+          const err: any = new Error(`Kiwoom 시세 조회(ka10001) 실패: ${data1.return_msg || res1.status}`);
+          err.return_code = data1.return_code;
+          err.return_msg = data1.return_msg;
+          err.status = res1.status;
+          throw err;
+        }
 
-    // Cache for 3 seconds to preserve API rate limits
-    this.stockPriceCache.set(symbol, {
-      data: stockResult,
-      expiresAt: Date.now() + 3000,
+        // Standardized Parsing with sign correction, comma stripping, and weekend closing price fallback
+        const stockResult = this.parseKiwoomStockQuote(symbol, data1);
+
+        // Trading value in 억 원: derived from ka10001 trde_amt/trde_prica or calculated from price * volume
+        let tradingValue = 0;
+        const rawAmt = data1.trde_amt ?? data1.acml_trde_amt ?? data1.output?.trde_amt ?? data1.output?.acml_trde_amt;
+        if (rawAmt) {
+          const val = parseCleanInt(rawAmt, 0);
+          tradingValue = val > 10000000 ? Math.round(val / 100000000) : val;
+        }
+        if (tradingValue <= 0 && stockResult.price && stockResult.volume) {
+          tradingValue = Math.round((stockResult.price * stockResult.volume) / 100000000);
+        }
+        stockResult.tradingValue = tradingValue;
+
+        // Cache for 3 seconds to preserve API rate limits
+        this.stockPriceCache.set(symbol, {
+          data: stockResult,
+          expiresAt: Date.now() + 3000,
+        });
+
+        return stockResult;
+      },
     });
-
-    return stockResult;
   }
 
   /**
@@ -876,63 +1047,74 @@ class KiwoomApiService {
     const inds_cd = isKospi ? '001' : '101';
     const name = isKospi ? '코스피' : '코스닥';
 
-    const token = await this.getAccessToken();
-    const url = `${this.config.baseUrl}/api/dostk/sect`;
+    const dedupKey = `sector:ka20001:${marketCode}`;
+    return this.executeWithRateLimit({
+      category: 'SECTOR',
+      dedupKey,
+      fn: async () => {
+        const token = await this.getAccessToken();
+        const url = `${this.config.baseUrl}/api/dostk/sect`;
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json;charset=UTF-8',
-        'authorization': `Bearer ${token}`,
-        'appkey': this.config.appKey,
-        'appsecret': this.config.appSecret,
-        'api-id': 'ka20001',
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'authorization': `Bearer ${token}`,
+            'appkey': this.config.appKey,
+            'appsecret': this.config.appSecret,
+            'api-id': 'ka20001',
+          },
+          body: JSON.stringify({ mrkt_tp, inds_cd }),
+        });
+
+        const data = await res.json();
+        if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
+          const err: any = new Error(`Kiwoom 업종/지수 조회 실패: ${data.return_msg || res.status}`);
+          err.return_code = data.return_code;
+          err.return_msg = data.return_msg;
+          err.status = res.status;
+          throw err;
+        }
+
+        const curPrc = Math.abs(parseCleanFloat(data.cur_prc, 0));
+        const change = parseCleanFloat(data.pred_pre, 0);
+        const changePercent = parseCleanFloat(data.flu_rt, 0);
+        const high = Math.abs(parseCleanFloat(data.high_pric, curPrc)) || curPrc;
+        const low = Math.abs(parseCleanFloat(data.low_pric, curPrc)) || curPrc;
+        const volume = Math.abs(parseCleanInt(data.trde_qty, 0));
+        const rawTrdePrica = Math.abs(parseCleanInt(data.trde_prica, 0));
+        const tradingValue = Math.round(rawTrdePrica / 100); // 백만원 -> 억원
+        const advanceCount = parseCleanInt(data.rising, 450);
+        const declineCount = parseCleanInt(data.fall, 380);
+
+        let sparkline: number[] = [];
+        if (Array.isArray(data.inds_cur_prc_tm) && data.inds_cur_prc_tm.length > 0) {
+          sparkline = data.inds_cur_prc_tm
+            .map((item: any) => Math.abs(parseCleanFloat(item.cur_prc_n, 0)))
+            .filter((val: number) => !isNaN(val) && val > 0)
+            .reverse()
+            .slice(-10);
+        }
+        if (sparkline.length < 2) {
+          sparkline = [curPrc - change, curPrc];
+        }
+
+        return {
+          name,
+          symbol: marketCode,
+          value: curPrc,
+          change,
+          changePercent,
+          high,
+          low,
+          volume,
+          tradingValue: tradingValue > 0 ? tradingValue : 10,
+          advanceCount,
+          declineCount,
+          sparkline,
+        };
       },
-      body: JSON.stringify({ mrkt_tp, inds_cd }),
     });
-
-    const data = await res.json();
-    if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
-      throw new Error(`Kiwoom 업종/지수 조회 실패: ${data.return_msg || res.status}`);
-    }
-
-    const curPrc = Math.abs(parseCleanFloat(data.cur_prc, 0));
-    const change = parseCleanFloat(data.pred_pre, 0);
-    const changePercent = parseCleanFloat(data.flu_rt, 0);
-    const high = Math.abs(parseCleanFloat(data.high_pric, curPrc)) || curPrc;
-    const low = Math.abs(parseCleanFloat(data.low_pric, curPrc)) || curPrc;
-    const volume = Math.abs(parseCleanInt(data.trde_qty, 0));
-    const rawTrdePrica = Math.abs(parseCleanInt(data.trde_prica, 0));
-    const tradingValue = Math.round(rawTrdePrica / 100); // 백만원 -> 억원
-    const advanceCount = parseCleanInt(data.rising, 450);
-    const declineCount = parseCleanInt(data.fall, 380);
-
-    let sparkline: number[] = [];
-    if (Array.isArray(data.inds_cur_prc_tm) && data.inds_cur_prc_tm.length > 0) {
-      sparkline = data.inds_cur_prc_tm
-        .map((item: any) => Math.abs(parseCleanFloat(item.cur_prc_n, 0)))
-        .filter((val: number) => !isNaN(val) && val > 0)
-        .reverse()
-        .slice(-10);
-    }
-    if (sparkline.length < 2) {
-      sparkline = [curPrc - change, curPrc];
-    }
-
-    return {
-      name,
-      symbol: marketCode,
-      value: curPrc,
-      change,
-      changePercent,
-      high,
-      low,
-      volume,
-      tradingValue: tradingValue > 0 ? tradingValue : 10,
-      advanceCount,
-      declineCount,
-      sparkline,
-    };
   }
 
   /**
@@ -946,145 +1128,153 @@ class KiwoomApiService {
     market: MarketFilterType,
     sort: RankingSortType
   ): Promise<{ items: StockRankingItem[]; trId: string }> {
-    const token = await this.getAccessToken();
-    const url = `${this.config.baseUrl}/api/dostk/rkinfo`;
+    const trId = sort === 'volume' ? 'ka10030' : sort === 'trading_value' ? 'ka10032' : 'ka10027';
+    const dedupKey = `ranking:${trId}:${market}:${sort}`;
+    return this.executeWithRateLimit({
+      category: 'RANKING',
+      dedupKey,
+      fn: async () => {
+        const token = await this.getAccessToken();
+        const url = `${this.config.baseUrl}/api/dostk/rkinfo`;
 
-    // Map market filter to Kiwoom mrkt_tp ('001': KOSPI, '101': KOSDAQ, '000': ALL)
-    let mrkt_tp = '000';
-    if (market === 'KOSPI') mrkt_tp = '001';
-    else if (market === 'KOSDAQ') mrkt_tp = '101';
+        // Map market filter to Kiwoom mrkt_tp ('001': KOSPI, '101': KOSDAQ, '000': ALL)
+        let mrkt_tp = '000';
+        if (market === 'KOSPI') mrkt_tp = '001';
+        else if (market === 'KOSDAQ') mrkt_tp = '101';
 
-    let trId = 'ka10027';
-    let bodyPayload: Record<string, any> = {};
+        let bodyPayload: Record<string, any> = {};
 
-    if (sort === 'change_rise' || sort === 'change_fall') {
-      trId = 'ka10027';
-      bodyPayload = {
-        mrkt_tp,
-        sort_tp: sort === 'change_rise' ? '1' : '4', // 1: 상승률, 4: 하락률
-        trde_qty_cnd: '0',
-        stk_cnd: '0',
-        crd_cnd: '0',
-        updown_incls: '1',
-        pric_cnd: '0',
-        trde_prica_cnd: '0',
-        stex_tp: '1',
-      };
-    } else if (sort === 'volume') {
-      trId = 'ka10030';
-      bodyPayload = {
-        mrkt_tp,
-        sort_tp: '1',
-        mang_stk_incls: '0',
-        crd_tp: '0',
-        trde_qty_tp: '0',
-        pric_tp: '0',
-        trde_prica_tp: '0',
-        mrkt_open_tp: '0',
-        stex_tp: '1',
-      };
-    } else if (sort === 'trading_value') {
-      trId = 'ka10032';
-      bodyPayload = {
-        mrkt_tp,
-        mang_stk_incls: '0',
-        stex_tp: '1',
-      };
-    }
+        if (sort === 'change_rise' || sort === 'change_fall') {
+          bodyPayload = {
+            mrkt_tp,
+            sort_tp: sort === 'change_rise' ? '1' : '4', // 1: 상승률, 4: 하락률
+            trde_qty_cnd: '0',
+            stk_cnd: '0',
+            crd_cnd: '0',
+            updown_incls: '1',
+            pric_cnd: '0',
+            trde_prica_cnd: '0',
+            stex_tp: '1',
+          };
+        } else if (sort === 'volume') {
+          bodyPayload = {
+            mrkt_tp,
+            sort_tp: '1',
+            mang_stk_incls: '0',
+            crd_tp: '0',
+            trde_qty_tp: '0',
+            pric_tp: '0',
+            trde_prica_tp: '0',
+            mrkt_open_tp: '0',
+            stex_tp: '1',
+          };
+        } else if (sort === 'trading_value') {
+          bodyPayload = {
+            mrkt_tp,
+            mang_stk_incls: '0',
+            stex_tp: '1',
+          };
+        }
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json;charset=UTF-8',
-        'authorization': `Bearer ${token}`,
-        'appkey': this.config.appKey,
-        'appsecret': this.config.appSecret,
-        'api-id': trId,
-        'cont-yn': 'N',
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'authorization': `Bearer ${token}`,
+            'appkey': this.config.appKey,
+            'appsecret': this.config.appSecret,
+            'api-id': trId,
+            'cont-yn': 'N',
+          },
+          body: JSON.stringify(bodyPayload),
+        });
+
+        let data: any;
+        try {
+          data = await res.json();
+        } catch {
+          throw new Error(`Kiwoom 순위 조회(${trId}) HTTP 응답 구문 분석 실패: ${res.status}`);
+        }
+
+        if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
+          const err: any = new Error(`Kiwoom 순위 조회(${trId}) 실패 [code: ${data.return_code}]: ${data.return_msg || res.status}`);
+          err.return_code = data.return_code;
+          err.return_msg = data.return_msg;
+          err.status = res.status;
+          throw err;
+        }
+
+        // Extract ranking array depending on TR
+        let rawList: any[] = [];
+        if (trId === 'ka10027') {
+          rawList = data.pred_pre_flu_rt_upper || data.output || [];
+        } else if (trId === 'ka10030') {
+          rawList = data.tdy_trde_qty_upper || data.output || [];
+        } else if (trId === 'ka10032') {
+          rawList = data.trde_prica_upper || data.output || [];
+        }
+
+        if (!Array.isArray(rawList)) {
+          rawList = [];
+        }
+
+        const items: StockRankingItem[] = rawList.slice(0, 20).map((item: any, idx: number) => {
+          const code = String(item.stk_cd || '').trim();
+          const master = this.getMasterStock(code);
+          const name = String(item.stk_nm || master?.name || code).trim();
+          const price = Math.abs(parseCleanInt(item.cur_prc, 0));
+          
+          let change = parseCleanInt(item.pred_pre, 0);
+          const sig = String(item.pred_pre_sig || '').trim();
+          if (sig === '4' || sig === '5') {
+            change = -Math.abs(change);
+          } else if (sig === '1' || sig === '2') {
+            change = Math.abs(change);
+          }
+          
+          let changePercent = parseCleanFloat(item.flu_rt, 0);
+          if (sig === '4' || sig === '5') {
+            changePercent = -Math.abs(changePercent);
+          } else if (sig === '1' || sig === '2') {
+            changePercent = Math.abs(changePercent);
+          }
+
+          const volume = Math.abs(parseCleanInt(item.now_trde_qty || item.trde_qty, 0));
+
+          // Trading value in 억 원
+          let tradingValue = 0;
+          if (item.trde_prica) {
+            const val = parseCleanInt(item.trde_prica, 0);
+            tradingValue = val > 10000000 ? Math.round(val / 100000000) : val;
+          } else if (item.trde_amt) {
+            const val = parseCleanInt(item.trde_amt, 0);
+            tradingValue = val > 10000000 ? Math.round(val / 100000000) : Math.round(val / 100);
+          }
+          if (tradingValue <= 0 && price > 0 && volume > 0) {
+            tradingValue = Math.round((price * volume) / 100000000);
+          }
+
+          const stockMarket: 'KOSPI' | 'KOSDAQ' = master?.market || (market === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI');
+          const sector = master?.sector || '기타';
+
+          return {
+            rank: idx + 1,
+            symbol: code,
+            name,
+            market: stockMarket,
+            sector,
+            price,
+            change,
+            changePercent,
+            volume,
+            tradingValue,
+            prevClose: price - change,
+          };
+        });
+
+        return { items, trId };
       },
-      body: JSON.stringify(bodyPayload),
     });
-
-    let data: any;
-    try {
-      data = await res.json();
-    } catch {
-      throw new Error(`Kiwoom 순위 조회(${trId}) HTTP 응답 구문 분석 실패: ${res.status}`);
-    }
-
-    if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
-      throw new Error(`Kiwoom 순위 조회(${trId}) 실패 [code: ${data.return_code}]: ${data.return_msg || res.status}`);
-    }
-
-    // Extract ranking array depending on TR
-    let rawList: any[] = [];
-    if (trId === 'ka10027') {
-      rawList = data.pred_pre_flu_rt_upper || data.output || [];
-    } else if (trId === 'ka10030') {
-      rawList = data.tdy_trde_qty_upper || data.output || [];
-    } else if (trId === 'ka10032') {
-      rawList = data.trde_prica_upper || data.output || [];
-    }
-
-    if (!Array.isArray(rawList)) {
-      rawList = [];
-    }
-
-    const items: StockRankingItem[] = rawList.slice(0, 20).map((item: any, idx: number) => {
-      const code = String(item.stk_cd || '').trim();
-      const master = this.getMasterStock(code);
-      const name = String(item.stk_nm || master?.name || code).trim();
-      const price = Math.abs(parseCleanInt(item.cur_prc, 0));
-      
-      let change = parseCleanInt(item.pred_pre, 0);
-      const sig = String(item.pred_pre_sig || '').trim();
-      if (sig === '4' || sig === '5') {
-        change = -Math.abs(change);
-      } else if (sig === '1' || sig === '2') {
-        change = Math.abs(change);
-      }
-      
-      let changePercent = parseCleanFloat(item.flu_rt, 0);
-      if (sig === '4' || sig === '5') {
-        changePercent = -Math.abs(changePercent);
-      } else if (sig === '1' || sig === '2') {
-        changePercent = Math.abs(changePercent);
-      }
-
-      const volume = Math.abs(parseCleanInt(item.now_trde_qty || item.trde_qty, 0));
-
-      // Trading value in 억 원
-      let tradingValue = 0;
-      if (item.trde_prica) {
-        const val = parseCleanInt(item.trde_prica, 0);
-        tradingValue = val > 10000000 ? Math.round(val / 100000000) : val;
-      } else if (item.trde_amt) {
-        const val = parseCleanInt(item.trde_amt, 0);
-        tradingValue = val > 10000000 ? Math.round(val / 100000000) : Math.round(val / 100);
-      }
-      if (tradingValue <= 0 && price > 0 && volume > 0) {
-        tradingValue = Math.round((price * volume) / 100000000);
-      }
-
-      const stockMarket: 'KOSPI' | 'KOSDAQ' = master?.market || (market === 'KOSDAQ' ? 'KOSDAQ' : 'KOSPI');
-      const sector = master?.sector || '기타';
-
-      return {
-        rank: idx + 1,
-        symbol: code,
-        name,
-        market: stockMarket,
-        sector,
-        price,
-        change,
-        changePercent,
-        volume,
-        tradingValue,
-        prevClose: price - change,
-      };
-    });
-
-    return { items, trId };
   }
 
   /**
@@ -1102,55 +1292,66 @@ class KiwoomApiService {
    * @param ticScope 틱범위 ("1", "5", "15", "30", "60")
    */
   public async fetchStockMinuteCandles(symbol: string, ticScope: '1' | '5' | '15' | '30' | '60'): Promise<CandleData[]> {
-    const token = await this.getAccessToken();
-    const url = `${this.config.baseUrl}/api/dostk/chart`;
+    const dedupKey = `chart:ka10080:${symbol}:${ticScope}`;
+    return this.executeWithRateLimit({
+      category: 'CHART',
+      dedupKey,
+      fn: async () => {
+        const token = await this.getAccessToken();
+        const url = `${this.config.baseUrl}/api/dostk/chart`;
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json;charset=UTF-8',
-        'authorization': `Bearer ${token}`,
-        'appkey': this.config.appKey,
-        'appsecret': this.config.appSecret,
-        'api-id': 'ka10080',
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'authorization': `Bearer ${token}`,
+            'appkey': this.config.appKey,
+            'appsecret': this.config.appSecret,
+            'api-id': 'ka10080',
+          },
+          body: JSON.stringify({
+            stk_cd: symbol,
+            tic_scope: ticScope,
+            upd_stkpc_tp: '1',
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
+          const err: any = new Error(`Kiwoom 분봉 차트 조회(ka10080, ${ticScope}분) 실패: ${data.return_msg || res.status}`);
+          err.return_code = data.return_code;
+          err.return_msg = data.return_msg;
+          err.status = res.status;
+          throw err;
+        }
+
+        const chartList = data.stk_min_pole_chart_qry;
+        if (!Array.isArray(chartList) || chartList.length === 0) {
+          return [];
+        }
+
+        return chartList.map((item: any) => {
+          const tm = (item.cntr_tm || '').trim();
+          let formattedTime = tm;
+          if (tm.length === 14) {
+            // "20261007153000" -> "10/07 15:30"
+            formattedTime = `${tm.slice(4, 6)}/${tm.slice(6, 8)} ${tm.slice(8, 10)}:${tm.slice(10, 12)}`;
+          } else if (tm.length === 12) {
+            formattedTime = `${tm.slice(4, 6)}/${tm.slice(6, 8)} ${tm.slice(8, 10)}:${tm.slice(10, 12)}`;
+          } else if (tm.length === 6) {
+            formattedTime = `${tm.slice(0, 2)}:${tm.slice(2, 4)}`;
+          }
+          return {
+            time: formattedTime,
+            open: Math.abs(parseInt(item.open_pric, 10)) || 0,
+            high: Math.abs(parseInt(item.high_pric, 10)) || 0,
+            low: Math.abs(parseInt(item.low_pric, 10)) || 0,
+            close: Math.abs(parseInt(item.cur_prc, 10)) || 0,
+            volume: Math.abs(parseInt(item.trde_qty, 10)) || 0,
+          };
+        }).reverse();
       },
-      body: JSON.stringify({
-        stk_cd: symbol,
-        tic_scope: ticScope,
-        upd_stkpc_tp: '1',
-      }),
     });
-
-    const data = await res.json();
-    if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
-      throw new Error(`Kiwoom 분봉 차트 조회(ka10080, ${ticScope}분) 실패: ${data.return_msg || res.status}`);
-    }
-
-    const chartList = data.stk_min_pole_chart_qry;
-    if (!Array.isArray(chartList) || chartList.length === 0) {
-      return [];
-    }
-
-    return chartList.map((item: any) => {
-      const tm = (item.cntr_tm || '').trim();
-      let formattedTime = tm;
-      if (tm.length === 14) {
-        // "20261007153000" -> "10/07 15:30"
-        formattedTime = `${tm.slice(4, 6)}/${tm.slice(6, 8)} ${tm.slice(8, 10)}:${tm.slice(10, 12)}`;
-      } else if (tm.length === 12) {
-        formattedTime = `${tm.slice(4, 6)}/${tm.slice(6, 8)} ${tm.slice(8, 10)}:${tm.slice(10, 12)}`;
-      } else if (tm.length === 6) {
-        formattedTime = `${tm.slice(0, 2)}:${tm.slice(2, 4)}`;
-      }
-      return {
-        time: formattedTime,
-        open: Math.abs(parseInt(item.open_pric, 10)) || 0,
-        high: Math.abs(parseInt(item.high_pric, 10)) || 0,
-        low: Math.abs(parseInt(item.low_pric, 10)) || 0,
-        close: Math.abs(parseInt(item.cur_prc, 10)) || 0,
-        volume: Math.abs(parseInt(item.trde_qty, 10)) || 0,
-      };
-    }).reverse();
   }
 
   /**
@@ -1158,48 +1359,59 @@ class KiwoomApiService {
    * Kiwoom REST API Endpoint: /api/dostk/chart (TR: ka10081)
    */
   public async fetchStockDailyCandles(symbol: string, baseDt?: string): Promise<CandleData[]> {
-    const token = await this.getAccessToken();
     const today = baseDt || new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const url = `${this.config.baseUrl}/api/dostk/chart`;
+    const dedupKey = `chart:ka10081:${symbol}:${today}`;
+    return this.executeWithRateLimit({
+      category: 'CHART',
+      dedupKey,
+      fn: async () => {
+        const token = await this.getAccessToken();
+        const url = `${this.config.baseUrl}/api/dostk/chart`;
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json;charset=UTF-8',
-        'authorization': `Bearer ${token}`,
-        'appkey': this.config.appKey,
-        'appsecret': this.config.appSecret,
-        'api-id': 'ka10081',
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'authorization': `Bearer ${token}`,
+            'appkey': this.config.appKey,
+            'appsecret': this.config.appSecret,
+            'api-id': 'ka10081',
+          },
+          body: JSON.stringify({
+            stk_cd: symbol,
+            base_dt: today,
+            upd_stkpc_tp: '1',
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
+          const err: any = new Error(`Kiwoom 일봉 차트 조회(ka10081) 실패: ${data.return_msg || res.status}`);
+          err.return_code = data.return_code;
+          err.return_msg = data.return_msg;
+          err.status = res.status;
+          throw err;
+        }
+
+        const chartList = data.stk_dt_pole_chart_qry;
+        if (!Array.isArray(chartList) || chartList.length === 0) {
+          return [];
+        }
+
+        return chartList.map((item: any) => {
+          const d = (item.dt || '').trim();
+          const formattedDate = d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : d;
+          return {
+            time: formattedDate,
+            open: Math.abs(parseInt(item.open_pric, 10)) || 0,
+            high: Math.abs(parseInt(item.high_pric, 10)) || 0,
+            low: Math.abs(parseInt(item.low_pric, 10)) || 0,
+            close: Math.abs(parseInt(item.cur_prc, 10)) || 0,
+            volume: Math.abs(parseInt(item.trde_qty, 10)) || 0,
+          };
+        }).reverse();
       },
-      body: JSON.stringify({
-        stk_cd: symbol,
-        base_dt: today,
-        upd_stkpc_tp: '1',
-      }),
     });
-
-    const data = await res.json();
-    if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
-      throw new Error(`Kiwoom 일봉 차트 조회(ka10081) 실패: ${data.return_msg || res.status}`);
-    }
-
-    const chartList = data.stk_dt_pole_chart_qry;
-    if (!Array.isArray(chartList) || chartList.length === 0) {
-      return [];
-    }
-
-    return chartList.map((item: any) => {
-      const d = (item.dt || '').trim();
-      const formattedDate = d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : d;
-      return {
-        time: formattedDate,
-        open: Math.abs(parseInt(item.open_pric, 10)) || 0,
-        high: Math.abs(parseInt(item.high_pric, 10)) || 0,
-        low: Math.abs(parseInt(item.low_pric, 10)) || 0,
-        close: Math.abs(parseInt(item.cur_prc, 10)) || 0,
-        volume: Math.abs(parseInt(item.trde_qty, 10)) || 0,
-      };
-    }).reverse();
   }
 
   /**
@@ -1295,72 +1507,87 @@ class KiwoomApiService {
       };
     }
 
-    // 2. Inquire Real Kiwoom Open API Data
-    try {
-      let candles: CandleData[] = [];
-      if (trId === 'ka10080' && ticScope) {
-        candles = await this.enqueueRequest(() => this.fetchStockMinuteCandles(symbol, ticScope));
-      } else if (trId === 'ka10081') {
-        candles = await this.enqueueRequest(() => this.fetchStockDailyCandles(symbol));
-      }
-
-      // Requirement 4: Align last candle close with current live price
-      if (currentPrice && currentPrice > 0 && candles.length > 0) {
-        const last = { ...candles[candles.length - 1] };
-        last.close = currentPrice;
-        if (currentPrice > last.high) last.high = currentPrice;
-        if (currentPrice < last.low) last.low = currentPrice;
-        candles[candles.length - 1] = last;
-      }
-
-      const response: KiwoomChartResponse = {
-        symbol,
-        period,
-        periodLabel,
-        trId,
-        ticScope,
-        supported: true,
-        candles,
-        currentPrice,
-        lastCandleClose: candles.length > 0 ? candles[candles.length - 1].close : undefined,
-        source: 'kiwoom',
-        cached: false,
-        timestamp: now,
-        error: null,
-      };
-
-      // Store in Server Cache
-      this.chartServerCache.set(cacheKey, {
-        data: response,
-        expiresAt: now + ttlMs,
-      });
-
-      return response;
-    } catch (err: any) {
-      console.error(`[Kiwoom API] 차트 조회 실패 (${trId}, ${period}):`, err.message);
-      const errResponse: KiwoomChartResponse = {
-        symbol,
-        period,
-        periodLabel,
-        trId,
-        ticScope,
-        supported: true,
-        candles: [],
-        source: 'kiwoom',
-        cached: false,
-        timestamp: now,
-        error: err.message || '키움 Open API 차트 데이터를 가져오지 못했습니다.',
-        serverIp: this.publicServerIp,
-      };
-
-      // Cache error state for 5s to prevent hammering Kiwoom API on rapid clicks
-      this.chartServerCache.set(cacheKey, {
-        data: errResponse,
-        expiresAt: now + 5000,
-      });
-
-      return errResponse;
+    // 2. In-flight deduplication across simultaneous chart queries
+    const dispatchDedupKey = `chart:dispatch:${symbol}:${period}`;
+    if (this.inFlightRequests.has(dispatchDedupKey)) {
+      return this.inFlightRequests.get(dispatchDedupKey) as Promise<KiwoomChartResponse>;
     }
+
+    const chartFetchPromise = (async () => {
+      // Inquire Real Kiwoom Open API Data
+      try {
+        let candles: CandleData[] = [];
+        if (trId === 'ka10080' && ticScope) {
+          candles = await this.fetchStockMinuteCandles(symbol, ticScope);
+        } else if (trId === 'ka10081') {
+          candles = await this.fetchStockDailyCandles(symbol);
+        }
+
+        // Align last candle close with current live price
+        if (currentPrice && currentPrice > 0 && candles.length > 0) {
+          const last = { ...candles[candles.length - 1] };
+          last.close = currentPrice;
+          if (currentPrice > last.high) last.high = currentPrice;
+          if (currentPrice < last.low) last.low = currentPrice;
+          candles[candles.length - 1] = last;
+        }
+
+        const response: KiwoomChartResponse = {
+          symbol,
+          period,
+          periodLabel,
+          trId,
+          ticScope,
+          supported: true,
+          candles,
+          currentPrice,
+          lastCandleClose: candles.length > 0 ? candles[candles.length - 1].close : undefined,
+          source: 'kiwoom',
+          cached: false,
+          timestamp: Date.now(),
+          error: null,
+        };
+
+        // Store in Server Cache
+        this.chartServerCache.set(cacheKey, {
+          data: response,
+          expiresAt: Date.now() + ttlMs,
+        });
+
+        return response;
+      } catch (err: any) {
+        console.error(`[Kiwoom API] 차트 조회 실패 (${trId}, ${period}):`, err.message);
+        const errResponse: KiwoomChartResponse = {
+          symbol,
+          period,
+          periodLabel,
+          trId,
+          ticScope,
+          supported: true,
+          candles: [],
+          source: 'kiwoom',
+          cached: false,
+          timestamp: Date.now(),
+          error: err.message || '키움 Open API 차트 데이터를 가져오지 못했습니다.',
+          serverIp: this.publicServerIp,
+        };
+
+        // Cache error state for 5s to prevent hammering Kiwoom API on rapid clicks
+        this.chartServerCache.set(cacheKey, {
+          data: errResponse,
+          expiresAt: Date.now() + 5000,
+        });
+
+        return errResponse;
+      }
+    })();
+
+    this.inFlightRequests.set(dispatchDedupKey, chartFetchPromise);
+    chartFetchPromise.finally(() => {
+      this.inFlightRequests.delete(dispatchDedupKey);
+    });
+
+    return chartFetchPromise;
   }
 
   /**
@@ -1368,94 +1595,105 @@ class KiwoomApiService {
    * Kiwoom REST API Endpoint: /api/dostk/mrkcond (TR: ka10004)
    */
   public async fetchOrderBook(symbol: string): Promise<OrderBook> {
-    const token = await this.getAccessToken();
-    const url = `${this.config.baseUrl}/api/dostk/mrkcond`;
+    const dedupKey = `quote:ka10004:${symbol}`;
+    return this.executeWithRateLimit({
+      category: 'QUOTE',
+      dedupKey,
+      fn: async () => {
+        const token = await this.getAccessToken();
+        const url = `${this.config.baseUrl}/api/dostk/mrkcond`;
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json;charset=UTF-8',
-        'authorization': `Bearer ${token}`,
-        'appkey': this.config.appKey,
-        'appsecret': this.config.appSecret,
-        'api-id': 'ka10004',
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'authorization': `Bearer ${token}`,
+            'appkey': this.config.appKey,
+            'appsecret': this.config.appSecret,
+            'api-id': 'ka10004',
+          },
+          body: JSON.stringify({ stk_cd: symbol }),
+        });
+
+        const data = await res.json();
+        if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
+          const err: any = new Error(`Kiwoom 호가 조회(ka10004) 실패: ${data.return_msg || res.status}`);
+          err.return_code = data.return_code;
+          err.return_msg = data.return_msg;
+          err.status = res.status;
+          throw err;
+        }
+
+        // 1. Current Price (최우선 매도/매수호가 기준가) - 부호(+/-) 및 쉼표 제거 후 Math.abs 처리
+        const rawCur = String(data.sel_fpr_bid || data.buy_fpr_bid || '').replace(/[+,-]/g, '').trim();
+        const currentPrice = Math.abs(parseInt(rawCur, 10)) || 0;
+        const prevClose = currentPrice;
+
+        const asks: OrderBookLevel[] = [];
+        // 10 levels of asks (매도 10 -> 1)
+        for (let i = 10; i >= 1; i--) {
+          const priceKey = i === 1 ? 'sel_fpr_bid' : `sel_${i}th_pre_bid`;
+          const volKey = i === 1 ? 'sel_fpr_req' : `sel_${i}th_pre_req`;
+          const rawPrice = String(data[priceKey] || '').replace(/[+,-]/g, '').trim();
+          const rawVol = String(data[volKey] || '').replace(/[+,-]/g, '').trim();
+          const askPrice = Math.abs(parseInt(rawPrice, 10)) || 0;
+          const vol = Math.abs(parseInt(rawVol, 10)) || 0;
+          const chg = prevClose > 0 && askPrice > 0 ? askPrice - prevClose : 0;
+          const chgPct = prevClose > 0 && askPrice > 0 ? Number(((chg / prevClose) * 100).toFixed(2)) : 0;
+          asks.push({
+            price: askPrice,
+            volume: vol,
+            change: chg,
+            changePercent: chgPct,
+            barPercent: 0,
+          });
+        }
+
+        const bids: OrderBookLevel[] = [];
+        // 10 levels of bids (매수 1 -> 10)
+        for (let i = 1; i <= 10; i++) {
+          const priceKey = i === 1 ? 'buy_fpr_bid' : `buy_${i}th_pre_bid`;
+          const volKey = i === 1 ? 'buy_fpr_req' : `buy_${i}th_pre_req`;
+          const rawPrice = String(data[priceKey] || '').replace(/[+,-]/g, '').trim();
+          const rawVol = String(data[volKey] || '').replace(/[+,-]/g, '').trim();
+          const bidPrice = Math.abs(parseInt(rawPrice, 10)) || 0;
+          const vol = Math.abs(parseInt(rawVol, 10)) || 0;
+          const chg = prevClose > 0 && bidPrice > 0 ? bidPrice - prevClose : 0;
+          const chgPct = prevClose > 0 && bidPrice > 0 ? Number(((chg / prevClose) * 100).toFixed(2)) : 0;
+          bids.push({
+            price: bidPrice,
+            volume: vol,
+            change: chg,
+            changePercent: chgPct,
+            barPercent: 0,
+          });
+        }
+
+        const maxVol = Math.max(...asks.map(a => a.volume), ...bids.map(b => b.volume), 1);
+        asks.forEach(a => a.barPercent = Math.min(100, Math.round((a.volume / maxVol) * 100)));
+        bids.forEach(b => b.barPercent = Math.min(100, Math.round((b.volume / maxVol) * 100)));
+
+        const rawTotalAsk = String(data.tot_sel_req || '').replace(/[+,-]/g, '').trim();
+        const rawTotalBid = String(data.tot_buy_req || '').replace(/[+,-]/g, '').trim();
+        const totalAskVolume = Math.abs(parseInt(rawTotalAsk, 10)) || asks.reduce((sum, a) => sum + a.volume, 0);
+        const totalBidVolume = Math.abs(parseInt(rawTotalBid, 10)) || bids.reduce((sum, b) => sum + b.volume, 0);
+
+        // 체결 기준가 정합성: 매수는 최우선 매도호가(Ask 1), 매도는 최우선 매수호가(Bid 1)
+        const bestAskPrice = asks.length > 0 ? asks[asks.length - 1].price : currentPrice;
+        const bestBidPrice = bids.length > 0 ? bids[0].price : currentPrice;
+
+        return {
+          symbol,
+          currentPrice,
+          asks,
+          bids,
+          totalAskVolume,
+          totalBidVolume,
+          bestAskPrice,
+          bestBidPrice,
+        };
       },
-      body: JSON.stringify({ stk_cd: symbol }),
     });
-
-    const data = await res.json();
-    if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
-      throw new Error(`Kiwoom 호가 조회 실패: ${data.return_msg || res.status}`);
-    }
-
-    // 1. Current Price (최우선 매도/매수호가 기준가) - 부호(+/-) 및 쉼표 제거 후 Math.abs 처리
-    const rawCur = String(data.sel_fpr_bid || data.buy_fpr_bid || '').replace(/[+,-]/g, '').trim();
-    const currentPrice = Math.abs(parseInt(rawCur, 10)) || 0;
-    const prevClose = currentPrice;
-
-    const asks: OrderBookLevel[] = [];
-    // 10 levels of asks (매도 10 -> 1)
-    for (let i = 10; i >= 1; i--) {
-      const priceKey = i === 1 ? 'sel_fpr_bid' : `sel_${i}th_pre_bid`;
-      const volKey = i === 1 ? 'sel_fpr_req' : `sel_${i}th_pre_req`;
-      const rawPrice = String(data[priceKey] || '').replace(/[+,-]/g, '').trim();
-      const rawVol = String(data[volKey] || '').replace(/[+,-]/g, '').trim();
-      const askPrice = Math.abs(parseInt(rawPrice, 10)) || 0;
-      const vol = Math.abs(parseInt(rawVol, 10)) || 0;
-      const chg = prevClose > 0 && askPrice > 0 ? askPrice - prevClose : 0;
-      const chgPct = prevClose > 0 && askPrice > 0 ? Number(((chg / prevClose) * 100).toFixed(2)) : 0;
-      asks.push({
-        price: askPrice,
-        volume: vol,
-        change: chg,
-        changePercent: chgPct,
-        barPercent: 0,
-      });
-    }
-
-    const bids: OrderBookLevel[] = [];
-    // 10 levels of bids (매수 1 -> 10)
-    for (let i = 1; i <= 10; i++) {
-      const priceKey = i === 1 ? 'buy_fpr_bid' : `buy_${i}th_pre_bid`;
-      const volKey = i === 1 ? 'buy_fpr_req' : `buy_${i}th_pre_req`;
-      const rawPrice = String(data[priceKey] || '').replace(/[+,-]/g, '').trim();
-      const rawVol = String(data[volKey] || '').replace(/[+,-]/g, '').trim();
-      const bidPrice = Math.abs(parseInt(rawPrice, 10)) || 0;
-      const vol = Math.abs(parseInt(rawVol, 10)) || 0;
-      const chg = prevClose > 0 && bidPrice > 0 ? bidPrice - prevClose : 0;
-      const chgPct = prevClose > 0 && bidPrice > 0 ? Number(((chg / prevClose) * 100).toFixed(2)) : 0;
-      bids.push({
-        price: bidPrice,
-        volume: vol,
-        change: chg,
-        changePercent: chgPct,
-        barPercent: 0,
-      });
-    }
-
-    const maxVol = Math.max(...asks.map(a => a.volume), ...bids.map(b => b.volume), 1);
-    asks.forEach(a => a.barPercent = Math.min(100, Math.round((a.volume / maxVol) * 100)));
-    bids.forEach(b => b.barPercent = Math.min(100, Math.round((b.volume / maxVol) * 100)));
-
-    const rawTotalAsk = String(data.tot_sel_req || '').replace(/[+,-]/g, '').trim();
-    const rawTotalBid = String(data.tot_buy_req || '').replace(/[+,-]/g, '').trim();
-    const totalAskVolume = Math.abs(parseInt(rawTotalAsk, 10)) || asks.reduce((sum, a) => sum + a.volume, 0);
-    const totalBidVolume = Math.abs(parseInt(rawTotalBid, 10)) || bids.reduce((sum, b) => sum + b.volume, 0);
-
-    // 체결 기준가 정합성: 매수는 최우선 매도호가(Ask 1), 매도는 최우선 매수호가(Bid 1)
-    const bestAskPrice = asks.length > 0 ? asks[asks.length - 1].price : currentPrice;
-    const bestBidPrice = bids.length > 0 ? bids[0].price : currentPrice;
-
-    return {
-      symbol,
-      currentPrice,
-      asks,
-      bids,
-      totalAskVolume,
-      totalBidVolume,
-      bestAskPrice,
-      bestBidPrice,
-    };
   }
 
   /**

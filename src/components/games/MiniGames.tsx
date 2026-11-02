@@ -308,3 +308,5 @@ export const MiniGames: React.FC = () => {
     </div>
   );
 };
+
+export default MiniGames;
