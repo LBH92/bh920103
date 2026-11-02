@@ -202,11 +202,17 @@ export const firebaseRepository = {
         }
         callback(list);
       }, err => {
-        console.warn('[firebaseRepository] subscribeUsers onSnapshot error:', err);
-        if (onError) onError(err);
+        if (err.code === 'cancelled') {
+          console.debug('[Firebase] Users listener cancelled');
+        } else {
+          console.warn('[firebaseRepository] subscribeUsers onSnapshot error:', err);
+          handleFirestoreError(err, OperationType.LIST, 'users');
+          if (onError) onError(err);
+        }
       });
     } catch (err) {
       console.warn('[firebaseRepository] subscribeUsers exception:', err);
+      handleFirestoreError(err, OperationType.LIST, 'users');
       if (onError) onError(err);
       return () => {};
     }
@@ -260,6 +266,7 @@ export const firebaseRepository = {
     }
   },
 
+
   // 2. Watchlists
   async getUserWatchlists(uid: string): Promise<string[]> {
     const path = 'watchlists';
@@ -291,7 +298,8 @@ export const firebaseRepository = {
     const path = 'watchlists';
     try {
       const q = query(collection(db, path), where('uid', '==', uid));
-      return onSnapshot(q, snap => {
+      console.log(`[Firebase] Creating watchlist listener for user: ${uid}`);
+      const unsubscribe = onSnapshot(q, snap => {
         const items: { symbol: string; orderIndex: number; createdAt: string }[] = [];
         snap.forEach(docSnap => {
           const d = docSnap.data();
@@ -306,9 +314,17 @@ export const firebaseRepository = {
         items.sort((a, b) => (a.orderIndex - b.orderIndex) || a.createdAt.localeCompare(b.createdAt));
         callback(items.map(i => i.symbol));
       }, err => {
-        console.warn('Watchlists onSnapshot error:', err);
-        handleFirestoreError(err, OperationType.GET, path);
+        if (err.code === 'cancelled') {
+          console.debug('[Firebase] Watchlists listener cancelled');
+        } else {
+          console.warn('Watchlists onSnapshot error:', err);
+          handleFirestoreError(err, OperationType.GET, path);
+        }
       });
+      return () => {
+        console.log(`[Firebase] Cleaning up watchlist listener for user: ${uid}`);
+        unsubscribe();
+      };
     } catch (err) {
       console.warn('subscribeUserWatchlists exception:', err);
       handleFirestoreError(err, OperationType.GET, path);
@@ -455,14 +471,20 @@ export const firebaseRepository = {
           callback(list);
         },
         err => {
-          console.warn('subscribePosts onSnapshot error:', err);
-          if (errorCallback) {
-            errorCallback(err);
+          if (err.code === 'cancelled') {
+            console.debug('[Firebase] Posts listener cancelled');
+          } else {
+            console.warn('subscribePosts onSnapshot error:', err);
+            handleFirestoreError(err, OperationType.LIST, 'posts');
+            if (errorCallback) {
+              errorCallback(err);
+            }
           }
         }
       );
     } catch (err) {
       console.warn('subscribePosts exception:', err);
+      handleFirestoreError(err, OperationType.LIST, 'posts');
       if (errorCallback) {
         errorCallback(err);
       }
@@ -741,11 +763,17 @@ export const firebaseRepository = {
         });
         callback(list);
       }, err => {
-        console.warn('[firebaseRepository] subscribeReports onSnapshot error:', err);
-        if (onError) onError(err);
+        if (err.code === 'cancelled') {
+          console.debug('[Firebase] Reports listener cancelled');
+        } else {
+          console.warn('[firebaseRepository] subscribeReports onSnapshot error:', err);
+          handleFirestoreError(err, OperationType.LIST, 'reports');
+          if (onError) onError(err);
+        }
       });
     } catch (err) {
       console.warn('[firebaseRepository] subscribeReports exception:', err);
+      handleFirestoreError(err, OperationType.LIST, 'reports');
       if (onError) onError(err);
       return () => {};
     }
@@ -814,9 +842,15 @@ export const firebaseRepository = {
         });
         callback(rooms);
       }, err => {
-        console.warn('subscribeChatRooms snapshot error:', err);
+        if (err.code === 'cancelled') {
+          console.debug('[Firebase] Chat rooms listener cancelled:', err.message);
+        } else {
+          console.error('subscribeChatRooms snapshot error:', err);
+          handleFirestoreError(err, OperationType.LIST, 'chatRooms');
+        }
       });
     } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, 'chatRooms');
       return () => {};
     }
   },
@@ -858,14 +892,16 @@ export const firebaseRepository = {
       const q = query(
         collection(db, 'chatMessages'),
         where('roomId', '==', roomId),
-        where('isDeleted', '!=', true),
         orderBy('serverCreatedAt', 'asc'),
         limit(messageLimit)
       );
-      return onSnapshot(q, snap => {
+      console.log(`[Firebase] Creating chat listener for room: ${roomId}`);
+      const unsubscribe = onSnapshot(q, snap => {
         const list: ChatMessage[] = [];
         snap.forEach(docSnap => {
           const d = docSnap.data();
+          if (d.isDeleted) return; // Client-side filtering
+          
           let time = '12:00:00';
           let sortTime = 0;
           if (d.serverCreatedAt && typeof d.serverCreatedAt.toMillis === 'function') {
@@ -903,11 +939,21 @@ export const firebaseRepository = {
         list.sort((a: any, b: any) => (a._sortTime || 0) - (b._sortTime || 0));
         callback(list);
       }, err => {
-        console.warn('Firestore onSnapshot error:', err);
-        if (onError) onError(err);
+        if (err.code === 'cancelled') {
+          console.debug(`[Firebase] Chat listener cancelled for room ${roomId}:`, err.message);
+        } else {
+          console.error('Firestore onSnapshot error:', err);
+          handleFirestoreError(err, OperationType.LIST, 'chatMessages');
+          if (onError) onError(err);
+        }
       });
+      return () => {
+        console.log(`[Firebase] Cleaning up chat listener for room: ${roomId}`);
+        unsubscribe();
+      };
     } catch (err) {
       console.warn('subscribeChat exception:', err);
+      handleFirestoreError(err, OperationType.LIST, 'chatMessages');
       if (onError) onError(err);
       return () => {};
     }
@@ -921,13 +967,14 @@ export const firebaseRepository = {
     try {
       const q = query(
         collection(db, 'chatMessages'),
-        where('isDeleted', '!=', true),
         limit(messageLimit)
       );
       return onSnapshot(q, snap => {
         const list: ChatMessage[] = [];
         snap.forEach(docSnap => {
           const d = docSnap.data();
+          if (d.isDeleted) return; // Client-side filtering
+
           let time = '12:00:00';
           let sortTime = 0;
           if (d.serverCreatedAt && typeof d.serverCreatedAt.toMillis === 'function') {
@@ -965,11 +1012,17 @@ export const firebaseRepository = {
         list.sort((a: any, b: any) => (b._sortTime || 0) - (a._sortTime || 0));
         callback(list);
       }, err => {
-        console.warn('Firestore subscribeAllChat error:', err);
-        if (onError) onError(err);
+        if (err.code === 'cancelled') {
+          console.debug('[Firebase] AllChat listener cancelled');
+        } else {
+          console.warn('Firestore subscribeAllChat error:', err);
+          handleFirestoreError(err, OperationType.LIST, 'chatMessages');
+          if (onError) onError(err);
+        }
       });
     } catch (err) {
       console.warn('subscribeAllChat exception:', err);
+      handleFirestoreError(err, OperationType.LIST, 'chatMessages');
       if (onError) onError(err);
       return () => {};
     }
@@ -1082,11 +1135,17 @@ export const firebaseRepository = {
           callback(uids);
         });
       }, err => {
-        console.warn('subscribeChatRestrictions error:', err);
+        if (err.code === 'cancelled') {
+          console.debug('[Firebase] Restrictions listener cancelled');
+        } else {
+          console.warn('subscribeChatRestrictions error:', err);
+          handleFirestoreError(err, OperationType.LIST, 'chatRestrictions');
+        }
       });
       return unsub;
     } catch (err) {
       console.warn('subscribeChatRestrictions exception:', err);
+      handleFirestoreError(err, OperationType.LIST, 'chatRestrictions');
       return () => {};
     }
   },
@@ -1096,6 +1155,7 @@ export const firebaseRepository = {
     if (!uid) return () => {};
     try {
       const q = query(collection(db, 'alerts'), where('uid', '==', uid));
+      console.log(`[Firebase] Creating price alert listener for user: ${uid}`);
       const unsubscribe = onSnapshot(q, (snap) => {
         const list: PriceAlert[] = [];
         snap.forEach(docSnap => {
@@ -1122,11 +1182,20 @@ export const firebaseRepository = {
         });
         onUpdate(list);
       }, (err) => {
-        console.warn('Firebase subscribeUserPriceAlerts error:', err);
+        if (err.code === 'cancelled') {
+          console.debug('[Firebase] Price alerts listener cancelled (likely idle/reconnecting):', err.message);
+        } else {
+          console.error('[Firebase] Price alerts listener error:', err);
+          handleFirestoreError(err, OperationType.LIST, 'alerts');
+        }
       });
-      return unsubscribe;
+      return () => {
+        console.log(`[Firebase] Cleaning up price alert listener for user: ${uid}`);
+        unsubscribe();
+      };
     } catch (err) {
       console.warn('Firebase subscribeUserPriceAlerts init error:', err);
+      handleFirestoreError(err, OperationType.LIST, 'alerts');
       return () => {};
     }
   },
@@ -1356,6 +1425,150 @@ export const firebaseRepository = {
       }, { merge: true });
     } catch (err) {
       console.warn('Firebase save user stock purchases error:', err);
+    }
+  },
+  async markInitializedWatchlist(uid: string): Promise<void> {
+    try {
+      await updateDoc(doc(db, 'users', uid), {
+        hasInitializedWatchlist: true,
+      });
+    } catch (err) {
+      console.warn('Firebase markInitializedWatchlist error:', err);
+    }
+  },
+
+  async hasInitializedWatchlist(uid: string): Promise<boolean> {
+    try {
+      const snap = await getDoc(doc(db, 'users', uid));
+      return snap.exists() && Boolean(snap.data().hasInitializedWatchlist);
+    } catch (err) {
+      console.warn('Firebase hasInitializedWatchlist error:', err);
+      return false;
+    }
+  },
+
+  // 7. Mini Games
+  async saveGameHistory(uid: string, gameType: 'ladder' | 'lunch' | 'office', inputData: any, resultData: any): Promise<void> {
+    try {
+      const col = collection(db, 'gameHistory');
+      const docRef = doc(col);
+      await setDoc(docRef, {
+        id: docRef.id,
+        uid,
+        gameType,
+        inputData,
+        resultData,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('Firebase saveGameHistory failed:', err);
+    }
+  },
+
+  async getUserGameHistory(uid: string, gameType?: 'ladder' | 'lunch' | 'office'): Promise<any[]> {
+    try {
+      let q = query(collection(db, 'gameHistory'), where('uid', '==', uid), orderBy('createdAt', 'desc'));
+      if (gameType) {
+        q = query(q, where('gameType', '==', gameType));
+      }
+      const snap = await getDocs(q);
+      const list: any[] = [];
+      snap.forEach(d => list.push({ ...d.data(), id: d.id }));
+      return list;
+    } catch (err) {
+      console.warn('Firebase getUserGameHistory failed:', err);
+      return [];
+    }
+  },
+
+  async updateOfficeGameState(uid: string, stats: any, day: number, status: string): Promise<void> {
+    try {
+      await setDoc(doc(db, 'officeGameState', uid), {
+        uid,
+        stats,
+        day,
+        status,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+    } catch (err) {
+      console.warn('Firebase updateOfficeGameState failed:', err);
+    }
+  },
+
+  async getOfficeGameState(uid: string): Promise<any | null> {
+    try {
+      const snap = await getDoc(doc(db, 'officeGameState', uid));
+      if (!snap.exists()) return null;
+      return snap.data();
+    } catch (err) {
+      console.warn('Firebase getOfficeGameState failed:', err);
+      return null;
+    }
+  },
+
+  async saveActiveOfficeGame(uid: string, gameState: any): Promise<void> {
+    try {
+      await setDoc(doc(db, 'officeGameState', uid), {
+        uid,
+        ...gameState,
+        updatedAt: new Date().toISOString(),
+      }, { merge: false });
+    } catch (err) {
+      console.warn('Firebase saveActiveOfficeGame failed:', err);
+    }
+  },
+
+  async getActiveOfficeGame(uid: string): Promise<any | null> {
+    try {
+      const snap = await getDoc(doc(db, 'officeGameState', uid));
+      if (!snap.exists()) return null;
+      return snap.data();
+    } catch (err) {
+      console.warn('Firebase getActiveOfficeGame failed:', err);
+      return null;
+    }
+  },
+
+  async clearActiveOfficeGame(uid: string): Promise<void> {
+    try {
+      await deleteDoc(doc(db, 'officeGameState', uid));
+    } catch (err) {
+      console.warn('Firebase clearActiveOfficeGame failed:', err);
+    }
+  },
+
+  async saveOfficeGameRecord(uid: string, recordData: any): Promise<void> {
+    try {
+      const col = collection(db, 'gameHistory');
+      const docRef = doc(col);
+      await setDoc(docRef, {
+        id: docRef.id,
+        uid,
+        gameType: 'office',
+        resultData: recordData,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('Firebase saveOfficeGameRecord failed:', err);
+    }
+  },
+
+  async getOfficeGameRecords(uid: string): Promise<any[]> {
+    try {
+      const q = query(
+        collection(db, 'gameHistory'),
+        where('uid', '==', uid),
+        where('gameType', '==', 'office'),
+        orderBy('createdAt', 'desc'),
+        limit(50)
+      );
+      const snap = await getDocs(q);
+      const list: any[] = [];
+      snap.forEach(d => list.push({ ...d.data(), id: d.id }));
+      return list;
+    } catch (err) {
+      console.warn('Firebase getOfficeGameRecords failed:', err);
+      return [];
     }
   },
 };

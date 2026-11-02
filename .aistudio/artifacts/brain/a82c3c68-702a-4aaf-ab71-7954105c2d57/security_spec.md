@@ -1,41 +1,26 @@
-# Security Specification: Advertisement Management
+# Security Specification
 
-## 1. Overview
-The Stock Insight project requires an administrative panel for managing advertisements and a corresponding user-facing rolling advertisement display.
+## 1. Data Invariants
+- A user can only access their own watchlists, alerts, and virtual portfolio data.
+- Only an administrator can access adminReports, adminLogs, and systemMetrics.
+- Posts can only be deleted by administrators (or authors, if implemented).
+- All timestamps must be server-side timestamps.
 
-## 2. Data Model
-Collection: `advertisements`
+## 2. Dirty Dozen Payloads
+1.  Attempt to create a watchlist entry with another user's UID.
+2.  Attempt to update another user's watchlist item.
+3.  Attempt to read adminReports as a standard user.
+4.  Attempt to inject a 10MB string into a chat message.
+5.  Attempt to set `role: 'superadmin'` in user profile update.
+6.  Attempt to update `createdAt` field on a post.
+7.  Attempt to delete a chat message not owned by the user (and not an admin).
+8.  Attempt to read `chatRestrictions` with a non-authenticated user.
+9.  Attempt to update `status` of a post via a standard user without authorization.
+10. Attempt to inject SQL-like characters in `title` or `content`.
+11. Attempt to create an alert with a negative target price.
+12. Attempt to create a chat room with an excessively long name.
 
-### Schema (`Advertisement` Interface):
-- `id`: string
-- `name`: string
-- `advertiser`: string
-- `type`: 'image' | 'text'
-- `location`: 'top_banner' | 'sidebar' | 'content_card'
-- `imageUrl`: string (optional)
-- `textTitle`: string (optional)
-- `textDescription`: string (optional)
-- `ctaText`: string (optional)
-- `url`: string
-- `startDate`: string (YYYY-MM-DD)
-- `endDate`: string (YYYY-MM-DD)
-- `priority`: number
-- `intervalMs`: number (optional)
-- `isActive`: boolean
-- `createdAt`: string
-
-## 3. Security Requirements
-- **Read Access**:
-    - Anyone (public) can read active advertisements (`isActive == true`) for display purposes.
-    - Admins can read all advertisements.
-- **Write Access**:
-    - Only users with `admin` or `superadmin` role (verified via Firestore `auth.uid` check against a secure mapping, or custom claim if available) can create, update, or delete advertisements.
-
-## 4. Access Control Logic (Firestore Rules)
-```
-match /advertisements/{adId} {
-  allow read: if resource.data.isActive == true || isAdmin();
-  allow write: if isAdmin();
-}
-```
-*Note: `isAdmin()` helper function must be defined based on user profile roles in the `users` collection or custom auth claims.*
+## 3. Security Audit Plan
+- Implement `isValidId` and other hardening helpers in `firestore.rules`.
+- Ensure all `allow` rules follow the explicit pillars of security.
+- Re-run red team tests after rule updates.

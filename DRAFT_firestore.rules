@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // --- Global Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == 'byunghyunlim92@gmail.com') ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'superadmin'))
+      );
+    }
+
+    // --- Global Deny ---
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Collections ---
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(userId) && incoming().keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt', 'status']) && incoming().uid == request.auth.uid;
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // TODO: Add remaining collections with Hardened Rules following the Eight Pillars...
+  }
+}
+
+    // --- Validation Helpers ---
+    function isValidUser(data) {
+      return data.uid is string && data.email is string && data.displayName is string && data.role in ['user', 'vip', 'admin'] && data.createdAt is string && data.status in ['active', 'suspended', 'deleted'];
+    }
+    function isValidStock(data) {
+      return data.symbol is string && data.symbol.matches('^[0-9]{6}$') && data.name is string && data.market in ['KOSPI', 'KOSDAQ'] && data.sector is string && data.isActive is bool;
+    }
+    // (Other helpers would go here)
+
+    // --- Collections Implementation ---
+    match /stocks/{symbol} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /watchlists/{watchlistId} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && incoming().uid == request.auth.uid && incoming().symbol.matches('^[0-9]{6}$');
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && incoming().uid == request.auth.uid) || 
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+    // (Other collections...)

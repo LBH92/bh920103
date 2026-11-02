@@ -191,7 +191,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
   const isUp = stock.change >= 0;
 
   return (
-    <div className="space-y-6 pb-16 animate-in fade-in duration-200">
+    <div className="space-y-6 pb-24 animate-in fade-in duration-200">
       {/* Top Header Breadcrumb & Actions Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <button

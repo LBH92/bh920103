@@ -4,12 +4,15 @@ service cloud.firestore {
     // 1. Reusable Security Helpers
     function isSignedIn() { return request.auth != null; }
     function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
     function isAdmin() {
       return isSignedIn() && (
         (request.auth.token.email == 'byunghyunlim92@gmail.com') ||
-        (exists(/databases/{database}/documents/users/$(request.auth.uid)) &&
-         (get(/databases/{database}/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-          get(/databases/{database}/documents/users/$(request.auth.uid)).data.role == 'superadmin'))
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'superadmin'))
       );
     }
 
@@ -20,8 +23,8 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isSignedIn();
-      allow create: if isOwner(userId);
-      allow update: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidId(userId) && incoming().keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt', 'status']) && incoming().uid == request.auth.uid;
+      allow update: if (isOwner(userId) || isAdmin()) && isValidId(userId);
       allow delete: if isAdmin();
     }
     match /stocks/{symbol} {
@@ -30,21 +33,20 @@ service cloud.firestore {
     }
     match /watchlists/{watchlistId} {
       allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && (request.resource.data.uid == request.auth.uid);
+      allow create: if isSignedIn() && incoming().uid == request.auth.uid && isValidId(watchlistId);
       allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) || 
+        (resource.data.uid == request.auth.uid && incoming().uid == request.auth.uid) || 
         isAdmin()
-      );
+      ) && isValidId(watchlistId);
       allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
     }
     match /posts/{postId} {
       allow read: if !('isDeleted' in resource.data) || resource.data.isDeleted != true;
-      allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
+      allow create: if isSignedIn() && incoming().authorId == request.auth.uid && isValidId(postId);
       allow update: if isSignedIn() && (
-        resource.data.authorId == request.auth.uid ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount', 'likeCount', 'likedBy', 'commentCount', 'comments', 'updatedAt']) ||
+        (resource.data.authorId == request.auth.uid && incoming().authorId == request.auth.uid) ||
         isAdmin()
-      ) && (!('isDeleted' in resource.data) || resource.data.isDeleted != true);
+      ) && isValidId(postId);
       allow delete: if isAdmin();
     }
     match /communityPosts/{postId} {
@@ -221,6 +223,24 @@ service cloud.firestore {
         isOwner(settingId) ||
         isAdmin()
       );
+    }
+    match /gameHistory/{historyId} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+    match /officeGameState/{uid} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
     }
     match /userGeminiKeys/{uid} {
       allow read, write: if isOwner(uid);

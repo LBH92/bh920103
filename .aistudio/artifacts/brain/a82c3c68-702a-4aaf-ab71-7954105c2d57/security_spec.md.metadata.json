@@ -1,5 +1,6 @@
 {
-  "summary":  "Created security_spec.md for ad management to define Firestore security rules and blueprint.",
-  "updatedAt":  "2026-10-29T18:43:58.293078457Z",
-  "requestFeedback":  true
+  "summary":  "Security specifications for Firebase integration, including data invariants and red-team test payloads to address Firestore security concerns.",
+  "updatedAt":  "2026-11-01T13:02:53.834337725Z",
+  "requestFeedback":  true,
+  "userFacing":  true
 }

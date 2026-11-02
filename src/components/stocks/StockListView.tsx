@@ -28,8 +28,8 @@ export const StockListView: React.FC = () => {
   const { stocks, navigateToStock, watchlist, toggleWatchlist, isWatchlisted, setActiveTab } = useApp();
 
   const [viewMode, setViewMode] = useState<'list' | 'heatmap'>('list');
+  const [currentMarketTab, setCurrentMarketTab] = useState<'ALL' | 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
-  const [marketFilter, setMarketFilter] = useState<'ALL' | 'KOSPI' | 'KOSDAQ'>('ALL');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
   const [conditionFilter, setConditionFilter] = useState<'ALL' | 'SURGE' | 'PLUNGE' | 'VOLUME'>('ALL');
   const [sortField, setSortField] = useState<'marketCap' | 'tradingValue' | 'changePercent' | 'volume' | 'volumeRatio'>('marketCap');
@@ -46,7 +46,11 @@ export const StockListView: React.FC = () => {
       stock.symbol.toLowerCase().includes(searchTerm.trim().toLowerCase()) ||
       stock.sector.toLowerCase().includes(searchTerm.toLowerCase());
 
-    const matchesMarket = marketFilter === 'ALL' || stock.market === marketFilter;
+    const matchesMarketTab = currentMarketTab === 'ALL' ||
+      (currentMarketTab === 'KOSPI' && stock.market === 'KOSPI') ||
+      (currentMarketTab === 'KOSDAQ' && stock.market === 'KOSDAQ') ||
+      (currentMarketTab === 'US' && stock.market === 'US') ||
+      (currentMarketTab === 'COIN' && stock.market === 'COIN');
 
     const matchesSector =
       sectorFilter === 'ALL' || stock.sector.toLowerCase().includes(sectorFilter.toLowerCase());
@@ -57,7 +61,7 @@ export const StockListView: React.FC = () => {
       (conditionFilter === 'PLUNGE' && isSurgeLoss(stock.changePercent)) ||
       (conditionFilter === 'VOLUME' && isVolumeSurge(stock.volumeRatio));
 
-    return matchesSearch && matchesMarket && matchesSector && matchesCondition;
+    return matchesSearch && matchesMarketTab && matchesSector && matchesCondition;
   });
 
   // Sort
@@ -82,14 +86,31 @@ export const StockListView: React.FC = () => {
 
   return (
     <div className="space-y-5 animate-in fade-in duration-150">
+      {/* Market Tabs */}
+      <div className="flex items-center gap-2 mb-4 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl w-fit">
+        {(['ALL', 'KOSPI', 'KOSDAQ', 'US', 'COIN'] as const).map(tab => (
+          <button
+            key={tab}
+            onClick={() => setCurrentMarketTab(tab)}
+            className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${
+              currentMarketTab === tab
+                ? 'bg-white dark:bg-slate-700 text-rose-600 dark:text-rose-400 shadow-sm'
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            {tab === 'ALL' ? '종합' : tab === 'KOSPI' ? '코스피' : tab === 'KOSDAQ' ? '코스닥' : tab === 'US' ? '미장' : '코인'}
+          </button>
+        ))}
+      </div>
+
       {/* Page Title & Search Bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-black text-slate-900 dark:text-white">
-            국내 주식 종목 시세
+            {currentMarketTab === 'ALL' ? '종합 시장 시세' : currentMarketTab === 'KOSPI' ? '코스피 시장' : currentMarketTab === 'KOSDAQ' ? '코스닥 시장' : currentMarketTab === 'US' ? '미국 시장' : '가상자산 시장'}
           </h2>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            코스피 및 코스닥 주요 상장 종목의 실시간 호가 및 재무 지표를 탐색하세요.
+            실시간 시장 시세 및 재무 지표를 탐색하세요.
           </p>
         </div>
 
@@ -208,22 +229,7 @@ export const StockListView: React.FC = () => {
 
         {/* Row 2: Market & Sector Filter */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
-          {/* Market Filter */}
-          <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl">
-            {(['ALL', 'KOSPI', 'KOSDAQ'] as const).map(m => (
-              <button
-                key={m}
-                onClick={() => setMarketFilter(m)}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-                  marketFilter === m
-                    ? 'bg-white dark:bg-[#1a1f2e] text-slate-900 dark:text-white shadow-sm'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                {m === 'ALL' ? '전체 시장' : m}
-              </button>
-            ))}
-          </div>
+          {/* Removed old market filter */}
 
           {/* Sector Filter */}
           <div className="flex items-center gap-1 overflow-x-auto scrollbar-none py-1">

@@ -168,7 +168,7 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
     }, {
       maxRetries: 2,
       baseDelayMs: 300,
-      timeoutMs: 4000,
+      timeoutMs: 8000,
       serviceName: `YahooFinance(${symbol})`,
     });
 

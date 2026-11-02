@@ -232,7 +232,7 @@ export const HomeView: React.FC = () => {
   const communityPosts = storageService.getPosts().slice(0, 5);
 
   return (
-    <div className="space-y-6 pb-12 animate-in fade-in duration-150">
+    <div className="space-y-6 pb-24 animate-in fade-in duration-150">
       {/* 1. Real-time Hero Stock Search Bar (한국 · 미국 주식 통합 실시간 검색) */}
       <div className="relative bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
@@ -644,12 +644,7 @@ export const HomeView: React.FC = () => {
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                  {marketCategory === 'domestic' && '코스피, 코스닥 지수 및 KRX 주요 시장 유동성 지표'}
-                  {marketCategory === 'us' && '미국 3대 대표 지수(S&P 500, 나스닥, 다우) 및 주요 글로벌 빅테크'}
-                  {marketCategory === 'asia' && '일본 닛케이 225, 중국 상하이 종합 및 선전 성분 지수'}
-                  {marketCategory === 'europe' && '유럽 범유럽 STOXX 600, 독일 DAX 및 영국 FTSE 100'}
-                  {marketCategory === 'forex' && '원/달러, 원/100엔, 원/위안, 원/유로 주요 통화 환율'}
-                  {marketCategory === 'rates' && '한국은행·미 연준 공식 기준금리 및 미국 국채 금리'}
+                  글로벌 주요 지수 및 환율/금리 현황
                 </p>
               </div>
             </div>

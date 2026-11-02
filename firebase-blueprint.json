@@ -359,6 +359,33 @@
       },
       "required": ["id", "uid", "symbol", "stockName", "entryDate", "entryPrice", "quantity", "totalInvestment", "createdAt"]
     }
+    "GameHistory": {
+      "title": "GameHistory",
+      "description": "사용자별 미니게임 플레이 기록",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "기록 ID" },
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "gameType": { "type": "string", "enum": ["ladder", "lunch", "office"], "description": "게임 유형" },
+        "inputData": { "type": "object", "description": "플레이 입력값" },
+        "resultData": { "type": "object", "description": "플레이 결과값" },
+        "createdAt": { "type": "string", "description": "플레이 일시" }
+      },
+      "required": ["id", "uid", "gameType", "resultData", "createdAt"]
+    },
+    "OfficeGameState": {
+      "title": "OfficeGameState",
+      "description": "사용자별 직장다니기 게임 진행 상태",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "stats": { "type": "object", "description": "캐릭터 능력치 및 자산 상태" },
+        "day": { "type": "number", "description": "현재 날짜" },
+        "status": { "type": "string", "description": "게임 진행 상태" },
+        "updatedAt": { "type": "string", "description": "마지막 업데이트 일시" }
+      },
+      "required": ["uid", "stats", "day", "status", "updatedAt"]
+    }
   },
   "firestore": {
     "/users/{uid}": {
@@ -420,6 +447,14 @@
     "/historicalSimulations/{simId}": {
       "schema": "HistoricalSimulation",
       "description": "과거 차트 매매 시뮬레이션 기록 컬렉션"
+    },
+    "/gameHistory/{historyId}": {
+      "schema": "GameHistory",
+      "description": "미니게임 플레이 이력 컬렉션"
+    },
+    "/officeGameState/{uid}": {
+      "schema": "OfficeGameState",
+      "description": "사용자별 직장생활 시뮬레이션 상태"
     },
     "/reports/{reportId}": {
       "schema": "Report",

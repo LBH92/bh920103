@@ -25,7 +25,8 @@ import {
   X,
   MoreHorizontal,
   Briefcase,
-  Calendar
+  Calendar,
+  Gamepad2
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ViewTab } from '../../types';
@@ -151,6 +152,7 @@ export const Navbar: React.FC = () => {
     { tab: 'calendar', label: '증시 캘린더', icon: <Calendar className="w-3.5 h-3.5 text-indigo-500 shrink-0" /> },
     { tab: 'community', label: '커뮤니티', icon: <Layers className="w-3.5 h-3.5 shrink-0" /> },
     { tab: 'chat', label: '실시간 톡', icon: <MessageSquare className="w-3.5 h-3.5 text-rose-500 shrink-0" />, badge: 'LIVE' },
+    { tab: 'games', label: '미니게임', icon: <Gamepad2 className="w-3.5 h-3.5 shrink-0" /> },
   ];
 
   // All navigation items for Mobile Responsive Drawer

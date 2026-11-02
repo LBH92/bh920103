@@ -1,7 +1,7 @@
 export interface Stock {
   symbol: string;
   name: string;
-  market: 'KOSPI' | 'KOSDAQ' | 'US';
+  market: 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN';
   sector: string;
   price: number;
   change: number;
@@ -533,14 +533,14 @@ export interface AdminNotificationItem {
   status: 'sent' | 'scheduled';
 }
 
-export type MarketFilterType = 'ALL' | 'KOSPI' | 'KOSDAQ' | 'US';
+export type MarketFilterType = 'ALL' | 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN';
 export type RankingSortType = 'change_rise' | 'change_fall' | 'volume' | 'trading_value';
 
 export interface StockRankingItem {
   rank: number;
   symbol: string;
   name: string;
-  market: 'KOSPI' | 'KOSDAQ' | 'US';
+  market: 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN';
   sector: string;
   price: number;
   change: number;
@@ -565,7 +565,7 @@ export interface StockRankingResponse {
   kiwoomNotice?: string;
 }
 
-export type ViewTab = 'home' | 'stocks' | 'ranking' | 'insight' | 'watchlist' | 'portfolio' | 'community' | 'chat' | 'alerts' | 'news' | 'profile' | 'admin' | 'calendar' | 'inquiry' | 'compare';
+export type ViewTab = 'home' | 'stocks' | 'ranking' | 'insight' | 'watchlist' | 'portfolio' | 'community' | 'chat' | 'alerts' | 'news' | 'profile' | 'admin' | 'calendar' | 'inquiry' | 'compare' | 'games';
 
 // ==========================================
 // Market Calendar & Schedule Types

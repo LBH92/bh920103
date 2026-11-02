@@ -64,7 +64,7 @@ export class RealStockRepository implements IStockRepository {
         return data;
       }
     } catch (err) {
-      console.warn('[RealStockRepository] /api/stocks fetch failed:', err);
+      console.error('[RealStockRepository] /api/stocks fetch failed:', err);
     }
 
     // Fallback if network or server error
@@ -89,7 +89,7 @@ export class RealStockRepository implements IStockRepository {
         return data;
       }
     } catch (err) {
-      console.warn(`[RealStockRepository] /api/stocks/${symbol} failed:`, err);
+      console.error(`[RealStockRepository] /api/stocks/${symbol} failed:`, err);
     }
 
     // Fallback to all stocks cache
@@ -140,7 +140,7 @@ export class RealStockRepository implements IStockRepository {
         console.warn(`[RealStockRepository] Search API returned error: ${res.status}`);
       }
     } catch (err) {
-      console.warn('[RealStockRepository] /api/stocks/search failed, using client fallback:', err);
+      console.error('[RealStockRepository] /api/stocks/search failed:', err);
     }
 
     // 3. Score and prioritize matches
@@ -194,7 +194,7 @@ export class RealStockRepository implements IStockRepository {
         }
       }
     } catch (err) {
-      console.warn(`[RealStockRepository] fetch candles failed:`, err);
+      console.error(`[RealStockRepository] fetch candles failed:`, err);
     }
 
     return [];
@@ -231,7 +231,7 @@ export class RealStockRepository implements IStockRepository {
         }
       }
     } catch (err) {
-      console.warn(`[RealStockRepository] getRelatedNews failed for ${symbol}:`, err);
+      console.error(`[RealStockRepository] getRelatedNews failed for ${symbol}:`, err);
     }
 
     return [];
@@ -290,7 +290,7 @@ export class RealStockRepository implements IStockRepository {
         return data;
       }
     } catch (err) {
-      console.warn('[RealStockRepository] getIndices failed:', err);
+      console.error('[RealStockRepository] getIndices failed:', err);
     }
 
     return INITIAL_INDICES;
@@ -312,7 +312,7 @@ export class RealStockRepository implements IStockRepository {
         return data;
       }
     } catch (err) {
-      console.warn('[RealStockRepository] getExchangeRate failed:', err);
+      console.error('[RealStockRepository] getExchangeRate failed:', err);
     }
 
     return INITIAL_EXCHANGE_RATE;

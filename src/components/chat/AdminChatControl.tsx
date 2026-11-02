@@ -104,6 +104,8 @@ const AdminLogView: React.FC = () => {
       const data: any[] = [];
       snap.forEach(d => data.push({ id: d.id, ...d.data() }));
       setLogs(data);
+    }, err => {
+      if (err.code !== 'cancelled') console.warn('[AdminLogView] logs onSnapshot error:', err);
     });
     return unsub;
   }, []);

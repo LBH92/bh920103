@@ -1,4 +1,22 @@
 import 'dotenv/config';
+
+// Suppress benign internal Firestore idle stream disconnect logs in Node.js runtime
+if (typeof console !== 'undefined') {
+  const originalError = console.error;
+  console.error = (...args: any[]) => {
+    const str = args.map(a => (typeof a === 'string' ? a : (a?.message || ''))).join(' ');
+    if (
+      str.includes('Disconnecting idle stream') ||
+      str.includes('Timed out waiting for new targets') ||
+      (str.includes('@firebase/firestore') && str.includes('CANCELLED'))
+    ) {
+      console.debug('[Server][Firebase] Idle stream disconnected:', ...args);
+      return;
+    }
+    originalError.apply(console, args);
+  };
+}
+
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';

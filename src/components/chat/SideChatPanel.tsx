@@ -29,9 +29,10 @@ import { adminService } from '../../services/adminService';
 
 interface SideChatPanelProps {
   onOpenFullChat?: () => void;
+  embedded?: boolean;
 }
 
-export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) => {
+export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, embedded = false }) => {
   const { 
     user, 
     requireAuth, 
@@ -42,11 +43,13 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
     unreadChatCount, 
     setUnreadChatCount,
     activeTab,
-    setActiveTab
+    setActiveTab,
+    activeRoomId,
+    setActiveRoomId,
+    chatMessages: messages,
+    setChatMessages: setMessages
   } = useApp();
 
-  const [activeRoomId, setActiveRoomId] = useState<string>('domestic');
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState<string>('');
   const [sentiment, setSentiment] = useState<'neutral' | 'bull' | 'bear'>('neutral');
   const [isSending, setIsSending] = useState<boolean>(false);
@@ -128,68 +131,30 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
     return () => unsub();
   }, []);
 
-  // 3. Realtime Firestore Chat Message Subscription
+  // Message side-effects (auto-scroll, unread count)
   useEffect(() => {
-    // Initial storage fallback
-    const cached = storageService.getChatMessages(activeRoomId);
-    if (cached && cached.length > 0) {
-      setMessages(cached);
-      lastMessageCountRef.current = cached.length;
+    // Handle Unread Badge: If panel is collapsed and not on full chat view
+    if (!isSideChatOpen && activeTab !== 'chat') {
+      if (messages.length > lastMessageCountRef.current) {
+        const diff = messages.length - lastMessageCountRef.current;
+        setUnreadChatCount(prev => prev + diff);
+      }
+    } else {
+      // Panel is open and active
+      setUnreadChatCount(0);
     }
 
-    const unsubscribe = firebaseRepository.subscribeChat(
-      activeRoomId,
-      (remoteMessages) => {
-        setConnectionStatus('CONNECTED');
-        setLastReceivedTime(new Date().toLocaleTimeString('ko-KR'));
-        if (remoteMessages) {
-          setMessages(prev => {
-            const merged = [...prev];
-            remoteMessages.forEach(remoteMsg => {
-              const index = merged.findIndex(m => m.id === remoteMsg.id || (m.tempId && m.tempId === remoteMsg.tempId));
-              if (index !== -1) {
-                merged[index] = remoteMsg;
-              } else {
-                merged.push(remoteMsg);
-              }
-            });
-            return merged.sort((a, b) => (a._sortTime || 0) - (b._sortTime || 0));
-          });
+    lastMessageCountRef.current = messages.length;
 
-          // Handle Unread Badge: If panel is collapsed and not on full chat view
-          if (!isSideChatOpen && activeTab !== 'chat') {
-            if (remoteMessages.length > lastMessageCountRef.current) {
-              const diff = remoteMessages.length - lastMessageCountRef.current;
-              setUnreadChatCount(prev => prev + diff);
-            }
-          } else {
-            // Panel is open and active
-            setUnreadChatCount(0);
-          }
-
-          lastMessageCountRef.current = remoteMessages.length;
-
-          // Only auto-scroll to bottom if user is not reviewing older messages
-          if (!isUserScrolledUpRef.current) {
-            setTimeout(() => {
-              if (messagesContainerRef.current) {
-                messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
-              }
-            }, 60);
-          }
+    // Only auto-scroll to bottom if user is not reviewing older messages
+    if (!isUserScrolledUpRef.current) {
+      setTimeout(() => {
+        if (messagesContainerRef.current) {
+          messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
         }
-      },
-      pageLimit,
-      (err) => {
-        console.warn('[SideChat] Firestore subscription warning:', err);
-        setConnectionStatus('RECONNECTING');
-      }
-    );
-
-    return () => {
-      unsubscribe();
-    };
-  }, [activeRoomId, pageLimit, isSideChatOpen, activeTab, setUnreadChatCount]);
+      }, 60);
+    }
+  }, [messages, isSideChatOpen, activeTab, setUnreadChatCount]);
 
   // Clear unread count when opening side chat
   useEffect(() => {
@@ -354,8 +319,8 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat }) 
       {/* ------------------------------------------------------------- */}
       <aside 
         aria-label="실시간 채팅 사이드바"
-        className={`hidden lg:flex flex-col fixed top-[88px] right-0 bottom-0 z-30 bg-white dark:bg-[#131722] border-l border-slate-200 dark:border-slate-800 transition-all duration-200 ease-in-out shadow-lg ${
-          isSideChatOpen ? 'w-[340px] xl:w-[360px]' : 'w-12'
+        className={`${embedded ? 'w-full h-full' : 'hidden lg:flex flex-col fixed top-[88px] right-0 bottom-0 z-30 w-[340px] xl:w-[360px]'} bg-white dark:bg-[#131722] border-l border-slate-200 dark:border-slate-800 transition-all duration-200 ease-in-out shadow-lg ${
+          !embedded && !isSideChatOpen ? 'w-12' : ''
         }`}
       >
         {/* COLLAPSED STATE BAR */}

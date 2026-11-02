@@ -25,9 +25,29 @@ import {
   serverTimestamp,
   onSnapshot,
   orderBy,
-  limit
+  limit,
+  setLogLevel
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+
+// Suppress benign internal Firestore transport logs from surfacing as fatal errors
+setLogLevel('silent');
+
+if (typeof console !== 'undefined') {
+  const originalError = console.error;
+  console.error = (...args: any[]) => {
+    const str = args.map(a => (typeof a === 'string' ? a : (a?.message || ''))).join(' ');
+    if (
+      str.includes('Disconnecting idle stream') ||
+      str.includes('Timed out waiting for new targets') ||
+      (str.includes('@firebase/firestore') && str.includes('CANCELLED'))
+    ) {
+      console.debug('[Firebase] Idle stream disconnected:', ...args);
+      return;
+    }
+    originalError.apply(console, args);
+  };
+}
 
 export enum OperationType {
   CREATE = 'create',

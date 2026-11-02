@@ -56,7 +56,7 @@ export interface MarketAlertEvent {
   description: string;
   symbol?: string;
   symbolName?: string;
-  market?: 'KOSPI' | 'KOSDAQ' | 'US' | 'ALL';
+  market?: 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN' | 'ALL';
   metrics: MarketAlertMetrics;
   severity: 'urgent' | 'warning' | 'info';
   timestamp: string;

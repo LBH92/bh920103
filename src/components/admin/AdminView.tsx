@@ -122,6 +122,7 @@ export const AdminView: React.FC = () => {
         setConnectionStatus('CONNECTED');
       },
       err => {
+        if (err?.code === 'cancelled' || err?.message?.includes('CANCELLED')) return;
         console.warn('[AdminView] users onSnapshot warning:', err);
         if (isMounted) setConnectionStatus('ERROR');
       }
@@ -137,6 +138,7 @@ export const AdminView: React.FC = () => {
         setConnectionStatus('CONNECTED');
       },
       err => {
+        if (err?.code === 'cancelled' || err?.message?.includes('CANCELLED')) return;
         console.warn('[AdminView] posts onSnapshot warning:', err);
         if (isMounted) setConnectionStatus('ERROR');
       }
@@ -152,6 +154,7 @@ export const AdminView: React.FC = () => {
         setConnectionStatus('CONNECTED');
       },
       err => {
+        if (err?.code === 'cancelled' || err?.message?.includes('CANCELLED')) return;
         console.warn('[AdminView] reports onSnapshot warning:', err);
         if (isMounted) setConnectionStatus('ERROR');
       }
@@ -167,6 +170,7 @@ export const AdminView: React.FC = () => {
       },
       100,
       err => {
+        if (err?.code === 'cancelled' || err?.message?.includes('CANCELLED')) return;
         console.warn('[AdminView] chat onSnapshot warning:', err);
         if (isMounted) setConnectionStatus('ERROR');
       }

@@ -38,16 +38,6 @@ import { AdminChatControl } from './AdminChatControl';
 import { adminService } from '../../services/adminService';
 
 export const ChatView: React.FC = () => {
-  const { 
-    user, 
-    stocks, 
-    watchlist,
-    showToast,
-    requireAuth,
-    isAuthenticated,
-    setIsAuthModalOpen
-  } = useApp();
-
   // 6 Official Chat Rooms
   const officialRooms: ChatRoomInfo[] = [
     { id: 'all', name: '전체 채팅', desc: '모든 투자자가 모여 대화하는 자유 광장', icon: '🌐', count: 1840 },
@@ -60,8 +50,20 @@ export const ChatView: React.FC = () => {
 
   // User-created custom chat rooms (from storage & Firestore)
   const [customRooms, setCustomRooms] = useState<ChatRoomInfo[]>(() => storageService.getCustomChatRooms());
-  const [activeRoomId, setActiveRoomId] = useState<string>('all');
-  const [messages, setMessages] = useState<ChatMessage[]>(() => storageService.getChatMessages('all'));
+  const { 
+    user, 
+    stocks, 
+    watchlist,
+    showToast,
+    requireAuth,
+    isAuthenticated,
+    setIsAuthModalOpen,
+    activeRoomId,
+    setActiveRoomId,
+    chatMessages: messages,
+    setChatMessages: setMessages
+  } = useApp();
+
   const [inputText, setInputText] = useState('');
   const [sentiment, setSentiment] = useState<'bull' | 'bear' | 'neutral'>('bull');
   
@@ -195,32 +197,6 @@ export const ChatView: React.FC = () => {
 
   // 4. Subscribe to Real-time Chat Messages for active room (Firestore + Storage + Cross-window Broadcast)
   useEffect(() => {
-    // Initial fetch from storage fallback
-    const localMsgs = storageService.getChatMessages(activeRoomId);
-    if (localMsgs && localMsgs.length > 0) {
-      setMessages(localMsgs);
-    } else {
-      setMessages([]);
-    }
-
-    // Subscribe to Firestore onSnapshot
-    const unsubscribe = firebaseRepository.subscribeChat(activeRoomId, remoteMessages => {
-      if (remoteMessages && remoteMessages.length > 0) {
-        setMessages(prev => {
-          const merged = [...prev];
-          remoteMessages.forEach(remoteMsg => {
-            const index = merged.findIndex(m => m.id === remoteMsg.id || (m.tempId && m.tempId === remoteMsg.tempId));
-            if (index !== -1) {
-              merged[index] = remoteMsg;
-            } else {
-              merged.push(remoteMsg);
-            }
-          });
-          return merged.sort((a, b) => (a._sortTime || 0) - (b._sortTime || 0));
-        });
-      }
-    });
-
     // Cross-tab real-time communication via BroadcastChannel
     let bc: BroadcastChannel | null = null;
     try {
@@ -248,7 +224,6 @@ export const ChatView: React.FC = () => {
     window.addEventListener('storage', handleStorage);
 
     return () => {
-      unsubscribe();
       bc?.close();
       window.removeEventListener('storage', handleStorage);
     };

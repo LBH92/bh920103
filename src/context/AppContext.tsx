@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { auth } from '../services/firebase';
 import { firebaseRepository } from '../services/firebaseRepository';
-import { Stock, StockIndex, ExchangeRate, MarketEvent, UserProfile, ViewTab, PriceAlert } from '../types';
+import { Stock, StockIndex, ExchangeRate, MarketEvent, UserProfile, ViewTab, PriceAlert, ChatMessage } from '../types';
 import { INITIAL_STOCKS, INITIAL_INDICES, INITIAL_EXCHANGE_RATE } from '../services/mockData';
 import { storageService } from '../services/storageService';
 import { stockRepository, StockDataSourceType } from '../services/stockRepository';
@@ -87,6 +87,12 @@ interface AppContextType {
   toggleSideChat: () => void;
   unreadChatCount: number;
   setUnreadChatCount: React.Dispatch<React.SetStateAction<number>>;
+  
+  // Centralized Chat State
+  activeRoomId: string;
+  setActiveRoomId: (roomId: string) => void;
+  chatMessages: ChatMessage[];
+  setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
 
   // Price Alerts (Firestore Real-time Target Price Monitoring)
   priceAlerts: PriceAlert[];
@@ -158,6 +164,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     crashlyticsService.setCustomKey('active_tab', tab);
     crashlyticsService.logBreadcrumb(`User navigated to tab: ${tab}`);
   }, []);
+
+  const [activeRoomId, setActiveRoomId] = useState<string>('domestic');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+
+  // Centralized Chat Subscription
+  useEffect(() => {
+    const unsubscribe = firebaseRepository.subscribeChat(
+      activeRoomId,
+      (messages) => {
+        setChatMessages(messages);
+      }
+    );
+    return () => unsubscribe();
+  }, [activeRoomId]);
 
   const navigateToStock = (symbol: string) => {
     setSelectedSymbol(symbol);
@@ -416,6 +436,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           storageService.saveUserWatchlist(fbUser.uid, remoteWatchlist || []);
           if (remoteWatchlist && remoteWatchlist.length > 0) {
             fetchWatchlistQuotes(remoteWatchlist);
+          } else {
+            // Check if this is the first login and register default watchlists
+            const hasInitialized = await firebaseRepository.hasInitializedWatchlist(fbUser.uid);
+            if (!hasInitialized) {
+              const defaultSymbols = ['KOSPI', 'KOSDAQ', 'NDAQ', 'SPX', 'USDKRW', 'US10Y', 'BTC', 'ETH'];
+              for (let i = 0; i < defaultSymbols.length; i++) {
+                await firebaseRepository.addWatchlist(fbUser.uid, defaultSymbols[i], i);
+              }
+              await firebaseRepository.markInitializedWatchlist(fbUser.uid);
+              setWatchlist(defaultSymbols);
+              fetchWatchlistQuotes(defaultSymbols);
+            }
           }
         } catch (err) {
           console.warn('Failed to load user profile or watchlist from Firestore:', err);
@@ -855,6 +887,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         toggleSideChat,
         unreadChatCount,
         setUnreadChatCount,
+        activeRoomId,
+        setActiveRoomId,
+        chatMessages,
+        setChatMessages,
         priceAlerts,
         addPriceAlert,
         removePriceAlert,
