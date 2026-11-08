@@ -30,10 +30,11 @@ const lazyWithRetry = <T extends React.ComponentType<any>>(
     }
   });
 
+import { StockDetailView } from './components/stocks/StockDetailView';
+
 // Views - Lazy Loaded with retry resilience
 const HomeView = lazyWithRetry(() => import('./components/home/HomeView').then(m => ({ default: m.HomeView })));
 const StockListView = lazyWithRetry(() => import('./components/stocks/StockListView').then(m => ({ default: m.StockListView })));
-const StockDetailView = lazyWithRetry(() => import('./components/stocks/StockDetailView').then(m => ({ default: m.StockDetailView })));
 const WatchlistView = lazyWithRetry(() => import('./components/watchlist/WatchlistView').then(m => ({ default: m.WatchlistView })));
 const CommunityView = lazyWithRetry(() => import('./components/community/CommunityView').then(m => ({ default: m.CommunityView })));
 const PostDetailView = lazyWithRetry(() => import('./components/community/PostDetailView').then(m => ({ default: m.PostDetailView })));
