@@ -24,13 +24,15 @@ import {
   Smartphone,
   Send,
   Radio,
-  Target
+  Target,
+  Volume2
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { AppNotification, UserAlertRule, AlertRuleType, Stock } from '../../types';
 import { notificationService } from '../../services/notificationService';
 import { fcmPushService, PushStatus } from '../../services/fcmPushService';
 import { SetPriceAlertModal } from '../stocks/SetPriceAlertModal';
+import { WatchlistNotificationSettingsModal } from './WatchlistNotificationSettingsModal';
 
 export const AlertsView: React.FC = () => {
   const { 
@@ -52,6 +54,9 @@ export const AlertsView: React.FC = () => {
   // Price Alert Modal State
   const [isPriceAlertModalOpen, setIsPriceAlertModalOpen] = useState(false);
   const [modalStock, setModalStock] = useState<Stock | null>(null);
+
+  // Watchlist Browser Push Notification Settings Modal
+  const [isWatchlistSettingsOpen, setIsWatchlistSettingsOpen] = useState(false);
 
   // Push Notification State
   const [pushStatus, setPushStatus] = useState<PushStatus | null>(null);
@@ -403,6 +408,15 @@ export const AlertsView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 self-start sm:self-center flex-wrap">
+          <button
+            onClick={() => setIsWatchlistSettingsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30 transition-colors cursor-pointer"
+            title="관심 종목 등락률 급변 브라우저 알림 설정"
+          >
+            <Bell className="w-3.5 h-3.5 text-amber-500" />
+            <span>관심종목 급변 알림</span>
+          </button>
+
           <button
             onClick={handleCheckNow}
             className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer"
@@ -1179,6 +1193,38 @@ export const AlertsView: React.FC = () => {
             </div>
           </div>
 
+          {/* Watchlist Real-Time Browser Push Notification Card */}
+          <div className="p-6 rounded-2xl bg-white dark:bg-[#131722] border border-amber-500/30 dark:border-amber-500/20 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <span className="p-2.5 rounded-xl bg-amber-500/10 text-amber-500">
+                  <Volume2 className="w-5 h-5" />
+                </span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                      관심 종목 등락률 급변 브라우저 알림 (Notification API)
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                      Firestore 동기화
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                    등록된 관심종목의 실시간 주가 급등(+3% 등) 및 급락(-3% 등), 거래량 폭증 발생 시 OS 네이티브 알림과 부드러운 웹 신디사이저 효과음을 전송합니다.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setIsWatchlistSettingsOpen(true)}
+                className="px-4 py-2.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-all cursor-pointer shadow-sm flex items-center gap-1.5 shrink-0"
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>관심종목 알림 상세 설정</span>
+              </button>
+            </div>
+          </div>
+
           {/* Platform Specific PWA Guides */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
             {/* Android Guide */}
@@ -1189,7 +1235,7 @@ export const AlertsView: React.FC = () => {
               </div>
               <ul className="text-slate-500 dark:text-slate-400 space-y-1.5 list-disc list-inside text-[11px] leading-relaxed">
                 <li>Chrome 또는 삼성 인터넷에서 우측 상단 메뉴 &gt; <b>[홈 화면에 추가]</b> 또는 <b>[앱 설치]</b>를 탭합니다.</li>
-                <li>홈 화면의 병돌투자 아이콘으로 실행하면 완벽한 네이티브 앱 환경으로 동작합니다.</li>
+                <li>홈 화면의 병돌 인베스트먼트 아이콘으로 실행하면 완벽한 네이티브 앱 환경으로 동작합니다.</li>
                 <li>앱이 종료되어 있거나 백그라운드 상태여도 키움 시장 이상 알림이 즉각 팝업 푸시로 수신됩니다.</li>
               </ul>
             </div>
@@ -1202,7 +1248,7 @@ export const AlertsView: React.FC = () => {
               </div>
               <ul className="text-slate-500 dark:text-slate-400 space-y-1.5 list-disc list-inside text-[11px] leading-relaxed">
                 <li>Apple iOS 정책상 Safari 하단 공유 버튼(네모+화살표) &gt; <b>[홈 화면에 추가]</b>를 진행해야 웹 푸시가 활성화됩니다.</li>
-                <li>홈 화면에 생성된 '병돌투자' 앱을 실행한 후 [전체 푸시 알림 켜기]를 눌러 알림 권한을 허용해주세요.</li>
+                <li>홈 화면에 생성된 '병돌 인베스트먼트' 앱을 실행한 후 [전체 푸시 알림 켜기]를 눌러 알림 권한을 허용해주세요.</li>
                 <li>화면이 꺼져 있거나 잠금 상태에서도 iOS 알림 센터와 배너로 푸시가 정상 전달됩니다.</li>
               </ul>
             </div>
@@ -1537,6 +1583,12 @@ export const AlertsView: React.FC = () => {
           currentPrice={modalStock.price}
         />
       )}
+
+      {/* Watchlist Browser Notification Settings Modal */}
+      <WatchlistNotificationSettingsModal
+        isOpen={isWatchlistSettingsOpen}
+        onClose={() => setIsWatchlistSettingsOpen(false)}
+      />
     </div>
   );
 };

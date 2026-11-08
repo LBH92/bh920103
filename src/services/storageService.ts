@@ -74,6 +74,7 @@ export const storageService = {
 
   createPost(data: Omit<CommunityPost, 'id' | 'likes' | 'views' | 'commentsCount' | 'createdAt'>): CommunityPost {
     const posts = this.getPosts();
+    const nowIso = new Date().toISOString();
     const newPost: CommunityPost = {
       ...data,
       id: `post-${Date.now()}`,
@@ -81,7 +82,8 @@ export const storageService = {
       likedBy: [],
       views: 1,
       commentsCount: 0,
-      createdAt: '방금 전',
+      createdAt: nowIso,
+      updatedAt: nowIso,
       comments: [],
     };
     const updated = [newPost, ...posts];
@@ -93,7 +95,7 @@ export const storageService = {
     const posts = this.getPosts();
     const index = posts.findIndex(p => p.id === id);
     if (index === -1) return null;
-    posts[index] = { ...posts[index], ...updates };
+    posts[index] = { ...posts[index], ...updates, updatedAt: new Date().toISOString() };
     saveToStorage(STORAGE_KEYS.POSTS, posts);
     return posts[index];
   },
@@ -138,7 +140,7 @@ export const storageService = {
         badge: user.role === 'admin' ? '운영자' : user.tier,
       },
       content,
-      createdAt: '방금 전',
+      createdAt: new Date().toISOString(),
       likes: 0,
       likedBy: [],
     };
@@ -217,13 +219,16 @@ export const storageService = {
   sendChatMessage(message: Omit<ChatMessage, 'id' | 'timestamp' | 'likes'>): ChatMessage {
     const allMessages = loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT, []);
     const now = new Date();
-    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     
     const newMsg: ChatMessage = {
       ...message,
       id: `chat-${Date.now()}`,
       timestamp: timeStr,
+      createdAt: now.toISOString(),
+      _sortTime: now.getTime(),
       likes: 0,
+      status: 'sent',
     };
 
     const updated = [...allMessages, newMsg];

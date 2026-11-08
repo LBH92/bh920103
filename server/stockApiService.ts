@@ -9,6 +9,8 @@
 import { CandleData, Stock, StockIndex, ExchangeRate, KiwoomChartResponse } from '../src/types';
 import { kiwoomApiService } from './kiwoomApiService';
 import { serverResilienceService } from './serverResilienceService';
+import { toProviderTicker, isUSStockSymbol } from '../src/utils/stocks/ticker';
+import { usStockSearchService } from './usStockMaster';
 
 interface ServerCacheEntry<T> {
   data: T;
@@ -17,6 +19,10 @@ interface ServerCacheEntry<T> {
 }
 
 const serverCache = new Map<string, ServerCacheEntry<any>>();
+
+let inFlightAllStocks: Promise<FetchAllStocksResult> | null = null;
+let inFlightIndices: Promise<FetchIndicesResult> | null = null;
+let inFlightExchange: Promise<ExchangeRate> | null = null;
 
 function getFromCache<T>(key: string): T | null {
   const entry = serverCache.get(key);
@@ -89,16 +95,17 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
 
   const masterItem = kiwoomApiService.getMasterStock(symbol);
   const item = TRACKED_STOCKS.find(s => s.symbol.toUpperCase() === symbol.toUpperCase());
-  const isUS = item?.market === 'US' || (!masterItem && /^[A-Z]{1,5}$/.test(symbol.toUpperCase()));
+  const usMaster = usStockSearchService.getBySymbol(symbol) || usStockSearchService.getBySymbol(symbol.replace('-', '.'));
+  const isUS = item?.market === 'US' || !!usMaster || (!masterItem && isUSStockSymbol(symbol));
   if (!masterItem && !item && !isUS && !kiwoomApiService.isConfigured()) {
     return { stock: null, dataSource: 'mock' };
   }
 
-  const stockName = masterItem?.name || item?.name || symbol;
+  const stockName = usMaster?.name || masterItem?.name || item?.name || symbol;
   const stockMarket = isUS ? 'US' : (masterItem?.market || item?.market || 'KOSPI');
-  const stockSector = item?.sector || masterItem?.sector || (isUS ? '미국 주식' : '기타');
+  const stockSector = usMaster?.sector || item?.sector || masterItem?.sector || (isUS ? '미국 주식' : '기타');
   const currency: 'KRW' | 'USD' = isUS ? 'USD' : 'KRW';
-  const exchange = item?.exchange || (isUS ? 'NASDAQ/NYSE' : undefined);
+  const exchange = usMaster?.exchange || item?.exchange || (isUS ? 'NASDAQ/NYSE' : undefined);
 
   // 1. Priority: Try Kiwoom REST API for domestic Korean stocks
   if (!isUS && kiwoomApiService.isConfigured()) {
@@ -157,7 +164,7 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
   // 2. Secondary / Fallback & Primary for US stocks: Yahoo Finance Live Data API
   try {
     const yahooTicker = isUS
-      ? (item?.ticker || symbol.toUpperCase())
+      ? (item?.ticker || toProviderTicker(symbol))
       : (item?.ticker || `${symbol}.${stockMarket === 'KOSDAQ' ? 'KQ' : 'KS'}`);
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?interval=1d&range=3mo`;
     const res = await serverResilienceService.resilientFetch(url, {
@@ -166,9 +173,9 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
         'Accept': 'application/json',
       },
     }, {
-      maxRetries: 2,
-      baseDelayMs: 300,
-      timeoutMs: 8000,
+      maxRetries: 3,
+      baseDelayMs: 500,
+      timeoutMs: 6000,
       serviceName: `YahooFinance(${symbol})`,
     });
 
@@ -276,35 +283,37 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
     return { stock: staleStock, dataSource: expiredCache.data.dataSource };
   }
 
-  // 4. Mock fallback
-  if (masterItem) {
-    const price = masterItem.lastPrice || 0;
+  // 4. Mock fallback (ONLY if source is NOT REAL)
+  if (masterItem && process.env.STOCK_DATA_SOURCE !== 'REAL') {
     const stock: Stock = {
       symbol: masterItem.code,
       name: masterItem.name,
       market: masterItem.market,
       sector: masterItem.sector,
-      price,
+      price: masterItem.lastPrice || 0,
       change: 0,
       changePercent: 0,
       volume: 0,
       volumeRatio: 100,
       tradingValue: 0,
-      openPrice: price,
-      highPrice: price,
-      lowPrice: price,
-      prevClose: price,
-      high52w: Math.round(price * 1.3),
-      low52w: Math.round(price * 0.7),
+      openPrice: masterItem.lastPrice || 0,
+      highPrice: masterItem.lastPrice || 0,
+      lowPrice: masterItem.lastPrice || 0,
+      prevClose: masterItem.lastPrice || 0,
+      high52w: Math.round((masterItem.lastPrice || 0) * 1.3),
+      low52w: Math.round((masterItem.lastPrice || 0) * 0.7),
       marketCap: masterItem.marketCap || 0,
       per: 15.2,
       pbr: 1.4,
-      eps: Math.round(price / 15.2),
+      eps: Math.round((masterItem.lastPrice || 0) / 15.2),
       dividendYield: 1.5,
       foreignNetBuy: 0,
       instNetBuy: 0,
       candles: [],
-      sparkline: [price, price],
+      sparkline: [masterItem.lastPrice || 0, masterItem.lastPrice || 0],
+      currency: 'KRW',
+      dataSource: 'mock',
+      lastUpdated: new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' }),
     };
     return { stock, dataSource: 'mock' };
   }
@@ -328,70 +337,81 @@ export async function fetchAllRealStocksWithSource(): Promise<FetchAllStocksResu
   const cached = getFromCache<FetchAllStocksResult>(cacheKey);
   if (cached && cached.stocks && cached.stocks.length > 0) return cached;
 
-  const masterList = await kiwoomApiService.fetchStockMasterList();
-  const majorSymbols = ['005930', '000660', '005380', '000270', '196170', '042700', '064350', '034020', '373220', '247540', '086520', '207940', '035420', '035720', '005490', '012330', '105560', '055550', '417860'];
-  const majorStockMap = new Map<string, Stock>();
-  let primarySource: 'kiwoom' | 'yahoo' | 'mock' = 'mock';
+  if (inFlightAllStocks) return inFlightAllStocks;
 
-  await Promise.allSettled(
-    majorSymbols.map(async sym => {
-      const res = await fetchRealStockDataWithSource(sym);
-      if (res.stock) {
-        majorStockMap.set(sym, res.stock);
-        if (res.dataSource === 'kiwoom') primarySource = 'kiwoom';
-        else if (res.dataSource === 'yahoo' && primarySource !== 'kiwoom') primarySource = 'yahoo';
+  inFlightAllStocks = (async () => {
+    try {
+      const majorSymbols = ['005930', '000660', '005380', '000270', '196170', '042700', '064350', '034020', '373220', '247540', '086520', '207940', '035420', '035720', '005490', '012330', '105560', '055550', '417860'];
+      const majorStockMap = new Map<string, Stock>();
+      let primarySource: 'kiwoom' | 'yahoo' | 'mock' = 'mock';
+
+      await Promise.allSettled(
+        majorSymbols.map(async sym => {
+          try {
+            const res = await fetchRealStockDataWithSource(sym);
+            if (res.stock) {
+              majorStockMap.set(sym, res.stock);
+              if (res.dataSource === 'kiwoom') primarySource = 'kiwoom';
+              else if (res.dataSource === 'yahoo' && primarySource !== 'kiwoom') primarySource = 'yahoo';
+            }
+          } catch {}
+        })
+      );
+
+      const baseList = TRACKED_STOCKS.map(t => ({
+        code: t.symbol,
+        name: t.name,
+        market: t.market,
+        sector: t.sector,
+        lastPrice: 0,
+        listCount: 0,
+        marketCap: 0,
+      }));
+
+      const results: Stock[] = baseList.map(item => {
+        const live = majorStockMap.get(item.code);
+        if (live) return live;
+        const price = item.lastPrice || 0;
+        return {
+          symbol: item.code,
+          name: item.name,
+          market: item.market,
+          sector: item.sector,
+          price,
+          change: 0,
+          changePercent: 0,
+          volume: 0,
+          volumeRatio: 100,
+          tradingValue: 0,
+          openPrice: price,
+          highPrice: price,
+          lowPrice: price,
+          prevClose: price,
+          high52w: Math.round(price * 1.3),
+          low52w: Math.round(price * 0.7),
+          marketCap: item.marketCap || 0,
+          per: 15.2,
+          pbr: 1.4,
+          eps: Math.round(price / 15.2),
+          dividendYield: 1.5,
+          foreignNetBuy: 0,
+          instNetBuy: 0,
+          candles: [],
+          sparkline: [price, price],
+        };
+      });
+
+      const payload: FetchAllStocksResult = { stocks: results, dataSource: primarySource };
+      if (results.length > 0) {
+        setInCache(cacheKey, payload, 15000);
       }
-    })
-  );
+      return payload;
+    } finally {
+      inFlightAllStocks = null;
+    }
+  })();
 
-  const baseList = masterList && masterList.length > 0 ? masterList : TRACKED_STOCKS.map(t => ({
-    code: t.symbol,
-    name: t.name,
-    market: t.market,
-    sector: t.sector,
-    lastPrice: 0,
-    listCount: 0,
-    marketCap: 0,
-  }));
-
-  const results: Stock[] = baseList.map(item => {
-    const live = majorStockMap.get(item.code);
-    if (live) return live;
-    const price = item.lastPrice || 0;
-    return {
-      symbol: item.code,
-      name: item.name,
-      market: item.market,
-      sector: item.sector,
-      price,
-      change: 0,
-      changePercent: 0,
-      volume: 0,
-      volumeRatio: 100,
-      tradingValue: 0,
-      openPrice: price,
-      highPrice: price,
-      lowPrice: price,
-      prevClose: price,
-      high52w: Math.round(price * 1.3),
-      low52w: Math.round(price * 0.7),
-      marketCap: item.marketCap || 0,
-      per: 15.2,
-      pbr: 1.4,
-      eps: Math.round(price / 15.2),
-      dividendYield: 1.5,
-      foreignNetBuy: 0,
-      instNetBuy: 0,
-      candles: [],
-      sparkline: [price, price],
-    };
-  });
-
-  const payload: FetchAllStocksResult = { stocks: results, dataSource: primarySource };
-  if (results.length > 0) {
-    setInCache(cacheKey, payload, 8000);
-  }
-  return payload;
+  return inFlightAllStocks;
 }
 
 /**
@@ -417,103 +437,119 @@ export async function fetchRealIndicesWithSource(): Promise<FetchIndicesResult> 
   const cached = getFromCache<FetchIndicesResult>(cacheKey);
   if (cached) return cached;
 
-  const nowFormatted = new Date().toLocaleString('ko-KR', {
-    timeZone: 'Asia/Seoul',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
+  if (inFlightIndices) return inFlightIndices;
 
-  // 1. Priority: Try Kiwoom REST API if configured
-  if (kiwoomApiService.isConfigured()) {
+  inFlightIndices = (async () => {
     try {
-      const kospi = await kiwoomApiService.fetchIndexPrice('KOSPI');
-      const kosdaq = await kiwoomApiService.fetchIndexPrice('KOSDAQ');
-      if (kospi && kosdaq && kospi.value > 0 && kosdaq.value > 0) {
-        kospi.lastUpdated = nowFormatted;
-        kospi.dataSource = 'kiwoom';
-        kosdaq.lastUpdated = nowFormatted;
-        kosdaq.dataSource = 'kiwoom';
-        const payload: FetchIndicesResult = { indices: [kospi, kosdaq], dataSource: 'kiwoom' };
-        setInCache(cacheKey, payload, 6000);
-        return payload;
-      }
-    } catch (err: any) {
-      console.log('[StockAPI] Kiwoom index fetch notice, using fallback:', err.message);
-    }
-  }
-
-  const indexDefs: { name: string; symbol: 'KOSPI' | 'KOSDAQ'; ticker: string; defaultVal: number }[] = [
-    { name: '코스피', symbol: 'KOSPI', ticker: '^KS11', defaultVal: 2710.5 },
-    { name: '코스닥', symbol: 'KOSDAQ', ticker: '^KQ11', defaultVal: 875.2 },
-  ];
-
-  const list: StockIndex[] = [];
-
-  for (const def of indexDefs) {
-    try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(def.ticker)}?interval=1d&range=2d`;
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
+      const nowFormatted = new Date().toLocaleString('ko-KR', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
       });
-      if (res.ok) {
-        const json = await res.json();
-        const meta = json.chart?.result?.[0]?.meta;
-        if (meta) {
-          const val = Number((meta.regularMarketPrice || def.defaultVal).toFixed(2));
-          const prev = Number((meta.chartPreviousClose || val).toFixed(2));
-          const change = Number((val - prev).toFixed(2));
-          const changePercent = Number(((change / prev) * 100).toFixed(2));
 
-          list.push({
-            name: def.name,
-            symbol: def.symbol,
-            value: val,
-            change,
-            changePercent,
-            high: Number((meta.regularMarketDayHigh || val).toFixed(2)),
-            low: Number((meta.regularMarketDayLow || val).toFixed(2)),
-            volume: 524000,
-            tradingValue: 11.5,
-            advanceCount: 450,
-            declineCount: 380,
-            sparkline: [prev, val],
-            lastUpdated: nowFormatted,
-            dataSource: 'yahoo',
-            isStale: false,
-          });
-          continue;
+      // 1. Priority: Try Kiwoom REST API if configured
+      if (kiwoomApiService.isConfigured()) {
+        try {
+          const kospi = await kiwoomApiService.fetchIndexPrice('KOSPI');
+          const kosdaq = await kiwoomApiService.fetchIndexPrice('KOSDAQ');
+          if (kospi && kosdaq && kospi.value > 0 && kosdaq.value > 0) {
+            kospi.lastUpdated = nowFormatted;
+            kospi.dataSource = 'kiwoom';
+            kosdaq.lastUpdated = nowFormatted;
+            kosdaq.dataSource = 'kiwoom';
+            const payload: FetchIndicesResult = { indices: [kospi, kosdaq], dataSource: 'kiwoom' };
+            setInCache(cacheKey, payload, 15000);
+            return payload;
+          }
+        } catch (err: any) {
+          console.log('[StockAPI] Kiwoom index fetch notice, using fallback:', err.message);
         }
       }
-    } catch {}
 
-    // Fallback if individual index fails
-    list.push({
-      name: def.name,
-      symbol: def.symbol,
-      value: def.defaultVal,
-      change: 12.5,
-      changePercent: 0.46,
-      high: def.defaultVal + 5,
-      low: def.defaultVal - 5,
-      volume: 520000,
-      tradingValue: 11.0,
-      advanceCount: 420,
-      declineCount: 400,
-      sparkline: [def.defaultVal - 10, def.defaultVal],
-      lastUpdated: nowFormatted,
-      dataSource: 'mock',
-      isStale: true,
-    });
-  }
+      const indexDefs: { name: string; symbol: 'KOSPI' | 'KOSDAQ'; ticker: string; defaultVal: number }[] = [
+        { name: '코스피', symbol: 'KOSPI', ticker: '^KS11', defaultVal: 2710.5 },
+        { name: '코스닥', symbol: 'KOSDAQ', ticker: '^KQ11', defaultVal: 875.2 },
+      ];
 
-  const payload: FetchIndicesResult = { indices: list, dataSource: 'yahoo' };
-  setInCache(cacheKey, payload, 8000);
-  return payload;
+      const list: StockIndex[] = await Promise.all(
+        indexDefs.map(async (def): Promise<StockIndex> => {
+          try {
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(def.ticker)}?interval=1d&range=2d`;
+            const res = await serverResilienceService.resilientFetch(url, {
+              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            }, {
+              maxRetries: 2,
+              baseDelayMs: 500,
+              timeoutMs: 6000,
+              serviceName: `IndexYahoo(${def.symbol})`,
+            });
+            if (res.ok) {
+              const json = await res.json();
+              const meta = json.chart?.result?.[0]?.meta;
+              if (meta) {
+                const val = Number((meta.regularMarketPrice || def.defaultVal).toFixed(2));
+                const prev = Number((meta.chartPreviousClose || val).toFixed(2));
+                const change = Number((val - prev).toFixed(2));
+                const changePercent = Number(((change / prev) * 100).toFixed(2));
+
+                return {
+                  name: def.name,
+                  symbol: def.symbol,
+                  value: val,
+                  change,
+                  changePercent,
+                  high: Number((meta.regularMarketDayHigh || val).toFixed(2)),
+                  low: Number((meta.regularMarketDayLow || val).toFixed(2)),
+                  volume: 524000,
+                  tradingValue: 11.5,
+                  advanceCount: 450,
+                  declineCount: 380,
+                  sparkline: [prev, val],
+                  lastUpdated: nowFormatted,
+                  dataSource: 'yahoo',
+                  isStale: false,
+                };
+              }
+            }
+          } catch (err: any) {
+            console.log(`[StockAPI] Yahoo index fetch notice for ${def.symbol}:`, err.message);
+          }
+
+          // Fallback if individual index fails
+          return {
+            name: def.name,
+            symbol: def.symbol,
+            value: def.defaultVal,
+            change: 12.5,
+            changePercent: 0.46,
+            high: def.defaultVal + 5,
+            low: def.defaultVal - 5,
+            volume: 520000,
+            tradingValue: 11.0,
+            advanceCount: 420,
+            declineCount: 400,
+            sparkline: [def.defaultVal - 10, def.defaultVal],
+            lastUpdated: nowFormatted,
+            dataSource: 'mock',
+            isStale: true,
+          };
+        })
+      );
+
+      const payload: FetchIndicesResult = { indices: list, dataSource: 'yahoo' };
+      setInCache(cacheKey, payload, 15000);
+      return payload;
+    } finally {
+      inFlightIndices = null;
+    }
+  })();
+
+  return inFlightIndices;
 }
 
 /**
@@ -532,46 +568,63 @@ export async function fetchRealExchangeRate(): Promise<ExchangeRate> {
   const cached = getFromCache<ExchangeRate>(cacheKey);
   if (cached) return cached;
 
-  try {
-    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?interval=1d&range=2d';
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    if (res.ok) {
-      const json = await res.json();
-      const meta = json.chart?.result?.[0]?.meta;
-      if (meta) {
-        const rate = Number((meta.regularMarketPrice || 1380.0).toFixed(2));
-        const prev = Number((meta.chartPreviousClose || rate).toFixed(2));
-        const change = Number((rate - prev).toFixed(2));
-        const changePercent = Number(((change / prev) * 100).toFixed(2));
+  if (inFlightExchange) return inFlightExchange;
 
-        const data: ExchangeRate = {
-          currency: 'USD/KRW',
-          name: '미국 달러',
-          rate,
-          change,
-          changePercent,
-          high: Number((meta.regularMarketDayHigh || rate + 2).toFixed(2)),
-          low: Number((meta.regularMarketDayLow || rate - 2).toFixed(2)),
-          sparkline: [prev, rate],
-        };
-        setInCache(cacheKey, data, 15000);
-        return data;
+  inFlightExchange = (async () => {
+    try {
+      const url = 'https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?interval=1d&range=2d';
+      const res = await serverResilienceService.resilientFetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      }, {
+        maxRetries: 2,
+        baseDelayMs: 500,
+        timeoutMs: 6000,
+        serviceName: 'ExchangeRateYahoo',
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const meta = json.chart?.result?.[0]?.meta;
+        if (meta) {
+          const rate = Number((meta.regularMarketPrice || 1380.0).toFixed(2));
+          const prev = Number((meta.chartPreviousClose || rate).toFixed(2));
+          const change = Number((rate - prev).toFixed(2));
+          const changePercent = Number(((change / prev) * 100).toFixed(2));
+
+          const data: ExchangeRate = {
+            currency: 'USD/KRW',
+            name: '미국 달러',
+            rate,
+            change,
+            changePercent,
+            high: Number((meta.regularMarketDayHigh || rate + 2).toFixed(2)),
+            low: Number((meta.regularMarketDayLow || rate - 2).toFixed(2)),
+            sparkline: [prev, rate],
+          };
+          setInCache(cacheKey, data, 20000);
+          return data;
+        }
       }
+    } catch (err: any) {
+      console.log('[StockAPI] Yahoo exchange rate fetch notice:', err.message);
     }
-  } catch {}
 
-  const fallback: ExchangeRate = {
-    currency: 'USD/KRW',
-    name: '미국 달러',
-    rate: 1382.50,
-    change: -2.30,
-    changePercent: -0.17,
-    high: 1385.00,
-    low: 1380.50,
-    sparkline: [1384.80, 1382.50],
-  };
-  setInCache(cacheKey, fallback, 15000);
-  return fallback;
+    const fallback: ExchangeRate = {
+      currency: 'USD/KRW',
+      name: '미국 달러',
+      rate: 1382.50,
+      change: -2.30,
+      changePercent: -0.17,
+      high: 1385.00,
+      low: 1380.50,
+      sparkline: [1384.80, 1382.50],
+    };
+    setInCache(cacheKey, fallback, 20000);
+    return fallback;
+  })().finally(() => {
+    inFlightExchange = null;
+  });
+
+  return inFlightExchange;
 }
 
 export interface FetchStockChartOptions {
@@ -588,7 +641,8 @@ export async function fetchUnifiedStockChart(
   const cleanSymbol = symbol.toUpperCase().trim();
   const rawPeriod = (options.period || '1d').toLowerCase().trim();
   const targetDate = options.date?.trim() || null;
-  const isUS = /^[A-Z]{1,5}$/.test(cleanSymbol);
+  const usMaster = usStockSearchService.getBySymbol(cleanSymbol) || usStockSearchService.getBySymbol(cleanSymbol.replace('-', '.'));
+  const isUS = !!usMaster || isUSStockSymbol(cleanSymbol);
 
   // Cache key per symbol, period, and target date - strictly isolated
   const cacheKey = `chart_unified_${cleanSymbol}_${rawPeriod}_${targetDate || 'latest'}`;
@@ -596,7 +650,7 @@ export async function fetchUnifiedStockChart(
   if (cached) return cached;
 
   // Determine Yahoo ticker
-  let yahooTicker = cleanSymbol;
+  let yahooTicker = isUS ? toProviderTicker(cleanSymbol) : cleanSymbol;
   if (!isUS) {
     const isKosdaq =
       cleanSymbol.startsWith('2') ||

@@ -26,30 +26,30 @@ export const PriceBadge: React.FC<PriceBadgeProps> = ({
   const isDown = change < 0;
   const isFlat = change === 0;
 
-  // Korean stock market styling: Red = Up, Blue = Down
+  // Financial design tokens: Rising = text-finance-up, Falling = text-finance-down
   const textColor = isUp
-    ? 'text-rose-500 dark:text-rose-400'
+    ? 'text-finance-up'
     : isDown
-    ? 'text-blue-600 dark:text-blue-400'
-    : 'text-slate-500 dark:text-slate-400';
+    ? 'text-finance-down'
+    : 'text-finance-sub-text';
 
   const bgColor = isUp
-    ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+    ? 'bg-finance-up/10 text-finance-up border-finance-up/25'
     : isDown
-    ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
-    : 'bg-slate-500/10 text-slate-500 dark:text-slate-400 border-slate-500/20';
+    ? 'bg-finance-down/10 text-finance-down border-finance-down/25'
+    : 'bg-finance-sub-bg text-finance-sub-text border-finance-border';
 
   const sizeClasses = {
-    sm: 'text-xs',
-    md: 'text-sm font-semibold',
-    lg: 'text-base font-bold',
-    xl: 'text-xl font-bold',
+    sm: 'text-xs tablet:text-[11.5px]',
+    md: 'text-sm tablet:text-[13px] font-semibold',
+    lg: 'text-base tablet:text-[15px] font-bold',
+    xl: 'text-xl tablet:text-[18px] font-bold',
   }[size];
 
   const sign = isUp ? '+' : '';
 
   const content = (
-    <span className={`inline-flex items-center gap-1 font-mono tracking-tight ${textColor} ${sizeClasses}`}>
+    <span className={`inline-flex items-center gap-1 font-mono tracking-tight tabular-nums whitespace-nowrap ${textColor} ${sizeClasses}`}>
       {showIcon && (
         isUp ? (
           <ArrowUpRight className="w-3.5 h-3.5 shrink-0 stroke-[2.5]" />
@@ -60,7 +60,7 @@ export const PriceBadge: React.FC<PriceBadgeProps> = ({
         )
       )}
       {showPrice && price !== undefined && (
-        <span className="font-semibold text-slate-900 dark:text-white mr-1.5 font-sans">
+        <span className="font-semibold text-finance-text mr-1.5 font-sans">
           {price.toLocaleString()}원
         </span>
       )}
@@ -68,7 +68,7 @@ export const PriceBadge: React.FC<PriceBadgeProps> = ({
         {showSign ? sign : ''}{changePercent.toFixed(2)}%
       </span>
       {change !== 0 && (
-        <span className="text-[0.8em] opacity-80 ml-0.5">
+        <span className="text-[0.8em] opacity-80 ml-0.5 tabular-nums">
           ({showSign ? sign : ''}{change.toLocaleString()})
         </span>
       )}
@@ -77,7 +77,7 @@ export const PriceBadge: React.FC<PriceBadgeProps> = ({
 
   if (pill) {
     return (
-      <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-semibold ${bgColor}`}>
+      <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-semibold tabular-nums whitespace-nowrap ${bgColor}`}>
         {content}
       </span>
     );

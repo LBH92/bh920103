@@ -245,5 +245,11 @@ service cloud.firestore {
     match /userGeminiKeys/{uid} {
       allow read, write: if isOwner(uid);
     }
+    match /userNotificationSettings/{userId} {
+      allow read: if isSignedIn() && (isOwner(userId) || isAdmin());
+      allow create, update: if isSignedIn() && (isOwner(userId) || isAdmin()) && isValidId(userId);
+      allow delete: if isSignedIn() && (isOwner(userId) || isAdmin());
+    }
   }
 }
+

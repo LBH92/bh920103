@@ -10,6 +10,7 @@ import { Footer } from './components/layout/Footer';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { AdminGuard } from './components/admin/AdminGuard';
 import { LeftSidebar } from './components/layout/LeftSidebar';
+import { useWatchlistPriceMonitor } from './hooks/useWatchlistPriceMonitor';
 
 import { Suspense, lazy } from 'react';
 
@@ -50,6 +51,7 @@ const CalendarView = lazyWithRetry(() => import('./components/calendar/CalendarV
 const InquiryPage = lazyWithRetry(() => import('./components/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })));
 const MiniGames = lazyWithRetry(() => import('./components/games/MiniGames').then(m => ({ default: m.MiniGames || m.default })));
 import { SideChatPanel } from './components/chat/SideChatPanel';
+import { RightSidebar } from './components/layout/RightSidebar';
 
 // Loading component
 const ViewLoader = () => (
@@ -79,8 +81,19 @@ const MainLayout: React.FC = () => {
     isAuthenticated, 
     showToast,
     isSideChatOpen,
-    isAuthLoading
+    isAuthLoading,
+    stocks,
+    watchlist,
+    navigateToStock
   } = useApp();
+
+  // Active Watchlist Fluctuation Monitor for Browser Push Notifications
+  useWatchlistPriceMonitor({
+    watchlist,
+    stocks,
+    userId: user?.id,
+    onNavigateStock: navigateToStock,
+  });
 
   useEffect(() => {
     import('@capacitor/app').then(({ App }) => {
@@ -189,12 +202,12 @@ const MainLayout: React.FC = () => {
   };
 
   return (
-    <div className="h-[100dvh] flex flex-col bg-slate-50 dark:bg-[#0c0f17] text-slate-900 dark:text-slate-100 font-sans transition-colors duration-150">
+    <div className="h-[100dvh] flex flex-col bg-finance-bg text-finance-text font-sans transition-colors duration-150">
       <Navbar />
 
       <div className="flex-1 flex overflow-hidden pt-[64px] md:pt-[60px]">
-        {/* Left Panel - Fixed width, independent scroll */}
-        <div className="hidden md:flex flex-col w-64 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-[#131722] overflow-hidden">
+        {/* Left Panel - Fixed width on Desktop (>= 1280px) */}
+        <div className="hidden xl:flex flex-col w-64 border-r border-finance-border bg-finance-card overflow-hidden">
           <LeftSidebar />
         </div>
 
@@ -207,10 +220,10 @@ const MainLayout: React.FC = () => {
           </div>
         </main>
 
-        {/* Right Chat Panel - Fixed width, independent scroll */}
-        <div className="hidden lg:flex flex-col w-[320px] xl:w-[360px] border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-[#131722] overflow-hidden">
+        {/* Right Panel - Watchlist on Desktop Screens */}
+        <div className="hidden 2xl:flex flex-col w-[320px] xl:w-[360px] border-l border-finance-border bg-finance-card overflow-hidden">
           {activeTab !== 'chat' && (
-            <SideChatPanel embedded onOpenFullChat={() => setActiveTab('chat')} />
+            <RightSidebar onOpenFullChat={() => setActiveTab('chat')} />
           )}
         </div>
       </div>

@@ -54,7 +54,8 @@ interface AppContextType {
 
   // Watchlist
   watchlist: string[];
-  addToWatchlist: (symbol: string) => Promise<void>;
+  watchlistDetails: Stock[];
+  addToWatchlist: (symbol: string, itemData?: Partial<Stock>) => Promise<void>;
   removeFromWatchlist: (symbol: string) => Promise<void>;
   toggleWatchlist: (symbol: string) => void;
   reorderWatchlist: (newOrder: string[]) => void;
@@ -93,6 +94,8 @@ interface AppContextType {
   setActiveRoomId: (roomId: string) => void;
   chatMessages: ChatMessage[];
   setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
+  loadMoreChatMessages: () => void;
+  chatMessageLimit: number;
 
   // Price Alerts (Firestore Real-time Target Price Monitoring)
   priceAlerts: PriceAlert[];
@@ -124,9 +127,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const root = document.documentElement;
     if (isDark) {
       root.classList.add('dark');
+      root.style.backgroundColor = '#171D26';
       localStorage.setItem('bd_theme', 'dark');
     } else {
       root.classList.remove('dark');
+      root.style.backgroundColor = '#F3F5F7';
       localStorage.setItem('bd_theme', 'light');
     }
   }, [isDark]);
@@ -167,6 +172,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [activeRoomId, setActiveRoomId] = useState<string>('domestic');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatMessageLimit, setChatMessageLimit] = useState<number>(50);
+
+  const handleSetActiveRoomId = useCallback((roomId: string) => {
+    setActiveRoomId(roomId);
+    setChatMessageLimit(50);
+  }, []);
+
+  const loadMoreChatMessages = useCallback(() => {
+    setChatMessageLimit(prev => prev + 30);
+  }, []);
 
   // Centralized Chat Subscription
   useEffect(() => {
@@ -174,10 +189,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       activeRoomId,
       (messages) => {
         setChatMessages(messages);
-      }
+      },
+      chatMessageLimit
     );
     return () => unsubscribe();
-  }, [activeRoomId]);
+  }, [activeRoomId, chatMessageLimit]);
 
   const navigateToStock = (symbol: string) => {
     setSelectedSymbol(symbol);
@@ -238,8 +254,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSelectedIndexSymbol(null);
       }
 
-      // 1. Stock detail: /stocks/:symbol
-      const stockMatch = pathname.match(/\/stocks\/([0-9A-Za-z]+)/);
+      // 1. Stock detail: /stocks/:symbol (supports Korean codes, US tickers like BRK.B, and crypto like KRW-BTC)
+      const stockMatch = pathname.match(/\/stocks\/([0-9A-Za-z.\-_:]+)/);
       if (stockMatch && stockMatch[1]) {
         setSelectedSymbol(stockMatch[1]);
         setActiveTabState('stocks');
@@ -376,8 +392,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Watchlist (Per-User Isolation, Default empty, No mock data)
   const [watchlist, setWatchlist] = useState<string[]>([]);
+  const [watchlistDetails, setWatchlistDetails] = useState<Stock[]>([]);
 
-  // Fetch live Kiwoom quotes for watchlist symbols and merge into stocks state
+  // Fetch live quotes for watchlist symbols and merge into stocks & watchlist state
   const fetchWatchlistQuotes = async (symbolsToFetch?: string[]) => {
     const targetSymbols = symbolsToFetch || watchlist;
     if (!targetSymbols || targetSymbols.length === 0) return;
@@ -385,6 +402,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const freshQuotes = await stockRepository.getStocksBySymbols(targetSymbols);
       if (freshQuotes && freshQuotes.length > 0) {
+        setWatchlistDetails(prev => {
+          const map = new Map(prev.map(s => [s.symbol, s]));
+          for (const q of freshQuotes) {
+            const existing = map.get(q.symbol);
+            map.set(q.symbol, { ...(existing || {}), ...q });
+          }
+          // Determine symbols to keep in order: full watchlist + any newly fetched symbols
+          const fullList = Array.from(new Set([...watchlist, ...(symbolsToFetch || [])]));
+          const ordered: Stock[] = [];
+          for (const sym of fullList) {
+            const item = map.get(sym);
+            if (item) ordered.push(item);
+          }
+          return ordered;
+        });
+
         setStocks(prev => {
           const map = new Map(prev.map(s => [s.symbol, s]));
           for (const s of freshQuotes) {
@@ -457,6 +490,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setFirebaseUser(null);
         setUser(null);
         setWatchlist([]);
+        setWatchlistDetails([]);
         storageService.clearWatchlist();
       }
       setIsAuthLoading(false);
@@ -473,6 +507,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       clearTimeout(authTimeout);
     };
   }, []);
+
 
   const requireAuth = (actionName?: string): boolean => {
     if (!firebaseUser && !user) {
@@ -531,7 +566,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [user?.id]);
 
   // 1 & 2. Add to Watchlist (Duplicate prevention & Firestore sync)
-  const addToWatchlist = async (symbol: string) => {
+  const addToWatchlist = async (symbol: string, itemData?: Partial<Stock>) => {
     if (!requireAuth('관심종목 저장')) {
       return;
     }
@@ -543,22 +578,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
+    const stock = stocks.find(s => s.symbol === symbol) || (itemData ? (itemData as Stock) : undefined);
+    const market = stock?.market || itemData?.market || 'UNKNOWN';
+
+    // Immediate optimistic local update for instant UI feedback
+    if (itemData && !watchlistDetails.some(w => w.symbol === symbol)) {
+      const fullStock: Stock = {
+        symbol,
+        name: itemData.name || symbol,
+        price: itemData.price || 0,
+        change: itemData.change || 0,
+        changePercent: itemData.changePercent || 0,
+        market: market as any,
+        sector: itemData.sector || '',
+        volume: itemData.volume || 0,
+        volumeRatio: itemData.volumeRatio || 100,
+        tradingValue: itemData.tradingValue || 0,
+        high52w: itemData.high52w || (itemData.price ? Math.round(itemData.price * 1.3) : 0),
+        low52w: itemData.low52w || (itemData.price ? Math.round(itemData.price * 0.7) : 0),
+        marketCap: itemData.marketCap || 0,
+        per: itemData.per || 15,
+        pbr: itemData.pbr || 1.2,
+        eps: itemData.eps || 0,
+        dividendYield: itemData.dividendYield || 0,
+        openPrice: itemData.openPrice || itemData.price || 0,
+        highPrice: itemData.highPrice || itemData.price || 0,
+        lowPrice: itemData.lowPrice || itemData.price || 0,
+        prevClose: itemData.prevClose || itemData.price || 0,
+        foreignNetBuy: itemData.foreignNetBuy || 0,
+        instNetBuy: itemData.instNetBuy || 0,
+        candles: itemData.candles || [],
+        sparkline: itemData.sparkline || [],
+        currency: itemData.currency || (market === 'US' ? 'USD' : 'KRW'),
+        exchange: itemData.exchange,
+        productType: itemData.productType,
+      };
+      setWatchlistDetails(prev => [...prev.filter(p => p.symbol !== symbol), fullStock]);
+      setStocks(prev => prev.some(s => s.symbol === symbol) ? prev : [...prev, fullStock]);
+    }
+
     const updated = [...watchlist, symbol];
     setWatchlist(updated);
     storageService.saveUserWatchlist(user.id, updated);
 
-    // Persist to Firestore
+    // Persist to Firestore with safe ID & metadata
     try {
-      await firebaseRepository.addWatchlist(user.id, symbol, updated.length);
+      await firebaseRepository.addWatchlist(user.id, symbol, updated.length, market, stock || itemData);
     } catch (err) {
       console.warn('Firebase add watchlist failed:', err);
     }
 
-    // Immediately fetch quote so it displays with real Kiwoom price right away
+    // Immediately fetch quote so it displays with real price right away
     fetchWatchlistQuotes([symbol]);
 
-    const stock = stocks.find(s => s.symbol === symbol);
-    const name = stock ? stock.name : symbol;
+    const name = stock ? stock.name : (itemData?.name || symbol);
     showToast(`'${name}' 관심종목에 추가되었습니다.`, 'success');
   };
 
@@ -573,14 +646,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setWatchlist(updated);
     storageService.saveUserWatchlist(user.id, updated);
 
+    const stock = stocks.find(s => s.symbol === symbol);
+    const market = stock?.market || 'UNKNOWN';
+
     // Delete from Firestore
     try {
-      await firebaseRepository.removeWatchlist(user.id, symbol);
+      await firebaseRepository.removeWatchlist(user.id, symbol, market);
     } catch (err) {
       console.warn('Firebase remove watchlist failed:', err);
     }
 
-    const stock = stocks.find(s => s.symbol === symbol);
     const name = stock ? stock.name : symbol;
     showToast(`'${name}' 관심종목에서 삭제되었습니다.`, 'info');
   };
@@ -595,9 +670,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const reorderWatchlist = (newOrder: string[]) => {
     setWatchlist(newOrder);
+    setWatchlistDetails(prev => {
+      const map = new Map(prev.map(p => [p.symbol, p]));
+      return newOrder.map(sym => map.get(sym)).filter((p): p is Stock => Boolean(p));
+    });
+
     if (user?.id) {
       storageService.saveUserWatchlist(user.id, newOrder);
-      firebaseRepository.updateWatchlistOrder(user.id, newOrder);
+      const orders = newOrder.map((symbol, idx) => {
+        const stock = stocks.find(s => s.symbol === symbol) || watchlistDetails.find(w => w.symbol === symbol);
+        return { symbol, market: stock?.market || 'UNKNOWN', orderIndex: idx };
+      });
+      firebaseRepository.updateWatchlistOrder(user.id, orders);
     }
     showToast('관심종목 정렬 순서가 저장되었습니다.', 'info');
   };
@@ -862,6 +946,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         realtimeStatus,
         checkRealtimeConnection,
         watchlist,
+        watchlistDetails,
         addToWatchlist,
         removeFromWatchlist,
         toggleWatchlist,
@@ -888,9 +973,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         unreadChatCount,
         setUnreadChatCount,
         activeRoomId,
-        setActiveRoomId,
+        setActiveRoomId: handleSetActiveRoomId,
         chatMessages,
         setChatMessages,
+        loadMoreChatMessages,
+        chatMessageLimit,
         priceAlerts,
         addPriceAlert,
         removePriceAlert,

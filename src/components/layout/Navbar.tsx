@@ -35,6 +35,7 @@ import { KiwoomConfigModal } from '../common/KiwoomConfigModal';
 import { getKRXMarketStatus, MarketStatusInfo } from '../../utils/marketHours';
 import { isPreviewEnvironment } from '../../utils/environment';
 import { KstClock } from '../common/KstClock';
+import { MobileDrawer } from './MobileDrawer';
 
 export const Navbar: React.FC = () => {
   const {
@@ -146,13 +147,14 @@ export const Navbar: React.FC = () => {
     { tab: 'stocks', label: '종목', icon: <BarChart2 className="w-3.5 h-3.5 shrink-0" /> },
     { tab: 'compare', label: '비교', icon: <Layers className="w-3.5 h-3.5 shrink-0" /> },
     { tab: 'ranking', label: '실시간 순위', icon: <Flame className="w-3.5 h-3.5 text-amber-500 shrink-0" />, badge: 'TOP' },
-    { tab: 'insight', label: 'Stock Insight', icon: <Activity className="w-3.5 h-3.5 text-rose-500 shrink-0" />, badge: 'LIVE' },
+    { tab: 'insight', label: '시장 인사이트', icon: <Activity className="w-3.5 h-3.5 text-rose-500 shrink-0" />, badge: 'LIVE' },
     { tab: 'portfolio', label: '모의투자', icon: <Briefcase className="w-3.5 h-3.5 text-emerald-500 shrink-0" /> },
     { tab: 'watchlist', label: '관심종목', icon: <Bookmark className="w-3.5 h-3.5 shrink-0" /> },
     { tab: 'calendar', label: '증시 캘린더', icon: <Calendar className="w-3.5 h-3.5 text-indigo-500 shrink-0" /> },
     { tab: 'community', label: '커뮤니티', icon: <Layers className="w-3.5 h-3.5 shrink-0" /> },
     { tab: 'chat', label: '실시간 톡', icon: <MessageSquare className="w-3.5 h-3.5 text-rose-500 shrink-0" />, badge: 'LIVE' },
     { tab: 'games', label: '미니게임', icon: <Gamepad2 className="w-3.5 h-3.5 shrink-0" /> },
+    ...(user?.role === 'admin' || user?.role === 'superadmin' ? [{ tab: 'admin' as ViewTab, label: '관리자', icon: <Shield className="w-3.5 h-3.5 shrink-0" /> }] : []),
   ];
 
   // All navigation items for Mobile Responsive Drawer
@@ -171,66 +173,71 @@ export const Navbar: React.FC = () => {
 
   return (
     <>
-      <header className="sticky top-0 z-40 w-full border-b border-slate-200 dark:border-slate-800/80 bg-white/95 dark:bg-[#0c0f17]/95 backdrop-blur-md">
+      <header className="sticky top-0 z-40 w-full border-b border-finance-border bg-finance-card/95 backdrop-blur-md">
         {/* Top Real-time Market Ticker Ribbon */}
-        <div className="hidden sm:flex items-center justify-between px-4 py-1 text-xs text-slate-500 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
+        <div className="hidden sm:flex items-center justify-between px-4 py-1.5 text-xs tablet:text-[11.5px] text-finance-sub-text border-b border-finance-border bg-finance-sub-bg/60">
            <div className="flex gap-4">
-              <span>{marketStatus.statusLabel}</span>
+              <span className="font-medium">{marketStatus.statusLabel}</span>
               <KstClock />
            </div>
-           <div className="flex gap-4">
+           <div className="flex gap-4 font-mono font-medium tabular-nums">
               {indices.map(idx => (
-                <span key={idx.symbol}>{idx.symbol}: {idx.value.toLocaleString()} ({idx.changePercent}%)</span>
+                <span key={idx.symbol} className="whitespace-nowrap">
+                  {idx.symbol}: {idx.value.toLocaleString()} <span className={idx.changePercent >= 0 ? 'text-finance-up' : 'text-finance-down'}>({idx.changePercent >= 0 ? '+' : ''}{idx.changePercent}%)</span>
+                </span>
               ))}
            </div>
         </div>
         
         {/* Main Navigation Bar */}
-        <nav className="max-w-[95rem] mx-auto px-4 py-3 flex items-center justify-between">
-           <div className="flex items-center gap-6">
-             <button onClick={() => setActiveTab('home')} className="text-xl font-bold text-slate-900 dark:text-white">BYEONGDOL</button>
-             <div className="hidden md:flex gap-4">
+        <nav className="max-w-[95rem] mx-auto px-4 py-3 tablet:py-2.5 flex items-center justify-between gap-3">
+           <div className="flex items-center gap-6 tablet:gap-3 min-w-0">
+             <button onClick={() => setActiveTab('home')} className="brand-logo text-xl tablet:text-[20px] font-black text-finance-text tracking-tight hover:opacity-90 transition-opacity shrink-0 whitespace-nowrap">병돌 인베스트먼트</button>
+             <div className="hidden md:flex gap-1.5 tablet:gap-1 items-center nav-items-wrapper overflow-x-auto no-scrollbar">
                {mainNavItems.map(item => (
-                 <button key={item.tab} onClick={() => setActiveTab(item.tab)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium ${activeTab === item.tab ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
+                 <button 
+                   key={item.tab} 
+                   onClick={() => setActiveTab(item.tab)} 
+                   className={`nav-item-btn flex items-center gap-1.5 tablet:gap-1 px-3 py-1.5 tablet:px-2 tablet:py-1 rounded-lg text-sm tablet:text-[13px] font-medium transition-colors shrink-0 whitespace-nowrap ${
+                     activeTab === item.tab 
+                       ? 'bg-finance-accent/15 text-finance-accent font-bold' 
+                       : 'text-finance-sub-text hover:text-finance-text hover:bg-finance-sub-bg'
+                   }`}
+                 >
                     {item.icon}
-                    {item.label}
+                    <span>{item.label}</span>
                  </button>
                ))}
              </div>
            </div>
-           <div className="flex items-center gap-3">
-              <button onClick={() => setIsSearchOpen(true)} className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800"><Search className="w-5 h-5" /></button>
-              <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800">{isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button>
+           <div className="flex items-center gap-2 tablet:gap-1.5 shrink-0">
+              <button onClick={() => setIsSearchOpen(true)} className="p-2 tablet:p-1.5 rounded-xl text-finance-sub-text hover:text-finance-text hover:bg-finance-sub-bg transition-colors" title="종목 및 기능 검색"><Search className="w-4 h-4" /></button>
+              <button onClick={toggleTheme} className="p-2 tablet:p-1.5 rounded-xl text-finance-sub-text hover:text-finance-text hover:bg-finance-sub-bg transition-colors" title="화면 모드 전환">{isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-finance-accent" />}</button>
               {isAuthenticated ? (
-                <button onClick={() => setProfileDropdownOpen(!profileDropdownOpen)} className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800"><User className="w-5 h-5" /></button>
+                <button onClick={() => setProfileDropdownOpen(!profileDropdownOpen)} className="p-2 tablet:p-1.5 rounded-xl text-finance-sub-text hover:text-finance-text hover:bg-finance-sub-bg transition-colors"><User className="w-4 h-4" /></button>
               ) : (
-                <button onClick={() => setIsAuthModalOpen(true)} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm">로그인</button>
+                <button onClick={() => setIsAuthModalOpen(true)} className="px-3.5 py-1.5 tablet:px-3 tablet:py-1 rounded-lg bg-finance-accent text-white text-xs tablet:text-[12px] font-bold hover:opacity-90 shadow-xs transition-opacity whitespace-nowrap">로그인</button>
               )}
-              <button className="md:hidden p-2" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}><Menu className="w-6 h-6" /></button>
+              <button 
+                data-mobile-toggle="true"
+                className="md:hidden p-2 rounded-xl text-finance-text hover:bg-finance-sub-bg transition-colors" 
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                aria-label="전체 메뉴 열기"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
            </div>
         </nav>
       </header>
 
-      {/* Mobile Menu */}
-      {mobileMenuOpen && (
-        <div ref={mobileMenuRef} className="md:hidden fixed inset-0 z-50 bg-white dark:bg-[#0c0f17] pt-16 px-4">
-          <button className="absolute top-4 right-4" onClick={() => setMobileMenuOpen(false)}><X className="w-6 h-6" /></button>
-          <div className="flex flex-col gap-2">
-            {allNavItems.map(item => (
-              <button key={item.tab} onClick={() => { setActiveTab(item.tab); setMobileMenuOpen(false); }} className="flex items-center gap-3 p-3 text-lg font-medium">
-                {item.icon}
-                {item.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Categorized Mobile Drawer */}
+      <MobileDrawer isOpen={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
 
       {/* Profile Dropdown */}
       {profileDropdownOpen && (
-        <div ref={profileMenuRef} className="absolute right-4 top-16 z-50 w-48 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-slate-200 dark:border-slate-700 p-2">
-            <button onClick={() => { setActiveTab('profile'); setProfileDropdownOpen(false); }} className="w-full flex items-center gap-2 p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded"><User className="w-4 h-4" /> 내 프로필</button>
-            <button onClick={logout} className="w-full flex items-center gap-2 p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-red-500"><LogOut className="w-4 h-4" /> 로그아웃</button>
+        <div ref={profileMenuRef} className="absolute right-4 top-16 z-50 w-48 bg-finance-card rounded-xl shadow-lg border border-finance-border p-2 animate-in fade-in zoom-in-95 duration-100">
+            <button onClick={() => { setActiveTab('profile'); setProfileDropdownOpen(false); }} className="w-full flex items-center gap-2 p-2 text-finance-text hover:bg-finance-sub-bg rounded-lg text-xs font-medium"><User className="w-4 h-4 text-finance-sub-text" /> 내 프로필</button>
+            <button onClick={logout} className="w-full flex items-center gap-2 p-2 hover:bg-finance-sub-bg rounded-lg text-finance-up text-xs font-medium"><LogOut className="w-4 h-4" /> 로그아웃</button>
         </div>
       )}
 

@@ -1,5 +1,5 @@
 /**
- * Admin Service: Manages all 12 administrative subsystems for Stock Insight
+ * Admin Service: Manages all 12 administrative subsystems for 병돌 인베스트먼트
  * 
  * Supports:
  * - Dashboard KPIs & Realtime System Health
@@ -70,7 +70,7 @@ const INITIAL_ADMIN_USERS: UserProfile[] = [
     role: 'superadmin',
     tier: '최고 관리자',
     joinedDate: '2026.01.01',
-    bio: 'Stock Insight 총괄 시스템 관리자',
+    bio: '병돌 인베스트먼트 총괄 시스템 관리자',
     postCount: 0,
     commentCount: 0,
     status: 'active',
@@ -86,7 +86,7 @@ const INITIAL_ADMIN_USERS: UserProfile[] = [
   {
     id: 'u-mod-1',
     name: '커뮤니티운영자',
-    email: 'moderator@stockinsight.com',
+    email: 'moderator@byeongdol.com',
     avatar: 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=100&auto=format&fit=crop&q=80',
     role: 'moderator',
     tier: '운영진 (Moderator)',
@@ -120,8 +120,8 @@ const DEFAULT_BANNED_WORDS: AdminFilterItem[] = [
 const DEFAULT_NOTICES: AdminNotice[] = [
   {
     id: 'notice-1',
-    title: '[중요] Stock Insight 실시간 AI 종목 브리핑 & 모니터링 엔진 정식 가동 안내',
-    content: `안녕하세요, Stock Insight 총괄 운영팀입니다.\n\nKRX 실시간 체결 데이터 연동과 더불어 Gemini 3.8 기반의 팩트 체크 종목 브리핑 서비스가 정식 오픈되었습니다.\n\n[주요 업데이트 내역]\n1. 5대 전용 서버 함수 연동을 통한 주가·거래량·공시 정확도 보장\n2. 7대 시장 급변/사이드카/서킷브레이커 실시간 감지\n3. 사용자 맞춤형 알림 조건 설정\n\n회원 여러분의 안전하고 스마트한 투자를 지원하겠습니다. 감사합니다.`,
+    title: '[중요] 병돌 인베스트먼트 실시간 AI 종목 브리핑 & 모니터링 엔진 정식 가동 안내',
+    content: `안녕하세요, 병돌 인베스트먼트 총괄 운영팀입니다.\n\nKRX 실시간 체결 데이터 연동과 더불어 Gemini 3.8 기반의 팩트 체크 종목 브리핑 서비스가 정식 오픈되었습니다.\n\n[주요 업데이트 내역]\n1. 5대 전용 서버 함수 연동을 통한 주가·거래량·공시 정확도 보장\n2. 7대 시장 급변/사이드카/서킷브레이커 실시간 감지\n3. 사용자 맞춤형 알림 조건 설정\n\n회원 여러분의 안전하고 스마트한 투자를 지원하겠습니다. 감사합니다.`,
     author: '총괄운영팀',
     isPinned: true,
     category: 'service',

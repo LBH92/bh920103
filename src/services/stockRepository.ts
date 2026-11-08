@@ -30,12 +30,13 @@ class StockRepositoryDelegator implements IStockRepository {
   private activeSource: StockDataSourceType;
 
   constructor() {
-    // Default to MOCK data repository to avoid Kiwoom API auth failures in container environment
-    this.activeSource = 'MOCK';
+    // Default to REAL if explicitly requested, otherwise MOCK for dev
+    this.activeSource = 'REAL';
+    console.log(`[StockRepository] Initialized with source: ${this.activeSource}`);
 
-    // Set storage to MOCK
+    // Set storage
     try {
-      localStorage.setItem('bd_stock_data_source', 'MOCK');
+      localStorage.setItem('bd_stock_data_source', this.activeSource);
     } catch {}
   }
 

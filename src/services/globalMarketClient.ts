@@ -1,9 +1,9 @@
 /**
- * Client-Side Global Market Service
- * Fetches real global market data from /api/market/global-summary
+ * Client-Side Global Market & Financial Hub Service
+ * Fetches real market and financial data from /api/market/global-summary and /api/financial/hub
  */
 
-import { GlobalMarketSummaryResponse } from '../types';
+import { GlobalMarketSummaryResponse, ProviderMetadata, GlobalMarketItem } from '../types';
 
 class GlobalMarketClient {
   private cache: GlobalMarketSummaryResponse | null = null;
@@ -16,7 +16,7 @@ class GlobalMarketClient {
       return this.cache;
     }
 
-    const res = await fetch('/api/market/global-summary', {
+    const res = await fetch(`/api/market/global-summary${forceRefresh ? '?force=true' : ''}`, {
       headers: {
         'Accept': 'application/json',
       },
@@ -30,6 +30,32 @@ class GlobalMarketClient {
     this.cache = data;
     this.lastFetched = now;
     return data;
+  }
+
+  async getCategoryItems(category: string, forceRefresh: boolean = false): Promise<GlobalMarketItem[]> {
+    const res = await fetch(`/api/financial/hub?category=${encodeURIComponent(category)}${forceRefresh ? '&force=true' : ''}`, {
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      throw new Error(`카테고리(${category}) 데이터 조회 실패`);
+    }
+
+    const data = await res.json();
+    return data.items || [];
+  }
+
+  async getProviders(): Promise<ProviderMetadata[]> {
+    try {
+      const res = await fetch('/api/financial/providers');
+      if (!res.ok) return [];
+      const json = await res.json();
+      return json.providers || [];
+    } catch {
+      return [];
+    }
   }
 }
 

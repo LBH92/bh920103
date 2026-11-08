@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for the Historical Investment Profit Simulator, covering calculation logic, UI components, and verification steps.",
-  "updatedAt":  "2026-10-30T15:47:04.553538841Z",
-  "requestFeedback":  true,
-  "userFacing":  true
+  "summary": "병돌 인베스트먼트 라이트모드 및 다크모드 금융 테마 리뉴얼 완료 계획 및 검증 결과 문서. 두 모드의 9개 디자인 토큰 시스템 구축 및 전체 컴포넌트(차트, 호가창, 네비게이션, 사이드바, 히트맵 등) 일괄 적용 내역.",
+  "updatedAt": "2026-11-05T18:53:23.061682246Z",
+  "requestFeedback": true,
+  "userFacing": true
 }

@@ -13,11 +13,14 @@ import {
   Activity,
   Newspaper,
   Briefcase,
-  Compass
+  Compass,
+  BarChart2,
+  MessageSquare
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Stock } from '../../types';
 import { stockRepository } from '../../services/stockRepository';
+import { isUSStockSymbol } from '../../utils/stocks/ticker';
 import { PriceBadge } from '../common/PriceBadge';
 import { MarketBadge } from '../common/MarketBadge';
 import { InteractiveStockChart } from './InteractiveStockChart';
@@ -50,27 +53,31 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
     setActiveTab, 
     showToast,
     requireAuth,
-    user
+    user,
+    exchangeRate
   } = useApp();
 
   const { purchases } = useStockPurchases(user?.id);
 
-  const initialStock = stocks.find(s => s.symbol === symbol);
+  const safeSymbol = typeof symbol === 'string' ? symbol.trim() : '';
+  const initialStock = safeSymbol ? stocks.find(s => s.symbol === safeSymbol) : undefined;
   const [stockDetail, setStockDetail] = useState<Stock | null>(initialStock || null);
   const [isLoadingDetail, setIsLoadingDetail] = useState<boolean>(!initialStock);
   const [liveTick, setLiveTick] = useState<Partial<Stock> | null>(null);
 
-  const isUS = stockDetail?.market === 'US' || /^[A-Z]{1,5}$/.test(symbol);
+  const isCoin = stockDetail?.market === 'COIN' || safeSymbol.includes('-') || safeSymbol.endsWith('USDT');
+  const isUS = !isCoin && (stockDetail?.market === 'US' || (safeSymbol ? isUSStockSymbol(safeSymbol) : false));
   const [marketStatus, setMarketStatus] = useState<MarketStatusInfo>(() => 
     isUS ? getUSMarketStatus() : getKRXMarketStatus()
   );
 
   useEffect(() => {
+    if (isCoin) return;
     const updateMarket = () => setMarketStatus(isUS ? getUSMarketStatus() : getKRXMarketStatus());
     updateMarket();
     const timer = setInterval(updateMarket, 10000);
     return () => clearInterval(timer);
-  }, [isUS]);
+  }, [isUS, isCoin]);
 
   // Fetch full live stock data from Kiwoom REST API
   useEffect(() => {
@@ -128,8 +135,8 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
   }, [symbol, stockDetail]);
 
   const baseStock: Stock = stockDetail || initialStock || {
-    symbol,
-    name: symbol,
+    symbol: safeSymbol || 'UNKNOWN',
+    name: safeSymbol || '미확인 종목',
     market: 'KOSPI',
     sector: '기타',
     price: 0,
@@ -179,7 +186,33 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
   const [isTradeModalOpen, setIsTradeModalOpen] = useState(false);
   const [isHoldingModalOpen, setIsHoldingModalOpen] = useState(false);
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
+  const [mobileTab, setMobileTab] = useState<'chart' | 'orderbook' | 'metrics' | 'news' | 'community'>('chart');
+  const mobileTabList: Array<'chart' | 'orderbook' | 'metrics' | 'news' | 'community'> = [
+    'chart',
+    'orderbook',
+    'metrics',
+    'news',
+    'community',
+  ];
+  const [touchStartX, setTouchStartX] = useState<number | null>(null);
 
+  const handleTouchStart = (e: React.TouchEvent) => {
+    setTouchStartX(e.touches[0].clientX);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX === null) return;
+    const touchEndX = e.changedTouches[0].clientX;
+    const diff = touchStartX - touchEndX;
+    const currentIndex = mobileTabList.indexOf(mobileTab);
+
+    if (diff > 50 && currentIndex < mobileTabList.length - 1) {
+      setMobileTab(mobileTabList[currentIndex + 1]);
+    } else if (diff < -50 && currentIndex > 0) {
+      setMobileTab(mobileTabList[currentIndex - 1]);
+    }
+    setTouchStartX(null);
+  };
 
   const handleShare = () => {
     if (navigator.clipboard) {
@@ -278,54 +311,104 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div>
             <div className="flex items-center gap-2.5 flex-wrap">
               {/* 1. 종목명 */}
-              <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">
+              <h1 className="text-2xl sm:text-3xl tablet:text-[22px] font-black text-slate-900 dark:text-white truncate">
                 {stock.name}
               </h1>
               {/* 2. 종목코드 */}
-              <span className="font-mono text-sm px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold border border-slate-200 dark:border-slate-700/60">
+              <span className="font-mono text-sm tablet:text-[12px] tabular-nums px-2.5 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold border border-slate-200 dark:border-slate-700/60">
                 {stock.symbol}
               </span>
-              {/* 3. 시장 */}
+              {/* 3. 시장 / 거래소 */}
               <MarketBadge market={stock.market} exchange={stock.exchange} />
-              <span className="text-xs text-slate-400 font-medium">
+
+              {stock.productType && (
+                <span className={`text-[10px] tablet:text-[11px] font-bold px-2 py-0.5 rounded-lg border whitespace-nowrap ${
+                  stock.productType === 'ETF'
+                    ? 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                    : stock.productType === 'ADR'
+                    ? 'bg-purple-500/10 text-purple-500 border-purple-500/20'
+                    : stock.productType === 'SPOT'
+                    ? 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/20'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                }`}>
+                  {stock.productType === 'ETF' ? '상장지수펀드 (ETF)' : (stock.productType === 'ADR' ? '글로벌 ADR (미국 주식예탁증서)' : (stock.productType === 'SPOT' ? '현물 (Spot)' : '보통주'))}
+                </span>
+              )}
+
+              {stock.tradingPair && (
+                <span className="font-mono text-xs tablet:text-[11.5px] tabular-nums whitespace-nowrap px-2.5 py-0.5 rounded-lg bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 font-bold border border-cyan-500/20">
+                  페어: {stock.tradingPair}
+                </span>
+              )}
+
+              <span className="text-xs tablet:text-[12px] text-slate-400 font-medium whitespace-nowrap">
                 {stock.sector}
               </span>
 
+              {stock.warning && (
+                <span className="text-xs tablet:text-[11.5px] whitespace-nowrap px-2.5 py-0.5 rounded-full font-bold bg-amber-500/20 text-amber-500 border border-amber-500/40 animate-pulse">
+                  ⚠️ 투자유의 종목
+                </span>
+              )}
+
               {isSurgeGain(stock.changePercent) && (
-                <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-rose-500/10 text-rose-500 border border-rose-500/30 flex items-center gap-1 font-sans animate-pulse">
+                <span className="text-xs tablet:text-[11.5px] whitespace-nowrap px-2.5 py-0.5 rounded-full font-bold bg-rose-500/10 text-rose-500 border border-rose-500/30 flex items-center gap-1 font-sans animate-pulse">
                   🔥 급등 (+5% 이상)
                 </span>
               )}
               {isSurgeLoss(stock.changePercent) && (
-                <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-500/10 text-blue-500 border border-blue-500/30 flex items-center gap-1 font-sans">
+                <span className="text-xs tablet:text-[11.5px] whitespace-nowrap px-2.5 py-0.5 rounded-full font-bold bg-blue-500/10 text-blue-500 border border-blue-500/30 flex items-center gap-1 font-sans">
                   🔻 급락 (-5% 이하)
                 </span>
               )}
               {isVolumeSurge(stock.volumeRatio) && (
-                <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-amber-500/10 text-amber-500 border border-amber-500/30 flex items-center gap-1 font-sans">
+                <span className="text-xs tablet:text-[11.5px] whitespace-nowrap px-2.5 py-0.5 rounded-full font-bold bg-amber-500/10 text-amber-500 border border-amber-500/30 flex items-center gap-1 font-sans">
                   ⚡ 거래량 급증 (200% 이상: {stock.volumeRatio}%)
                 </span>
               )}
             </div>
 
             {/* 4. 현재가 & 5. 전일 대비 & 6. 등락률 */}
-            <div className="flex items-baseline gap-3.5 mt-3">
-              <span className="text-3xl sm:text-4xl font-black font-mono tracking-tight text-slate-900 dark:text-white">
-                {stock.currency === 'USD' ? `$${stock.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${stock.price.toLocaleString()}원`}
+            <div className="flex items-baseline gap-3.5 mt-3 flex-wrap">
+              <span className="text-3xl sm:text-4xl tablet:text-[22px] font-black font-mono tabular-nums whitespace-nowrap tracking-tight text-slate-900 dark:text-white">
+                {stock.currency === 'USD'
+                  ? `$${stock.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : stock.currency === 'USDT'
+                  ? `${stock.price.toLocaleString(undefined, { minimumFractionDigits: stock.price < 1 ? 4 : 2 })} USDT`
+                  : stock.currency === 'BTC'
+                  ? `${stock.price.toFixed(8)} BTC`
+                  : `${stock.price.toLocaleString()}원`}
               </span>
               <div className="flex items-center gap-2">
-                <span className={`text-base sm:text-lg font-bold font-mono ${isUp ? 'text-rose-500' : 'text-blue-500'}`}>
-                  {isUp ? '▲' : '▼'} {stock.currency === 'USD' ? `$${Math.abs(stock.change).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${Math.abs(stock.change).toLocaleString()}원`}
+                <span className={`text-base sm:text-lg tablet:text-[15px] font-bold font-mono tabular-nums whitespace-nowrap ${isUp ? 'text-rose-500' : 'text-blue-500'}`}>
+                  {isUp ? '▲' : '▼'} {stock.currency === 'USD'
+                    ? `$${Math.abs(stock.change).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : stock.currency === 'USDT'
+                    ? `${Math.abs(stock.change).toLocaleString(undefined, { minimumFractionDigits: stock.price < 1 ? 4 : 2 })} USDT`
+                    : `${Math.abs(stock.change).toLocaleString()}원`}
                 </span>
                 <PriceBadge change={stock.change} changePercent={stock.changePercent} size="lg" />
               </div>
+              {(stock.currency === 'USD' || stock.currency === 'USDT') && exchangeRate?.rate && (
+                <span className="text-xs tablet:text-[11.5px] text-slate-500 dark:text-slate-400 font-mono font-medium tabular-nums whitespace-nowrap">
+                  ≈ {Math.round(stock.price * exchangeRate.rate).toLocaleString()}원 (ECB 기준환율 환산 추정)
+                </span>
+              )}
             </div>
           </div>
 
           {/* Quick Real-time & Operating Status Tags */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 text-xs font-mono self-start lg:self-center">
-            {/* Market Status (KRX or US Session) */}
-            {stock.market === 'US' ? (
+            {/* Market Status */}
+            {isCoin ? (
+              <div 
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-sans font-bold shadow-sm bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                title="가상자산 시장 24시간 365일 실시간 거래"
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span>24시간 실시간 연중무휴</span>
+              </div>
+            ) : stock.market === 'US' ? (
               <div 
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-sans font-bold shadow-sm ${
                   marketStatus.isOpen
@@ -355,12 +438,14 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
 
             {/* API 연동 뱃지 */}
             <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-sans font-semibold ${
-              stock.market === 'US' 
+              isCoin
+                ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+                : stock.market === 'US' 
                 ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20'
                 : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
             }`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${stock.market === 'US' ? 'bg-purple-500' : 'bg-blue-500'}`}></span>
-              <span>{stock.market === 'US' ? '글로벌 공식 시세 (USD)' : '키움 실전 API'}</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${isCoin ? 'bg-amber-500' : (stock.market === 'US' ? 'bg-purple-500' : 'bg-blue-500')}`}></span>
+              <span>{isCoin ? `${stock.exchange === 'UPBIT' ? '업비트 공식 실시간 호가' : '바이낸스 공식 Spot API'}` : (stock.market === 'US' ? '글로벌 공식 시세 (USD)' : '키움 실전 API')}</span>
             </div>
             {stock.lastUpdated && (
               <span className="text-[11px] text-slate-400 font-sans">
@@ -370,13 +455,25 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           </div>
         </div>
 
+        {/* Warning Banner for Delisting or Caution Cryptos */}
+        {stock.warning && (
+          <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 text-xs font-semibold flex items-center gap-2.5">
+            <span className="text-lg">⚠️</span>
+            <span>본 가상자산은 거래소 기준 <strong>[투자유의 종목]</strong>으로 지정되어 있습니다. 급격한 시세 변동 및 거래지원 종료 가능성에 유의하시기 바랍니다.</span>
+          </div>
+        )}
+
         {/* 13 Key Price & Trading Statistics Grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4 text-xs font-mono">
           {/* 7. 시가 (Open) */}
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">시가</span>
             <span className="font-bold text-slate-900 dark:text-white text-sm">
-              {stock.currency === 'USD' ? `$${stock.openPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${stock.openPrice.toLocaleString()}원`}
+              {stock.currency === 'USD'
+                ? `$${stock.openPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : stock.currency === 'USDT'
+                ? `${stock.openPrice.toLocaleString(undefined, { minimumFractionDigits: stock.openPrice < 1 ? 4 : 2 })}`
+                : `${stock.openPrice.toLocaleString()}원`}
             </span>
           </div>
 
@@ -384,7 +481,11 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">고가</span>
             <span className="font-bold text-rose-500 text-sm">
-              {stock.currency === 'USD' ? `$${stock.highPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${stock.highPrice.toLocaleString()}원`}
+              {stock.currency === 'USD'
+                ? `$${stock.highPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : stock.currency === 'USDT'
+                ? `${stock.highPrice.toLocaleString(undefined, { minimumFractionDigits: stock.highPrice < 1 ? 4 : 2 })}`
+                : `${stock.highPrice.toLocaleString()}원`}
             </span>
           </div>
 
@@ -392,7 +493,11 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">저가</span>
             <span className="font-bold text-blue-500 text-sm">
-              {stock.currency === 'USD' ? `$${stock.lowPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${stock.lowPrice.toLocaleString()}원`}
+              {stock.currency === 'USD'
+                ? `$${stock.lowPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : stock.currency === 'USDT'
+                ? `${stock.lowPrice.toLocaleString(undefined, { minimumFractionDigits: stock.lowPrice < 1 ? 4 : 2 })}`
+                : `${stock.lowPrice.toLocaleString()}원`}
             </span>
           </div>
 
@@ -400,7 +505,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">거래량</span>
             <span className="font-bold text-slate-900 dark:text-white text-sm">
-              {stock.volume.toLocaleString()}주
+              {stock.volume.toLocaleString()}{isCoin ? ` ${stock.baseCurrency || ''}` : '주'}
             </span>
           </div>
 
@@ -410,6 +515,8 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
             <span className="font-bold text-slate-900 dark:text-white text-sm">
               {stock.currency === 'USD'
                 ? `$${stock.tradingValue.toLocaleString()}M`
+                : stock.currency === 'USDT'
+                ? `${stock.tradingValue.toLocaleString()} USDT`
                 : (stock.tradingValue >= 10000
                   ? `${(stock.tradingValue / 10000).toFixed(1)}조`
                   : `${stock.tradingValue.toLocaleString()}억`)}
@@ -420,7 +527,13 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">52주 최고</span>
             <span className="font-bold text-rose-500 text-sm">
-              {stock.currency === 'USD' ? `$${stock.high52w.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${stock.high52w.toLocaleString()}원`}
+              {stock.high52w > 0 ? (
+                stock.currency === 'USD'
+                  ? `$${stock.high52w.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : stock.currency === 'USDT'
+                  ? `${stock.high52w.toLocaleString(undefined, { minimumFractionDigits: stock.high52w < 1 ? 4 : 2 })}`
+                  : `${stock.high52w.toLocaleString()}원`
+              ) : '-'}
             </span>
           </div>
 
@@ -428,23 +541,99 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">52주 최저</span>
             <span className="font-bold text-blue-500 text-sm">
-              {stock.currency === 'USD' ? `$${stock.low52w.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${stock.low52w.toLocaleString()}원`}
+              {stock.low52w > 0 ? (
+                stock.currency === 'USD'
+                  ? `$${stock.low52w.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : stock.currency === 'USDT'
+                  ? `${stock.low52w.toLocaleString(undefined, { minimumFractionDigits: stock.low52w < 1 ? 4 : 2 })}`
+                  : `${stock.low52w.toLocaleString()}원`
+              ) : '-'}
             </span>
           </div>
         </div>
       </div>
 
-      {/* Main Chart Area & 10-Level Orderbook Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Mobile Slideable Tabs Navigation Bar (< 768px) */}
+      <div className="block md:hidden sticky top-[60px] z-30 bg-white/95 dark:bg-[#0c0f17]/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 -mx-2 px-2 py-1">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          {[
+            { id: 'chart', label: '차트', icon: <TrendingUp className="w-3.5 h-3.5" /> },
+            { id: 'orderbook', label: '호가', icon: <BarChart2 className="w-3.5 h-3.5" /> },
+            { id: 'metrics', label: '시세·기업', icon: <Activity className="w-3.5 h-3.5" /> },
+            { id: 'news', label: '뉴스·공시', icon: <Newspaper className="w-3.5 h-3.5" /> },
+            { id: 'community', label: '주주 토론', icon: <MessageSquare className="w-3.5 h-3.5" /> },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setMobileTab(tab.id as any)}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold shrink-0 transition-all ${
+                mobileTab === tab.id
+                  ? 'bg-rose-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              {tab.icon}
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Mobile Tab Content (< 768px) with Touch Swipe Support */}
+      <div 
+        className="block md:hidden space-y-4 touch-pan-y"
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+      >
+        {mobileTab === 'chart' && (
+          <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
+            <InteractiveStockChart
+              symbol={stock.symbol}
+              candles={stock.candles}
+              stockPrice={stock.price}
+              prevClose={stock.prevClose}
+              currency={stock.currency}
+              buyEntries={purchases[symbol] || []}
+            />
+          </div>
+        )}
+
+        {mobileTab === 'orderbook' && (
+          <OrderBookWidget stock={stock} />
+        )}
+
+        {mobileTab === 'metrics' && (
+          <div className="space-y-4">
+            <StockVolumeSection stock={stock} />
+            <StockSmartAlertWidget stock={stock} />
+            <StockAiBriefingWidget stock={stock} />
+          </div>
+        )}
+
+        {mobileTab === 'news' && (
+          <StockNewsSection stock={stock} />
+        )}
+
+        {mobileTab === 'community' && (
+          <StockCommunitySection stock={stock} />
+        )}
+      </div>
+
+      {/* Desktop & Tablet Full View (>= 768px) */}
+      <div className="hidden md:block space-y-6">
+        {/* Main Chart Area & 10-Level Orderbook Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left 2 Cols: Interactive Candlestick / Line Chart (Periods: 1D, 1W, 1M, 3M, 6M, 1Y) */}
         <div className="lg:col-span-2 p-5 sm:p-6 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="font-bold text-base text-slate-900 dark:text-white flex items-center gap-2">
               <TrendingUp className="w-5 h-5 text-rose-500" />
-              <span>{stock.market === 'US' ? '미국 주식 시세 차트' : '실시간 주가 차트'}</span>
+              <span>{isCoin ? '가상자산 실시간 시세 차트' : (stock.market === 'US' ? '미국 주식 시세 차트' : '실시간 주가 차트')}</span>
             </h3>
             <span className="text-xs text-slate-400">
-              {stock.market === 'US' ? '글로벌 공식 일봉 차트 (USD)' : '키움 Open API 실전 차트 (1분·5분·15분·30분·1시간·일봉)'}
+              {isCoin
+                ? `${stock.exchange === 'UPBIT' ? '업비트 Open API 공식 OHLCV 캔들' : '바이낸스 공식 Spot 캔들'}`
+                : (stock.market === 'US' ? '글로벌 공식 일봉 차트 (USD)' : '키움 Open API 실전 차트 (1분·5분·15분·30분·1시간·일봉)')}
             </span>
           </div>
 
@@ -467,38 +656,81 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
       {/* Valuation & Market Cap Metrics Card */}
       <div className="p-5 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
         <h4 className="font-bold text-sm text-slate-900 dark:text-white mb-3">
-          기업 가치평가 및 배당 정보
+          {isCoin ? '가상자산 시장 정보 및 거래 사양' : '기업 가치평가 및 배당 정보'}
         </h4>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs font-mono">
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
-            <span className="text-slate-400 font-sans text-[11px] block">시가총액</span>
-            <span className="font-bold text-slate-900 dark:text-white text-sm">
-              {stock.marketCap >= 10000
-                ? `${(stock.marketCap / 10000).toFixed(1)}조 원`
-                : `${stock.marketCap.toLocaleString()}억 원`}
-            </span>
+        {isCoin ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs font-mono">
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">거래 페어</span>
+              <span className="font-bold text-cyan-600 dark:text-cyan-400 text-sm">{stock.tradingPair || stock.symbol}</span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">거래소</span>
+              <span className="font-bold text-slate-900 dark:text-white text-sm">{stock.exchange === 'UPBIT' ? '업비트 (Upbit)' : '바이낸스 (Binance)'}</span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">결제 통화</span>
+              <span className="font-bold text-slate-900 dark:text-white text-sm">{stock.quoteCurrency || stock.currency}</span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">자산 유형</span>
+              <span className="font-bold text-slate-900 dark:text-white text-sm">현물 (Spot)</span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">투자유의 지정</span>
+              <span className={`font-bold text-sm ${stock.warning ? 'text-amber-500' : 'text-emerald-500'}`}>
+                {stock.warning ? '유의 지정' : '정상 거래'}
+              </span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">전일 종가</span>
+              <span className="font-bold text-slate-900 dark:text-white text-sm">
+                {stock.prevClose > 0
+                  ? (stock.currency === 'USD'
+                    ? `$${stock.prevClose.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : stock.currency === 'USDT'
+                    ? `${stock.prevClose.toLocaleString(undefined, { minimumFractionDigits: stock.prevClose < 1 ? 4 : 2 })}`
+                    : `${stock.prevClose.toLocaleString()}원`)
+                  : '-'}
+              </span>
+            </div>
           </div>
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
-            <span className="text-slate-400 font-sans text-[11px] block">PER</span>
-            <span className="font-bold text-slate-900 dark:text-white text-sm">{stock.per}배</span>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs font-mono">
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">시가총액</span>
+              <span className="font-bold text-slate-900 dark:text-white text-sm">
+                {stock.marketCap >= 10000
+                  ? `${(stock.marketCap / 10000).toFixed(1)}조 원`
+                  : `${stock.marketCap.toLocaleString()}억 원`}
+              </span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">PER</span>
+              <span className="font-bold text-slate-900 dark:text-white text-sm">{stock.per || '-'}</span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">PBR</span>
+              <span className="font-bold text-slate-900 dark:text-white text-sm">{stock.pbr || '-'}</span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">EPS</span>
+              <span className="font-bold text-slate-900 dark:text-white text-sm">
+                {stock.eps ? (stock.currency === 'USD' ? `$${stock.eps}` : `${stock.eps.toLocaleString()}원`) : '-'}
+              </span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">배당수익률</span>
+              <span className="font-bold text-emerald-500 text-sm">{stock.dividendYield ? `${stock.dividendYield}%` : '-'}</span>
+            </div>
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+              <span className="text-slate-400 font-sans text-[11px] block">전일 종가</span>
+              <span className="font-bold text-slate-900 dark:text-white text-sm">
+                {stock.currency === 'USD' ? `$${stock.prevClose.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${stock.prevClose.toLocaleString()}원`}
+              </span>
+            </div>
           </div>
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
-            <span className="text-slate-400 font-sans text-[11px] block">PBR</span>
-            <span className="font-bold text-slate-900 dark:text-white text-sm">{stock.pbr}배</span>
-          </div>
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
-            <span className="text-slate-400 font-sans text-[11px] block">EPS</span>
-            <span className="font-bold text-slate-900 dark:text-white text-sm">{stock.eps.toLocaleString()}원</span>
-          </div>
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
-            <span className="text-slate-400 font-sans text-[11px] block">배당수익률</span>
-            <span className="font-bold text-emerald-500 text-sm">{stock.dividendYield}%</span>
-          </div>
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
-            <span className="text-slate-400 font-sans text-[11px] block">전일 종가</span>
-            <span className="font-bold text-slate-900 dark:text-white text-sm">{stock.prevClose.toLocaleString()}원</span>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Bottom Sections in specified order: Volume -> Related News -> Community -> Alerts -> AI Briefing */}
@@ -517,6 +749,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
 
         {/* 5. AI 실시간 스마트 브리핑 */}
         <StockAiBriefingWidget stock={stock} />
+      </div>
       </div>
 
       {/* 가격 알림 설정 모달 */}

@@ -20,6 +20,12 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ChatMessage, ChatRoomInfo } from '../../types';
+import { 
+  formatChatDividerDate, 
+  formatChatTime, 
+  formatChatExactDateTime, 
+  getKstDateKey 
+} from '../../utils/dateUtils';
 import { firebaseRepository } from '../../services/firebaseRepository';
 import { storageService } from '../../services/storageService';
 import { filterProfanity, checkSpamViolation } from '../../utils/chatModerator';
@@ -478,107 +484,143 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
                   </p>
                 </div>
               ) : (
-                messages.map((msg, idx) => {
-                  const isMine = user && msg.author?.id === user.id;
-                  const isRestricted = restrictedUsers.includes(msg.author?.id);
+                (() => {
+                  const groupedByDate: { dateKey: string; dividerLabel: string; items: ChatMessage[] }[] = [];
+                  let currentGroup: { dateKey: string; dividerLabel: string; items: ChatMessage[] } | null = null;
 
-                  return (
-                    <div 
-                      key={msg.id || idx}
-                      className="pt-2.5 first:pt-0 group hover:bg-slate-50/50 dark:hover:bg-slate-800/20 -mx-2 px-2 rounded-xl transition-colors"
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        {/* Author info */}
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <img 
-                            src={msg.author?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'} 
-                            alt={msg.author?.name || 'User'} 
-                            className="w-5 h-5 rounded-full object-cover shrink-0" 
-                          />
-                          <span className={`font-bold truncate text-[11px] ${
-                            isMine ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-slate-200'
-                          }`}>
-                            {msg.author?.name || '익명 투자자'}
-                          </span>
-                          {getRoleBadge(msg.author?.role)}
-                          {msg.sentiment === 'bull' && (
-                            <span className="flex items-center text-[9px] text-rose-500 font-bold px-1 rounded bg-rose-500/10">
-                              <TrendingUp className="w-2.5 h-2.5 mr-0.5" /> 상승
-                            </span>
-                          )}
-                          {msg.sentiment === 'bear' && (
-                            <span className="flex items-center text-[9px] text-blue-500 font-bold px-1 rounded bg-blue-500/10">
-                              <TrendingDown className="w-2.5 h-2.5 mr-0.5" /> 하락
-                            </span>
-                          )}
-                        </div>
+                  messages.forEach(msg => {
+                    const rawTime = msg.createdAt || msg.timestamp;
+                    const dateKey = getKstDateKey(rawTime);
+                    const dividerLabel = formatChatDividerDate(rawTime);
 
-                        {/* Timestamp & Hover Action Menu */}
-                        <div className="flex items-center gap-1 shrink-0">
-                          <span className="text-[9px] font-mono text-slate-400">
-                            {msg.timestamp}
-                          </span>
+                    if (!currentGroup || currentGroup.dateKey !== dateKey) {
+                      currentGroup = { dateKey, dividerLabel, items: [msg] };
+                      groupedByDate.push(currentGroup);
+                    } else {
+                      currentGroup.items.push(msg);
+                    }
+                  });
 
-                          {/* Action Menu (Delete for Admin / Report for User) */}
-                          <div className="hidden group-hover:flex items-center gap-0.5">
-                            {isAdmin && (
-                              <>
-                                <button
-                                  onClick={() => handleDeleteMessage(msg.id)}
-                                  className="p-1 rounded text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
-                                  title="메시지 삭제"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
-                                <button
-                                  onClick={() => handleRestrictUser(msg.author.id, msg.author.name)}
-                                  className="p-1 rounded text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors"
-                                  title="작성자 채팅 제한"
-                                >
-                                  <VolumeX className="w-3 h-3" />
-                                </button>
-                              </>
-                            )}
-                            {!isMine && (
-                              <button
-                                onClick={() => setReportTarget({ id: msg.id, content: msg.message, authorName: msg.author.name })}
-                                className="p-1 rounded text-slate-400 hover:text-rose-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                                title="신고"
-                              >
-                                <Flag className="w-3 h-3" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
+                  return groupedByDate.map(group => (
+                    <div key={group.dateKey} className="space-y-2">
+                      {/* Date Divider */}
+                      <div className="flex items-center justify-center my-3">
+                        <div className="h-px bg-slate-200 dark:bg-slate-800 flex-1" />
+                        <span className="px-2.5 py-0.5 text-[10px] font-bold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 rounded-full border border-slate-200/80 dark:border-slate-700/60 shadow-2xs">
+                          {group.dividerLabel}
+                        </span>
+                        <div className="h-px bg-slate-200 dark:bg-slate-800 flex-1" />
                       </div>
 
-                      {/* Message Content */}
-                      <div className="mt-1 pl-6">
-                        {isRestricted ? (
-                          <div className="text-[11px] text-slate-400 italic bg-slate-100 dark:bg-slate-800/50 p-1.5 rounded-lg">
-                            운영 정책에 따라 차단된 회원의 메시지입니다.
+                      {group.items.map((msg, idx) => {
+                        const isMine = user && msg.author?.id === user.id;
+                        const isRestricted = restrictedUsers.includes(msg.author?.id);
+                        const msgTime = formatChatTime(msg.createdAt || msg.timestamp);
+                        const exactTooltip = formatChatExactDateTime(msg.createdAt || msg.timestamp);
+
+                        return (
+                          <div 
+                            key={msg.id || idx}
+                            className="pt-2 first:pt-0 group hover:bg-slate-50/50 dark:hover:bg-slate-800/20 -mx-2 px-2 rounded-xl transition-colors"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              {/* Author info */}
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <img 
+                                  src={msg.author?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'} 
+                                  alt={msg.author?.name || 'User'} 
+                                  className="w-5 h-5 rounded-full object-cover shrink-0" 
+                                />
+                                <span className={`font-bold truncate text-[11px] ${
+                                  isMine ? 'text-rose-600 dark:text-rose-400' : 'text-slate-900 dark:text-slate-200'
+                                }`}>
+                                  {msg.author?.name || '익명 투자자'}
+                                </span>
+                                {getRoleBadge(msg.author?.role)}
+                                {msg.sentiment === 'bull' && (
+                                  <span className="flex items-center text-[9px] text-rose-500 font-bold px-1 rounded bg-rose-500/10">
+                                    <TrendingUp className="w-2.5 h-2.5 mr-0.5" /> 상승
+                                  </span>
+                                )}
+                                {msg.sentiment === 'bear' && (
+                                  <span className="flex items-center text-[9px] text-blue-500 font-bold px-1 rounded bg-blue-500/10">
+                                    <TrendingDown className="w-2.5 h-2.5 mr-0.5" /> 하락
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Timestamp & Hover Action Menu */}
+                              <div className="flex items-center gap-1 shrink-0">
+                                <span 
+                                  className="text-[9px] font-mono text-slate-400 cursor-help"
+                                  title={exactTooltip}
+                                >
+                                  {msgTime}
+                                </span>
+
+                                {/* Action Menu (Delete for Admin / Report for User) */}
+                                <div className="hidden group-hover:flex items-center gap-0.5">
+                                  {isAdmin && (
+                                    <>
+                                      <button
+                                        onClick={() => handleDeleteMessage(msg.id)}
+                                        className="p-1 rounded text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors"
+                                        title="메시지 삭제"
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
+                                      <button
+                                        onClick={() => handleRestrictUser(msg.author.id, msg.author.name)}
+                                        className="p-1 rounded text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors"
+                                        title="작성자 채팅 제한"
+                                      >
+                                        <VolumeX className="w-3 h-3" />
+                                      </button>
+                                    </>
+                                  )}
+                                  {!isMine && (
+                                    <button
+                                      onClick={() => setReportTarget({ id: msg.id, content: msg.message, authorName: msg.author.name })}
+                                      className="p-1 rounded text-slate-400 hover:text-rose-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                                      title="신고"
+                                    >
+                                      <Flag className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Message Content */}
+                            <div className="mt-1 pl-6">
+                              {isRestricted ? (
+                                <div className="text-[11px] text-slate-400 italic bg-slate-100 dark:bg-slate-800/50 p-1.5 rounded-lg">
+                                  운영 정책에 따라 차단된 회원의 메시지입니다.
+                                </div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  <p className="text-[12px] text-slate-800 dark:text-slate-200 leading-relaxed break-words whitespace-pre-wrap">
+                                    {msg.message}
+                                  </p>
+                                  {msg.imageUrl && (
+                                    <img
+                                      src={msg.imageUrl}
+                                      alt="채팅 이미지"
+                                      onError={e => {
+                                        (e.currentTarget as HTMLElement).style.display = 'none';
+                                      }}
+                                      className="max-w-[200px] max-h-[160px] rounded-xl object-cover border border-slate-200 dark:border-slate-700 shadow-sm"
+                                    />
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        ) : (
-                          <div className="space-y-1.5">
-                            <p className="text-[12px] text-slate-800 dark:text-slate-200 leading-relaxed break-words whitespace-pre-wrap">
-                              {msg.message}
-                            </p>
-                            {msg.imageUrl && (
-                              <img
-                                src={msg.imageUrl}
-                                alt="채팅 이미지"
-                                onError={e => {
-                                  (e.currentTarget as HTMLElement).style.display = 'none';
-                                }}
-                                className="max-w-[200px] max-h-[160px] rounded-xl object-cover border border-slate-200 dark:border-slate-700 shadow-sm"
-                              />
-                            )}
-                          </div>
-                        )}
-                      </div>
+                        );
+                      })}
                     </div>
-                  );
-                })
+                  ));
+                })()
               )}
             </div>
 

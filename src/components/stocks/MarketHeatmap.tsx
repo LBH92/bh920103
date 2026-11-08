@@ -94,32 +94,32 @@ export const MarketHeatmap: React.FC = () => {
     return item.changePercent1Y;
   };
 
-  // Color generator based on standard Korean financial UI:
-  // Rising (+) = Red/Rose gradient
-  // Falling (-) = Blue/Cyan gradient
-  // Flat (0) = Slate neutral
+  // Color generator based on standard financial UI:
+  // Rising (+) = #D94B50 (Light) / #F0787D (Dark) via theme tokens
+  // Falling (-) = #3478C8 (Light) / #72A9E8 (Dark) via theme tokens
+  // Flat (0) = neutral
   const getTileBgColor = (pct: number): string => {
-    if (isNaN(pct)) return 'bg-slate-800 text-slate-500';
-    if (pct > 5) return 'bg-rose-600 hover:bg-rose-500 text-white border-rose-500/50 shadow-rose-950/20';
-    if (pct > 2.5) return 'bg-rose-500 hover:bg-rose-400 text-white border-rose-400/40';
-    if (pct > 0.5) return 'bg-rose-500/80 hover:bg-rose-500 text-white border-rose-400/30';
-    if (pct > 0) return 'bg-rose-500/40 hover:bg-rose-500/60 text-rose-100 border-rose-400/20';
-    if (pct === 0) return 'bg-slate-700/60 hover:bg-slate-700 text-slate-200 border-slate-600';
-    if (pct > -0.5) return 'bg-blue-500/40 hover:bg-blue-500/60 text-blue-100 border-blue-400/20';
-    if (pct > -2.5) return 'bg-blue-500/80 hover:bg-blue-500 text-white border-blue-400/30';
-    if (pct > -5) return 'bg-blue-600 hover:bg-blue-500 text-white border-blue-500/40';
-    return 'bg-blue-700 hover:bg-blue-600 text-white border-blue-600/50 shadow-blue-950/20';
+    if (isNaN(pct)) return 'bg-finance-sub-bg text-finance-sub-text';
+    if (pct > 5) return 'bg-[#D94B50] dark:bg-[#F0787D] text-white dark:text-slate-900 border-[#D94B50]/60 shadow-xs font-bold';
+    if (pct > 2.5) return 'bg-[#D94B50]/85 dark:bg-[#F0787D]/85 text-white dark:text-slate-900 border-[#D94B50]/40';
+    if (pct > 0.5) return 'bg-[#D94B50]/60 dark:bg-[#F0787D]/60 text-white dark:text-slate-900 border-[#D94B50]/30';
+    if (pct > 0) return 'bg-[#D94B50]/35 dark:bg-[#F0787D]/35 text-[#D94B50] dark:text-[#F0787D] border-[#D94B50]/20';
+    if (pct === 0) return 'bg-finance-sub-bg text-finance-sub-text border-finance-border';
+    if (pct > -0.5) return 'bg-[#3478C8]/35 dark:bg-[#72A9E8]/35 text-[#3478C8] dark:text-[#72A9E8] border-[#3478C8]/20';
+    if (pct > -2.5) return 'bg-[#3478C8]/60 dark:bg-[#72A9E8]/60 text-white dark:text-slate-900 border-[#3478C8]/30';
+    if (pct > -5) return 'bg-[#3478C8]/85 dark:bg-[#72A9E8]/85 text-white dark:text-slate-900 border-[#3478C8]/40';
+    return 'bg-[#3478C8] dark:bg-[#72A9E8] text-white dark:text-slate-900 border-[#3478C8]/60 shadow-xs font-bold';
   };
 
   return (
     <div className="space-y-4">
       {/* Top Controls Bar */}
-      <div className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm">
+      <div className="bg-finance-card border border-finance-border rounded-2xl p-4 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           {/* Market Selection Tabs */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 mr-1 flex items-center gap-1">
-              <Globe className="w-3.5 h-3.5 text-indigo-500" />
+            <span className="text-xs font-bold text-finance-sub-text mr-1 flex items-center gap-1">
+              <Globe className="w-3.5 h-3.5 text-finance-accent" />
               {marketFilter === 'ALL' ? '시장 히트맵 (전체 시장)' : `${marketFilter === 'KR' || marketFilter === 'KOSPI' || marketFilter === 'KOSDAQ' ? '국내 시장' : '미국 시장'} 히트맵`}:
             </span>
             {[
@@ -136,8 +136,8 @@ export const MarketHeatmap: React.FC = () => {
                 onClick={() => setMarketFilter(tab.id as any)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                   marketFilter === tab.id
-                    ? 'bg-rose-600 text-white shadow-sm shadow-rose-600/20'
-                    : 'bg-slate-100 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    ? 'bg-finance-accent text-white shadow-xs'
+                    : 'bg-finance-sub-bg text-finance-sub-text hover:text-finance-text hover:bg-finance-border'
                 }`}
               >
                 {tab.label}
@@ -254,25 +254,25 @@ export const MarketHeatmap: React.FC = () => {
 
         {/* Legend */}
         <div className="flex items-center gap-1.5 text-[11px] font-mono shrink-0">
-          <span className="text-blue-500 font-bold">-3%</span>
-          <div className="w-2.5 h-2.5 rounded bg-blue-600" />
-          <div className="w-2.5 h-2.5 rounded bg-blue-400" />
-          <div className="w-2.5 h-2.5 rounded bg-slate-600" />
-          <div className="w-2.5 h-2.5 rounded bg-rose-400" />
-          <div className="w-2.5 h-2.5 rounded bg-rose-600" />
-          <span className="text-rose-500 font-bold">+3%</span>
-          <span className="text-slate-400 ml-2 font-sans">(타일 크기: 시가총액 비례)</span>
+          <span className="text-finance-down font-bold">-3%</span>
+          <div className="w-2.5 h-2.5 rounded bg-[#3478C8] dark:bg-[#72A9E8]" />
+          <div className="w-2.5 h-2.5 rounded bg-[#3478C8]/60 dark:bg-[#72A9E8]/60" />
+          <div className="w-2.5 h-2.5 rounded bg-finance-sub-bg border border-finance-border" />
+          <div className="w-2.5 h-2.5 rounded bg-[#D94B50]/60 dark:bg-[#F0787D]/60" />
+          <div className="w-2.5 h-2.5 rounded bg-[#D94B50] dark:bg-[#F0787D]" />
+          <span className="text-finance-up font-bold">+3%</span>
+          <span className="text-finance-sub-text ml-2 font-sans">(타일 크기: 시가총액 비례)</span>
         </div>
       </div>
 
       {/* Main Heatmap Treemap / Grid Container */}
       {isLoading ? (
-        <div className="h-96 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#131722] flex flex-col items-center justify-center p-8 text-center space-y-3">
-          <RefreshCw className="w-8 h-8 text-rose-500 animate-spin" />
-          <p className="text-sm font-bold text-slate-700 dark:text-slate-200">
+        <div className="h-96 rounded-2xl border border-finance-border bg-finance-card flex flex-col items-center justify-center p-8 text-center space-y-3">
+          <RefreshCw className="w-8 h-8 text-finance-accent animate-spin" />
+          <p className="text-sm font-bold text-finance-text">
             한국·미국 주요 상장사 실제 시세 및 {period} 수익률 계산 중...
           </p>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-finance-sub-text">
             한국거래소 및 미국 거래소 실거래 종가를 반영하고 있습니다.
           </p>
         </div>
@@ -294,7 +294,7 @@ export const MarketHeatmap: React.FC = () => {
       ) : (
         <div className="w-full">
           {/* Summary Panel */}
-          <div className="mb-4 bg-white dark:bg-[#131722] p-4 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
+          <div className="mb-4 bg-finance-card p-4 rounded-xl border border-finance-border flex items-center justify-between text-xs text-finance-sub-text">
             <div>시장: {getMarketLabel(marketFilter)} | 기준: {period} | 종목수: {displayItems.length}</div>
             <div>데이터 기준: {heatmapData?.meta.lastUpdated || '알 수 없음'}</div>
           </div>

@@ -735,7 +735,7 @@ export const WorkLifeSimulation: React.FC = () => {
       activeGame.jobHopCount
     );
 
-    const shareText = `[Stock Insight 직장인 인생 시뮬레이션]\n\n🏆 결과: ${ending.title}\n👤 캐릭터: ${activeGame.character.name} (${activeGame.character.education})\n💼 마지막 직장: ${activeGame.company.name} (${activeGame.level})\n🎂 최종 나이: ${activeGame.age}세 (${activeGame.year}년차)\n💰 최종 순자산: ${(netWorth / 10000).toFixed(2)}억 원\n💵 최종 연봉: ${activeGame.currentSalary.toLocaleString()}만 원\n\n지금 바로 플레이해보세요!`;
+    const shareText = `[병돌 인베스트먼트 직장인 인생 시뮬레이션]\n\n🏆 결과: ${ending.title}\n👤 캐릭터: ${activeGame.character.name} (${activeGame.character.education})\n💼 마지막 직장: ${activeGame.company.name} (${activeGame.level})\n🎂 최종 나이: ${activeGame.age}세 (${activeGame.year}년차)\n💰 최종 순자산: ${(netWorth / 10000).toFixed(2)}억 원\n💵 최종 연봉: ${activeGame.currentSalary.toLocaleString()}만 원\n\n지금 바로 플레이해보세요!`;
 
     navigator.clipboard.writeText(shareText);
     if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);

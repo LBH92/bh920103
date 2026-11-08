@@ -23,6 +23,7 @@ import { MarketAlertEvent, MarketMonitoringConfig, EventScope, MarketEventType }
 import { marketMonitorClient } from '../../services/marketMonitorClient';
 import { StockInsightAiBriefing } from './StockInsightAiBriefing';
 import { StockInsightAiDataQuery } from './StockInsightAiDataQuery';
+import { GlobalFinancialDashboard } from './GlobalFinancialDashboard';
 
 export const StockInsightView: React.FC = () => {
   const { navigateToStock, showToast } = useApp();
@@ -152,7 +153,7 @@ export const StockInsightView: React.FC = () => {
               <Activity className="w-5 h-5" />
             </span>
             <h1 className="text-2xl font-black text-slate-900 dark:text-white">
-              Stock Insight 시장 모니터링 시스템
+              병돌 인베스트먼트 시장 모니터링 시스템
             </h1>
             <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
@@ -275,6 +276,9 @@ export const StockInsightView: React.FC = () => {
       {/* 2.5 Gemini 기반 AI 자연어 주식 데이터 질의 & AI 종목 브리핑 시스템 */}
       <StockInsightAiDataQuery />
       <StockInsightAiBriefing />
+
+      {/* 2.6 무료 글로벌 통합 금융 데이터 시스템 (글로벌 증시·가상자산·원자재·환율·금리·거시경제) */}
+      <GlobalFinancialDashboard onSelectSymbol={navigateToStock} />
 
       {/* 3. Scope Filters & Cooldown Note */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800">

@@ -37,6 +37,9 @@ export interface AiBriefingResponse {
     community: boolean;
   };
 }
+const CACHE_TTL_MS = 60000;
+const requestCache = new Map<string, { data: any; timestamp: number }>();
+const inFlightRequests = new Map<string, Promise<any>>();
 
 export const aiBriefingClient = {
   /**
@@ -44,26 +47,71 @@ export const aiBriefingClient = {
    * Server executes the 5 functions and passes real data to Gemini.
    */
   async requestBriefing(query: string, symbol?: string, uid?: string): Promise<AiBriefingResponse> {
+    const cacheKey = JSON.stringify({ query, symbol, uid: uid || 'anonymous' });
+    
+    // Check cache
+    const cached = requestCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    // Check in-flight
+    if (inFlightRequests.has(cacheKey)) {
+      return inFlightRequests.get(cacheKey);
+    }
+
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (uid) {
       headers['x-user-uid'] = uid;
     }
 
-    const res = await fetch('/api/ai/stock-briefing', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ query, symbol, uid }),
-    });
+    const requestPromise = (async () => {
+      let retryCount = 0;
+      const MAX_RETRIES = 3;
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      if (err.error === 'AI_NOT_CONNECTED' || err.message?.includes('AI_NOT_CONNECTED')) {
-        throw new Error(err.message || '개인 Gemini AI 계정이 연결되지 않았습니다. 프로필 설정에서 본인의 Google AI Studio 키를 연결해주세요.');
+      async function doFetch(): Promise<any> {
+        const res = await fetch('/api/ai/stock-briefing', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ query, symbol, uid }),
+        });
+
+        if (res.status === 429 && retryCount < MAX_RETRIES) {
+          const retryAfter = parseInt(res.headers.get('Retry-After') || '1') * 1000;
+          // Exponential backoff with jitter
+          const jitter = Math.random() * 1000;
+          const delay = Math.max(retryAfter, retryAfter * Math.pow(2, retryCount)) + jitter;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          retryCount++;
+          return doFetch();
+        }
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          if (err.error === 'AI_NOT_CONNECTED' || err.message?.includes('AI_NOT_CONNECTED')) {
+            throw new Error(err.message || '개인 Gemini AI 계정이 연결되지 않았습니다. 프로필 설정에서 본인의 Google AI Studio 키를 연결해주세요.');
+          }
+          throw new Error(err.error || err.message || 'AI 종목 브리핑 생성에 실패했습니다.');
+        }
+
+        const data = await res.json();
+        requestCache.set(cacheKey, { data, timestamp: Date.now() });
+        return data;
       }
-      throw new Error(err.error || err.message || 'AI 종목 브리핑 생성에 실패했습니다.');
-    }
+      try {
+        return await doFetch();
+      } finally {
+        inFlightRequests.delete(cacheKey);
+      }
+    })();
 
-    return await res.json();
+    inFlightRequests.set(cacheKey, requestPromise);
+    return requestPromise;
+  },
+
+  clearCache() {
+    requestCache.clear();
+    inFlightRequests.clear();
   },
 
   // Direct access to the 5 Server Functions if needed

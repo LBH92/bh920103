@@ -17,7 +17,34 @@ import {
   increment
 } from 'firebase/firestore';
 import { db, auth, OperationType, handleFirestoreError } from './firebase';
-import { UserProfile, UserRole, CommunityPost, CommentItem, ChatMessage, PriceAlert, AdminReport, ReportItem, ChatRoomInfo, WatchlistBuyEntry } from '../types';
+import { UserProfile, UserRole, CommunityPost, CommentItem, ChatMessage, PriceAlert, AdminReport, ReportItem, ChatRoomInfo, WatchlistBuyEntry, Stock } from '../types';
+import { formatChatTime, parseToDate } from '../utils/dateUtils';
+
+function extractTimestampIso(raw: any, fallbackServerRaw?: any): string {
+  // Try fallback first, then raw. If both fail, try to parse raw as string as last resort.
+  const attemptParse = (val: any): string | null => {
+    if (!val) return null;
+    if (typeof val === 'object' && typeof val.toDate === 'function') {
+      try { return val.toDate().toISOString(); } catch {}
+    }
+    if (typeof val.seconds === 'number') {
+      return new Date(val.seconds * 1000).toISOString();
+    }
+    if (typeof val === 'string') {
+      const parsed = parseToDate(val);
+      return parsed ? parsed.toISOString() : null;
+    }
+    return null;
+  };
+
+  const fallbackResult = attemptParse(fallbackServerRaw);
+  if (fallbackResult) return fallbackResult;
+  
+  const rawResult = attemptParse(raw);
+  if (rawResult) return rawResult;
+
+  return '';
+}
 
 export const firebaseRepository = {
   // 1. Users
@@ -35,7 +62,7 @@ export const firebaseRepository = {
           role: isOwnerAdmin ? 'superadmin' : 'user',
           tier: isOwnerAdmin ? '최고 관리자' : '일반회원',
           joinedDate: new Date().toLocaleDateString('ko-KR'),
-          bio: isOwnerAdmin ? 'Stock Insight 총괄 시스템 관리자' : '스마트한 가치 투자를 지향합니다.',
+          bio: isOwnerAdmin ? '병돌 인베스트먼트 총괄 시스템 관리자' : '스마트한 가치 투자를 지향합니다.',
           postCount: 0,
           commentCount: 0,
           winRate: 70,
@@ -100,7 +127,7 @@ export const firebaseRepository = {
           role: isOwnerAdmin ? 'superadmin' : (data.role || 'user'),
           tier: isOwnerAdmin ? '최고 관리자' : (data.tier || '일반회원'),
           joinedDate: data.createdAt ? new Date(data.createdAt).toLocaleDateString('ko-KR') : '2026.01.15',
-          bio: data.bio || (isOwnerAdmin ? 'Stock Insight 총괄 시스템 관리자' : '스마트한 가치 투자를 지향합니다.'),
+          bio: data.bio || (isOwnerAdmin ? '병돌 인베스트먼트 총괄 시스템 관리자' : '스마트한 가치 투자를 지향합니다.'),
           postCount: data.postCount || 0,
           commentCount: data.commentCount || 0,
           winRate: data.winRate || 70,
@@ -186,7 +213,7 @@ export const firebaseRepository = {
             tier: '최고 관리자',
             joinedDate: '2026.01.01',
             createdAt: '2026-01-01T00:00:00.000Z',
-            bio: 'Stock Insight 총괄 시스템 관리자',
+            bio: '병돌 인베스트먼트 총괄 시스템 관리자',
             postCount: 0,
             commentCount: 0,
             status: 'active',
@@ -332,51 +359,66 @@ export const firebaseRepository = {
     }
   },
 
-  async addWatchlist(uid: string, symbol: string, orderIndex?: number): Promise<void> {
-    const docPath = `watchlists/${uid}_${symbol}`;
+  // Safe document ID generator satisfying firestore.rules: ^[a-zA-Z0-9_\-]+$
+  getWatchlistDocId(uid: string, market: string, symbol: string): string {
+    const safeMarket = (market || 'ALL').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeSymbol = (symbol || '').replace(/[^a-zA-Z0-9_-]/g, (c) => `_${c.charCodeAt(0).toString(16)}_`);
+    return `${uid}_${safeMarket}_${safeSymbol}`.slice(0, 120);
+  },
+
+  async addWatchlist(uid: string, symbol: string, orderIndex?: number, market: string = 'UNKNOWN', stockData?: Partial<Stock>): Promise<void> {
+    const docId = this.getWatchlistDocId(uid, market, symbol);
     try {
-      const docId = `${uid}_${symbol}`;
       await setDoc(doc(db, 'watchlists', docId), {
         uid,
         symbol,
+        market,
+        name: stockData?.name || symbol,
+        exchange: stockData?.exchange || '',
+        productType: stockData?.productType || '',
         orderIndex: typeof orderIndex === 'number' ? orderIndex : Date.now(),
         createdAt: new Date().toISOString(),
-      });
+      }, { merge: true });
     } catch (err) {
       console.warn('Firebase add watchlist error:', err);
-      handleFirestoreError(err, OperationType.WRITE, docPath);
+      handleFirestoreError(err, OperationType.WRITE, `watchlists/${docId}`);
     }
   },
 
-  async removeWatchlist(uid: string, symbol: string): Promise<void> {
-    const docPath = `watchlists/${uid}_${symbol}`;
+  async removeWatchlist(uid: string, symbol: string, market: string = 'UNKNOWN'): Promise<void> {
+    const docId = this.getWatchlistDocId(uid, market, symbol);
     try {
-      const docId = `${uid}_${symbol}`;
-      await deleteDoc(doc(db, 'watchlists', docId));
+      await deleteDoc(doc(db, 'watchlists', docId)).catch(() => {});
+      // Also query and delete all watchlist documents matching this user and symbol to prevent orphan entries
+      const q = query(collection(db, 'watchlists'), where('uid', '==', uid), where('symbol', '==', symbol));
+      const snap = await getDocs(q);
+      const deletes = snap.docs.map(d => deleteDoc(d.ref));
+      await Promise.allSettled(deletes);
     } catch (err) {
       console.warn('Firebase remove watchlist error:', err);
-      handleFirestoreError(err, OperationType.DELETE, docPath);
+      handleFirestoreError(err, OperationType.DELETE, `watchlists/${docId}`);
     }
   },
 
-  async updateWatchlistOrder(uid: string, symbols: string[]): Promise<void> {
+  async updateWatchlistOrder(uid: string, orders: { symbol: string, market: string, orderIndex: number }[]): Promise<void> {
     const path = 'watchlists';
     try {
-      const promises = symbols.map((symbol, idx) => {
-        const docId = `${uid}_${symbol}`;
+      const promises = orders.map((order) => {
+        const docId = this.getWatchlistDocId(uid, order.market, order.symbol);
         return updateDoc(doc(db, 'watchlists', docId), {
-          orderIndex: idx,
+          orderIndex: order.orderIndex,
         }).catch(() => {
           // If doc doesn't exist, create it
           return setDoc(doc(db, 'watchlists', docId), {
             uid,
-            symbol,
-            orderIndex: idx,
+            symbol: order.symbol,
+            market: order.market,
+            orderIndex: order.orderIndex,
             createdAt: new Date().toISOString(),
-          });
+          }, { merge: true });
         });
       });
-      await Promise.all(promises);
+      await Promise.allSettled(promises);
     } catch (err) {
       console.warn('Firebase update watchlist order error:', err);
       handleFirestoreError(err, OperationType.UPDATE, path);
@@ -412,11 +454,15 @@ export const firebaseRepository = {
           likedBy: d.likedBy || [],
           views: d.viewCount || 0,
           commentsCount: d.commentCount || (d.comments ? d.comments.length : 0),
-          createdAt: d.createdAt ? (d.createdAt.length < 20 ? d.createdAt : new Date(d.createdAt).toLocaleDateString('ko-KR')) : '방금 전',
-          updatedAt: d.updatedAt,
+          createdAt: extractTimestampIso(d.createdAt, d.serverCreatedAt),
+          updatedAt: extractTimestampIso(d.updatedAt, d.serverUpdatedAt) || undefined,
           tags: d.tags || [],
           isHot: (d.likeCount || 0) >= 10,
-          comments: d.comments || [],
+          comments: Array.isArray(d.comments) ? d.comments.map((c: any) => ({
+            ...c,
+            createdAt: extractTimestampIso(c.createdAt, c.serverCreatedAt) || c.createdAt || '',
+            updatedAt: extractTimestampIso(c.updatedAt, c.serverUpdatedAt) || c.updatedAt,
+          })) : [],
         });
       });
       return list;
@@ -459,13 +505,17 @@ export const firebaseRepository = {
               likedBy: d.likedBy || [],
               views: d.viewCount || 0,
               commentsCount: d.commentCount || (d.comments ? d.comments.length : 0),
-              createdAt: d.createdAt ? (d.createdAt.length < 20 ? d.createdAt : new Date(d.createdAt).toLocaleDateString('ko-KR')) : '방금 전',
-              updatedAt: d.updatedAt,
+              createdAt: extractTimestampIso(d.createdAt, d.serverCreatedAt),
+              updatedAt: extractTimestampIso(d.updatedAt, d.serverUpdatedAt) || undefined,
               tags: d.tags || [],
               isHot: (d.likeCount || 0) >= 10,
               status: d.status || 'published',
               isNotice: Boolean(d.isNotice || d.category === 'notice'),
-              comments: d.comments || [],
+              comments: Array.isArray(d.comments) ? d.comments.map((c: any) => ({
+                ...c,
+                createdAt: extractTimestampIso(c.createdAt, c.serverCreatedAt) || c.createdAt || '',
+                updatedAt: extractTimestampIso(c.updatedAt, c.serverUpdatedAt) || c.updatedAt,
+              })) : [],
             });
           });
           callback(list);
@@ -517,11 +567,15 @@ export const firebaseRepository = {
         likedBy: d.likedBy || [],
         views: d.viewCount || 0,
         commentsCount: d.commentCount || (d.comments ? d.comments.length : 0),
-        createdAt: d.createdAt ? (d.createdAt.length < 20 ? d.createdAt : new Date(d.createdAt).toLocaleDateString('ko-KR')) : '방금 전',
-        updatedAt: d.updatedAt,
+        createdAt: extractTimestampIso(d.createdAt, d.serverCreatedAt),
+        updatedAt: extractTimestampIso(d.updatedAt, d.serverUpdatedAt) || undefined,
         tags: d.tags || [],
         isHot: (d.likeCount || 0) >= 10,
-        comments: d.comments || [],
+        comments: Array.isArray(d.comments) ? d.comments.map((c: any) => ({
+          ...c,
+          createdAt: extractTimestampIso(c.createdAt, c.serverCreatedAt) || c.createdAt || '',
+          updatedAt: extractTimestampIso(c.updatedAt, c.serverUpdatedAt) || c.updatedAt,
+        })) : [],
       };
     } catch (err) {
       console.warn('Firebase getPostById failed:', err);
@@ -552,8 +606,11 @@ export const firebaseRepository = {
         likedBy: [],
         commentCount: 0,
         comments: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: serverTimestamp(),
+        createdAtIso: new Date().toISOString(),
+        serverCreatedAt: serverTimestamp(),
+        updatedAt: null,
+        serverUpdatedAt: null,
         status: 'published',
         isDeleted: false,
         tags: post.tags || [],
@@ -575,7 +632,13 @@ export const firebaseRepository = {
     try {
       const updateData: any = {
         updatedAt: new Date().toISOString(),
+        serverUpdatedAt: serverTimestamp(),
       };
+      // CRITICAL: createdAt is immutable and must NEVER be overwritten during post update
+      delete (updates as any).createdAt;
+      delete (updates as any).serverCreatedAt;
+      delete (updates as any).createdAtIso;
+
       if (updates.title !== undefined) updateData.title = updates.title;
       if (updates.content !== undefined) updateData.content = updates.content;
       if (updates.category !== undefined) updateData.category = updates.category;
@@ -892,57 +955,69 @@ export const firebaseRepository = {
       const q = query(
         collection(db, 'chatMessages'),
         where('roomId', '==', roomId),
-        orderBy('serverCreatedAt', 'asc'),
+        orderBy('serverCreatedAt', 'desc'),
         limit(messageLimit)
       );
-      console.log(`[Firebase] Creating chat listener for room: ${roomId}`);
+      console.log(`[Firebase] Creating chat listener for room: ${roomId} (limit: ${messageLimit})`);
       const unsubscribe = onSnapshot(q, snap => {
         const list: ChatMessage[] = [];
         snap.forEach(docSnap => {
           const d = docSnap.data();
           if (d.isDeleted) return; // Client-side filtering
           
-          let time = '12:00:00';
+          let time = '--:--';
+          let createdAtIso = '';
           let sortTime = 0;
+
           if (d.serverCreatedAt && typeof d.serverCreatedAt.toMillis === 'function') {
-            const date = d.serverCreatedAt.toDate();
-            time = date.toTimeString().split(' ')[0];
+            const dt = d.serverCreatedAt.toDate();
+            time = formatChatTime(dt);
+            createdAtIso = dt.toISOString();
             sortTime = d.serverCreatedAt.toMillis();
           } else if (d.createdAt) {
-            const date = new Date(d.createdAt);
-            time = date.toTimeString().split(' ')[0];
-            sortTime = date.getTime();
-          } else {
-            console.warn('[Firebase] Message missing timestamp:', docSnap.id);
-            sortTime = Date.now();
+            const dt = parseToDate(d.createdAt);
+            if (dt) {
+              time = formatChatTime(dt);
+              createdAtIso = dt.toISOString();
+              sortTime = dt.getTime();
+            } else if (typeof d.createdAt === 'string') {
+              createdAtIso = d.createdAt;
+              time = formatChatTime(d.createdAt);
+            }
+          }
+
+          if (!time || time === '--:--') {
+            time = typeof d.timestamp === 'string' && d.timestamp ? formatChatTime(d.timestamp) : '--:--';
           }
 
           list.push({
             id: docSnap.id,
-            roomId: d.roomId,
+            roomId: d.roomId || roomId,
             author: {
-              id: d.authorId,
+              id: d.authorId || '',
               name: d.authorName || '투자자',
               avatar: d.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
               role: d.authorRole,
             },
-            message: d.content,
+            message: d.content || '',
             imageUrl: d.imageUrl || '',
             tempId: d.tempId || undefined,
             timestamp: time,
+            createdAt: createdAtIso,
             sentiment: d.sentiment,
             likes: 0,
             _sortTime: sortTime,
-          } as any);
+            status: 'sent',
+          });
         });
-        // Sort chronologically ascending
+        // Sort chronologically ascending (oldest first -> newest last)
         list.sort((a: any, b: any) => (a._sortTime || 0) - (b._sortTime || 0));
         callback(list);
       }, err => {
         if (err.code === 'cancelled') {
           console.debug(`[Firebase] Chat listener cancelled for room ${roomId}:`, err.message);
         } else {
-          console.error('Firestore onSnapshot error:', err);
+          console.error('Firestore onSnapshot error in subscribeChat:', err);
           handleFirestoreError(err, OperationType.LIST, 'chatMessages');
           if (onError) onError(err);
         }
@@ -975,19 +1050,28 @@ export const firebaseRepository = {
           const d = docSnap.data();
           if (d.isDeleted) return; // Client-side filtering
 
-          let time = '12:00:00';
+          let time = '--:--';
+          let createdAtIso = '';
           let sortTime = 0;
           if (d.serverCreatedAt && typeof d.serverCreatedAt.toMillis === 'function') {
-            const date = d.serverCreatedAt.toDate();
-            time = date.toTimeString().split(' ')[0];
+            const dt = d.serverCreatedAt.toDate();
+            time = formatChatTime(dt);
+            createdAtIso = dt.toISOString();
             sortTime = d.serverCreatedAt.toMillis();
           } else if (d.createdAt) {
-            const date = new Date(d.createdAt);
-            time = date.toTimeString().split(' ')[0];
-            sortTime = date.getTime();
-          } else {
-            console.warn('[Firebase] Message missing timestamp in AllChat:', docSnap.id);
-            sortTime = Date.now();
+            const dt = parseToDate(d.createdAt);
+            if (dt) {
+              time = formatChatTime(dt);
+              createdAtIso = dt.toISOString();
+              sortTime = dt.getTime();
+            } else if (typeof d.createdAt === 'string') {
+              createdAtIso = d.createdAt;
+              time = formatChatTime(d.createdAt);
+            }
+          }
+
+          if (!time || time === '--:--') {
+            time = typeof d.timestamp === 'string' && d.timestamp ? formatChatTime(d.timestamp) : '--:--';
           }
 
           list.push({
@@ -1003,10 +1087,12 @@ export const firebaseRepository = {
             imageUrl: d.imageUrl || '',
             tempId: d.tempId || undefined,
             timestamp: time,
+            createdAt: createdAtIso,
             sentiment: d.sentiment,
             likes: 0,
             _sortTime: sortTime,
-          } as any);
+            status: 'sent',
+          });
         });
         // Sort newest first for admin monitoring
         list.sort((a: any, b: any) => (b._sortTime || 0) - (a._sortTime || 0));
@@ -1029,30 +1115,26 @@ export const firebaseRepository = {
   },
 
   async sendChatMessage(msg: Omit<ChatMessage, 'id' | 'timestamp' | 'likes'>, tempId?: string): Promise<string> {
-    try {
-      const col = collection(db, 'chatMessages');
-      const docRef = doc(col);
-      await setDoc(docRef, {
-        id: docRef.id,
-        tempId: tempId || null,
-        roomId: msg.roomId,
-        authorId: msg.author.id,
-        authorName: msg.author.name,
-        authorAvatar: msg.author.avatar,
-        authorRole: msg.author.role || '회원',
-        content: msg.message,
-        imageUrl: msg.imageUrl || '',
-        sentiment: msg.sentiment || 'neutral',
-        createdAt: new Date().toISOString(),
-        serverCreatedAt: serverTimestamp(),
-        status: 'active',
-        isDeleted: false,
-      });
-      return docRef.id;
-    } catch (err) {
-      console.warn('Firebase send chat failed:', err);
-      return `local-${Date.now()}`;
-    }
+    const col = collection(db, 'chatMessages');
+    const docRef = doc(col);
+    const nowIso = new Date().toISOString();
+    await setDoc(docRef, {
+      id: docRef.id,
+      tempId: tempId || null,
+      roomId: msg.roomId,
+      authorId: msg.author.id,
+      authorName: msg.author.name,
+      authorAvatar: msg.author.avatar,
+      authorRole: msg.author.role || '회원',
+      content: msg.message,
+      imageUrl: msg.imageUrl || '',
+      sentiment: msg.sentiment || 'neutral',
+      createdAt: nowIso,
+      serverCreatedAt: serverTimestamp(),
+      status: 'active',
+      isDeleted: false,
+    });
+    return docRef.id;
   },
 
   async deleteChatMessage(messageId: string): Promise<void> {

@@ -426,10 +426,19 @@ export const PortfolioView: React.FC = () => {
           </div>
 
           {/* Portfolio Charts */}
-          <PortfolioCharts holdings={virtualHoldings} quotesMap={quotesMap} exchangeRate={exchangeRate} />
+          <PortfolioCharts
+            holdings={virtualHoldings}
+            quotesMap={quotesMap}
+            exchangeRate={exchangeRate}
+            onSelectStock={navigateToStock}
+          />
           {user?.id && (
             <>
-              <PortfolioAnalyzer uid={user.id} />
+              <PortfolioAnalyzer
+                uid={user.id}
+                onUpdated={loadData}
+                onSelectStock={navigateToStock}
+              />
               <DividendCalculator uid={user.id} />
             </>
           )}

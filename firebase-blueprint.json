@@ -385,6 +385,28 @@
         "updatedAt": { "type": "string", "description": "마지막 업데이트 일시" }
       },
       "required": ["uid", "stats", "day", "status", "updatedAt"]
+    },
+    "UserNotificationSettings": {
+      "title": "UserNotificationSettings",
+      "description": "사용자별 관심종목 급변 및 브라우저 푸시 알림 설정",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "browserPushEnabled": { "type": "boolean", "description": "브라우저 푸시 알림 활성화 여부" },
+        "surgeGainEnabled": { "type": "boolean", "description": "관심종목 급등 알림 활성화 여부" },
+        "surgeGainThreshold": { "type": "number", "description": "급등 기준 등락률 (%)" },
+        "surgeLossEnabled": { "type": "boolean", "description": "관심종목 급락 알림 활성화 여부" },
+        "surgeLossThreshold": { "type": "number", "description": "급락 기준 등락률 (%)" },
+        "volumeSurgeEnabled": { "type": "boolean", "description": "거래량 급증 알림 활성화 여부" },
+        "volumeSurgeThreshold": { "type": "number", "description": "거래량 급증 기준 (%)" },
+        "cooldownMinutes": { "type": "number", "description": "동일 종목 재알림 쿨다운 시간(분)" },
+        "soundEnabled": { "type": "boolean", "description": "알림음 재생 여부" },
+        "quietHoursEnabled": { "type": "boolean", "description": "방해금지 시간대 활성화 여부" },
+        "quietHoursStart": { "type": "string", "description": "방해금지 시작 시간" },
+        "quietHoursEnd": { "type": "string", "description": "방해금지 종료 시간" },
+        "updatedAt": { "type": "string", "description": "최근 갱신 일시" }
+      },
+      "required": ["uid", "browserPushEnabled", "surgeGainEnabled", "surgeGainThreshold", "surgeLossEnabled", "surgeLossThreshold", "updatedAt"]
     }
   },
   "firestore": {
@@ -479,6 +501,10 @@
     "/userGeminiKeys/{uid}": {
       "schema": "UserGeminiKey",
       "description": "사용자별 개인 Gemini API 키"
+    },
+    "/userNotificationSettings/{uid}": {
+      "schema": "UserNotificationSettings",
+      "description": "사용자별 관심종목 급변 브라우저 알림 설정 컬렉션"
     }
   }
 }

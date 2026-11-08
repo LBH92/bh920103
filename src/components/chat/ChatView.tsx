@@ -24,10 +24,20 @@ import {
   Eye,
   Plus,
   ArrowLeft,
-  ChevronRight
+  ChevronRight,
+  ArrowDown,
+  RotateCcw,
+  CheckCheck,
+  Loader2
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ChatMessage, ChatRoomInfo } from '../../types';
+import { 
+  formatChatDividerDate, 
+  formatChatTime, 
+  formatChatExactDateTime, 
+  getKstDateKey 
+} from '../../utils/dateUtils';
 import { firebaseRepository } from '../../services/firebaseRepository';
 import { storageService } from '../../services/storageService';
 import { filterProfanity, checkSpamViolation } from '../../utils/chatModerator';
@@ -61,11 +71,23 @@ export const ChatView: React.FC = () => {
     activeRoomId,
     setActiveRoomId,
     chatMessages: messages,
-    setChatMessages: setMessages
+    setChatMessages: setMessages,
+    loadMoreChatMessages,
+    chatMessageLimit
   } = useApp();
 
   const [inputText, setInputText] = useState('');
   const [sentiment, setSentiment] = useState<'bull' | 'bear' | 'neutral'>('bull');
+  
+  // Pending / Failed messages tracked locally for retry
+  const [failedMessagePayloads, setFailedMessagePayloads] = useState<Record<string, any>>({});
+  
+  // Scroll & New Message Floating Banner states
+  const [isNearBottom, setIsNearBottom] = useState<boolean>(true);
+  const [newUnseenCount, setNewUnseenCount] = useState<number>(0);
+  const [isFetchingOlder, setIsFetchingOlder] = useState<boolean>(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const prevScrollHeightRef = useRef<number>(0);
   
   // Real-time server presence online count
   const [onlineCount, setOnlineCount] = useState(2450);
@@ -229,10 +251,55 @@ export const ChatView: React.FC = () => {
     };
   }, [activeRoomId]);
 
-  // Scroll to bottom when messages update
+  // Handle Scroll container for pagination & auto-scroll
+  const handleScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceToBottom < 60;
+    setIsNearBottom(atBottom);
+    if (atBottom) {
+      setNewUnseenCount(0);
+    }
+  };
+
+  const scrollToBottom = (smooth = true) => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({
+        top: scrollContainerRef.current.scrollHeight,
+        behavior: smooth ? 'smooth' : 'auto',
+      });
+      setIsNearBottom(true);
+      setNewUnseenCount(0);
+    }
+  };
+
+  // Scroll to bottom when messages update ONLY if user is near bottom
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (prevScrollHeightRef.current > 0 && scrollContainerRef.current && isFetchingOlder) {
+      // User was loading older messages: preserve relative scroll position
+      const diff = scrollContainerRef.current.scrollHeight - prevScrollHeightRef.current;
+      scrollContainerRef.current.scrollTop += diff;
+      prevScrollHeightRef.current = 0;
+      setIsFetchingOlder(false);
+      return;
+    }
+
+    if (isNearBottom) {
+      scrollToBottom(false);
+    } else {
+      setNewUnseenCount(prev => prev + 1);
+    }
   }, [messages]);
+
+  // Load more older messages
+  const handleLoadMore = () => {
+    if (scrollContainerRef.current) {
+      prevScrollHeightRef.current = scrollContainerRef.current.scrollHeight;
+    }
+    setIsFetchingOlder(true);
+    loadMoreChatMessages();
+  };
 
   // Save blocked & muted users to localStorage
   useEffect(() => {
@@ -303,9 +370,12 @@ export const ChatView: React.FC = () => {
     }
 
     const now = new Date();
-    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const nowIso = now.toISOString();
+    const timeStr = formatChatTime(now);
+    const tempId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
     const newMsgPayload = {
+      id: tempId,
       roomId: activeRoomId,
       author: {
         id: user.id,
@@ -315,7 +385,9 @@ export const ChatView: React.FC = () => {
       },
       message: cleanText,
       timestamp: timeStr,
+      createdAt: nowIso,
       sentiment,
+      status: 'sending' as const,
     };
 
     // Optimistic local update & storage save
@@ -338,8 +410,35 @@ export const ChatView: React.FC = () => {
     // Firebase Firestore send
     try {
       await firebaseRepository.sendChatMessage(newMsgPayload);
+      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, status: 'sent' } : m));
     } catch (err) {
       console.warn('Firebase chat send error:', err);
+      // Mark as failed and store payload for retry
+      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, status: 'failed' } : m));
+      setFailedMessagePayloads(prev => ({ ...prev, [tempId]: newMsgPayload }));
+      showToast('메시지 전송에 실패했습니다. 재전송 버튼을 눌러 다시 시도하세요.', 'error');
+    }
+  };
+
+  // Retry sending a failed message
+  const handleRetryMessage = async (msgId: string) => {
+    const payload = failedMessagePayloads[msgId];
+    if (!payload) return;
+
+    setMessages(prev => prev.map(m => m.id === msgId ? { ...m, status: 'sending' } : m));
+    try {
+      await firebaseRepository.sendChatMessage(payload);
+      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, status: 'sent' } : m));
+      setFailedMessagePayloads(prev => {
+        const copy = { ...prev };
+        delete copy[msgId];
+        return copy;
+      });
+      showToast('메시지가 성공적으로 재전송되었습니다.', 'success');
+    } catch (err) {
+      console.warn('Retry send error:', err);
+      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, status: 'failed' } : m));
+      showToast('재전송에 실패했습니다. 네트워크 상태를 확인해주세요.', 'error');
     }
   };
 
@@ -578,183 +677,271 @@ export const ChatView: React.FC = () => {
             </div>
           </div>
 
-          {/* Messages Scroll Area */}
-          <div className="flex-1 p-4 overflow-y-auto space-y-3.5 font-sans">
+          {/* Messages Scroll Area with Date Grouping & Smart Scroll */}
+          <div 
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+            className="flex-1 p-4 overflow-y-auto space-y-3.5 font-sans relative"
+          >
+            {/* Load More Button for Pagination */}
+            {displayMessages.length >= 30 && (
+              <div className="text-center pb-2">
+                <button
+                  type="button"
+                  onClick={handleLoadMore}
+                  disabled={isFetchingOlder}
+                  className="px-3 py-1 rounded-full text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors cursor-pointer inline-flex items-center gap-1.5 shadow-2xs"
+                >
+                  {isFetchingOlder ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin text-slate-500" />
+                      <span>이전 대화 불러오는 중...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>이전 대화 더 불러오기</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+
             {displayMessages.length > 0 ? (
-              displayMessages.map(msg => {
-                const isMe = Boolean(user && msg.author?.id === user.id);
-                const authorId = msg.author?.id || 'unknown';
-                const authorName = msg.author?.name || '익명 투자자';
-                const isBlocked = blockedUsers.includes(authorId);
-                const isMuted = mutedUsers.includes(authorId);
-                const isRestrictedAuthor = restrictedUsers.includes(authorId);
-                const isRevealed = revealedMessages[msg.id];
-                const isTest = isTestPlaceholder(msg);
+              (() => {
+                // Group messages by KST calendar date key
+                const groupedByDate: { dateKey: string; dividerLabel: string; items: ChatMessage[] }[] = [];
+                let currentGroup: { dateKey: string; dividerLabel: string; items: ChatMessage[] } | null = null;
 
-                // If user is blocked and not me, silence unless revealed
-                if (isBlocked && !isRevealed) {
-                  return (
-                    <div
-                      key={msg.id}
-                      className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800/40 text-xs text-slate-400 flex items-center justify-between"
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <UserX className="w-3.5 h-3.5" />
-                        <span>차단된 사용자({authorName})의 메시지입니다.</span>
+                displayMessages.forEach(msg => {
+                  const rawTime = msg.createdAt || msg.timestamp;
+                  const dateKey = getKstDateKey(rawTime);
+                  const dividerLabel = formatChatDividerDate(rawTime);
+
+                  if (!currentGroup || currentGroup.dateKey !== dateKey) {
+                    currentGroup = { dateKey, dividerLabel, items: [msg] };
+                    groupedByDate.push(currentGroup);
+                  } else {
+                    currentGroup.items.push(msg);
+                  }
+                });
+
+                return groupedByDate.map(group => (
+                  <div key={group.dateKey} className="space-y-3.5">
+                    {/* Date Divider */}
+                    <div className="flex items-center justify-center my-4">
+                      <div className="h-px bg-slate-200 dark:bg-slate-800 flex-1" />
+                      <span className="px-3 py-0.5 text-[11px] font-bold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/80 rounded-full border border-slate-200/80 dark:border-slate-700/60 shadow-2xs">
+                        {group.dividerLabel}
                       </span>
-                      <button
-                        onClick={() => setRevealedMessages(prev => ({ ...prev, [msg.id]: true }))}
-                        className="text-rose-500 font-semibold hover:underline text-[11px] cursor-pointer"
-                      >
-                        내용 보기
-                      </button>
+                      <div className="h-px bg-slate-200 dark:bg-slate-800 flex-1" />
                     </div>
-                  );
-                }
 
-                return (
-                  <div
-                    key={msg.id}
-                    className={`flex items-start gap-2.5 group ${isMe ? 'flex-row-reverse' : ''}`}
-                  >
-                    {/* Profile Image */}
-                    <img
-                      src={msg.author?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'}
-                      alt={authorName}
-                      className="w-8 h-8 rounded-full object-cover shrink-0 ring-1 ring-slate-200 dark:ring-slate-700"
-                    />
+                    {/* Messages under this date */}
+                    {group.items.map(msg => {
+                      const isMe = Boolean(user && msg.author?.id === user.id);
+                      const authorId = msg.author?.id || 'unknown';
+                      const authorName = msg.author?.name || '익명 투자자';
+                      const isBlocked = blockedUsers.includes(authorId);
+                      const isMuted = mutedUsers.includes(authorId);
+                      const isRestrictedAuthor = restrictedUsers.includes(authorId);
+                      const isRevealed = revealedMessages[msg.id];
+                      const isTest = isTestPlaceholder(msg);
+                      const msgTime = formatChatTime(msg.createdAt || msg.timestamp);
+                      const exactTimeTooltip = formatChatExactDateTime(msg.createdAt || msg.timestamp);
 
-                    {/* Message Bubble Container */}
-                    <div className={`max-w-[80%] sm:max-w-[75%] space-y-1 ${isMe ? 'text-right' : ''}`}>
-                      {/* 닉네임 & 작성시간 & 역할 */}
-                      <div className={`flex items-center gap-1.5 text-[11px] ${isMe ? 'justify-end' : ''}`}>
-                        <span className="font-bold text-slate-700 dark:text-slate-300">
-                          {authorName}
-                        </span>
-
-                        {msg.author?.role && (
-                          <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                            msg.author.role.includes('운영자') || msg.author.role.includes('관리자')
-                              ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20'
-                              : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                          }`}>
-                            {msg.author.role}
-                          </span>
-                        )}
-
-                        {isTest && (
-                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold border border-amber-500/30">
-                            초기화 대상 (테스트)
-                          </span>
-                        )}
-
-                        {isRestrictedAuthor && (
-                          <span className="text-[10px] px-1 rounded bg-rose-500/10 text-rose-500 font-bold">
-                            채팅제한됨
-                          </span>
-                        )}
-
-                        {msg.sentiment === 'bull' && (
-                          <span className="text-rose-500 font-bold text-[10px]">▲ 매수</span>
-                        )}
-                        {msg.sentiment === 'bear' && (
-                          <span className="text-blue-500 font-bold text-[10px]">▼ 매도</span>
-                        )}
-
-                        <span className="text-slate-400 font-mono text-[10px]">
-                          {msg.timestamp}
-                        </span>
-                      </div>
-
-                      {/* Message Body */}
-                      <div
-                        className={`inline-block px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm text-left leading-relaxed break-words shadow-xs ${
-                          isMe
-                            ? 'bg-rose-600 text-white rounded-tr-xs'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 rounded-tl-xs'
-                        }`}
-                      >
-                        {msg.message}
-                        {msg.imageUrl && (
-                          <div className="mt-2">
-                            <img
-                              src={msg.imageUrl}
-                              alt="채팅 업로드 이미지"
-                              onError={e => {
-                                (e.currentTarget as HTMLElement).style.display = 'none';
-                              }}
-                              className="max-w-[240px] max-h-[200px] rounded-xl object-cover border border-white/20 shadow-sm"
-                            />
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Action Menu (신고, 차단, 뮤트, 관리자 삭제/채팅제한) */}
-                      <div className={`flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] ${
-                        isMe ? 'justify-end' : 'justify-start'
-                      }`}>
-                        {!isMe && (
-                          <>
-                            {/* 신고 버튼 */}
-                            <button
-                              onClick={() => setReportTarget({
-                                targetId: msg.id,
-                                content: msg.message,
-                                authorName: authorName,
-                              })}
-                              className="text-slate-400 hover:text-rose-500 p-1 rounded cursor-pointer transition-colors"
-                              title="메시지 신고"
-                            >
-                              <ShieldAlert className="w-3.5 h-3.5" />
-                            </button>
-
-                            {/* 차단 버튼 */}
-                            <button
-                              onClick={() => handleBlockUser(authorId, authorName)}
-                              className={`p-1 rounded cursor-pointer transition-colors ${isBlocked ? 'text-rose-500' : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}
-                              title={isBlocked ? '차단 해제' : '사용자 차단'}
-                            >
+                      // If user is blocked and not me, silence unless revealed
+                      if (isBlocked && !isRevealed) {
+                        return (
+                          <div
+                            key={msg.id}
+                            className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800/40 text-xs text-slate-400 flex items-center justify-between"
+                          >
+                            <span className="flex items-center gap-1.5">
                               <UserX className="w-3.5 h-3.5" />
-                            </button>
-
-                            {/* 뮤트 버튼 */}
+                              <span>차단된 사용자({authorName})의 메시지입니다.</span>
+                            </span>
                             <button
-                              onClick={() => handleMuteUser(authorId, authorName)}
-                              className={`p-1 rounded cursor-pointer transition-colors ${isMuted ? 'text-amber-500' : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}
-                              title={isMuted ? '음소거 해제' : '사용자 뮤트'}
+                              onClick={() => setRevealedMessages(prev => ({ ...prev, [msg.id]: true }))}
+                              className="text-rose-500 font-semibold hover:underline text-[11px] cursor-pointer"
                             >
-                              {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                              내용 보기
                             </button>
-                          </>
-                        )}
+                          </div>
+                        );
+                      }
 
-                        {/* Admin Action: 메시지 삭제 */}
-                        {isAdmin && (
-                          <>
-                            <button
-                              onClick={() => handleDeleteMessage(msg.id)}
-                              className="text-slate-400 hover:text-rose-600 p-1 rounded cursor-pointer transition-colors"
-                              title="관리자 권한: 메시지 삭제"
-                            >
-                              <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                            </button>
+                      return (
+                        <div
+                          key={msg.id}
+                          className={`flex items-start gap-2.5 group ${isMe ? 'flex-row-reverse' : ''}`}
+                        >
+                          {/* Profile Image */}
+                          <img
+                            src={msg.author?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80'}
+                            alt={authorName}
+                            className="w-8 h-8 rounded-full object-cover shrink-0 ring-1 ring-slate-200 dark:ring-slate-700"
+                          />
 
-                            {!isMe && (
-                              <button
-                                onClick={() => handleRestrictUser(authorId, authorName)}
-                                className="text-amber-500 hover:text-amber-600 p-1 rounded font-bold text-[10px] cursor-pointer"
-                                title="관리자 권한: 사용자 채팅 이용제한"
+                          {/* Message Bubble Container */}
+                          <div className={`max-w-[80%] sm:max-w-[75%] space-y-1 ${isMe ? 'text-right' : ''}`}>
+                            {/* 닉네임 & 작성시간 & 역할 */}
+                            <div className={`flex items-center gap-1.5 text-[11px] ${isMe ? 'justify-end' : ''}`}>
+                              <span className="font-bold text-slate-700 dark:text-slate-300">
+                                {authorName}
+                              </span>
+
+                              {msg.author?.role && (
+                                <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                                  msg.author.role.includes('운영자') || msg.author.role.includes('관리자')
+                                    ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                                }`}>
+                                  {msg.author.role}
+                                </span>
+                              )}
+
+                              {isTest && (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold border border-amber-500/30">
+                                  초기화 대상 (테스트)
+                                </span>
+                              )}
+
+                              {isRestrictedAuthor && (
+                                <span className="text-[10px] px-1 rounded bg-rose-500/10 text-rose-500 font-bold">
+                                  채팅제한됨
+                                </span>
+                              )}
+
+                              {msg.sentiment === 'bull' && (
+                                <span className="text-rose-500 font-bold text-[10px]">▲ 매수</span>
+                              )}
+                              {msg.sentiment === 'bear' && (
+                                <span className="text-blue-500 font-bold text-[10px]">▼ 매도</span>
+                              )}
+
+                              {/* Formatted KST HH:mm with full tooltip */}
+                              <span 
+                                className="text-slate-400 font-mono text-[10px] cursor-help"
+                                title={exactTimeTooltip}
                               >
-                                제한
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    </div>
+                                {msgTime}
+                              </span>
+
+                              {/* Status Indicators for user's messages */}
+                              {isMe && msg.status === 'sending' && (
+                                <span title="전송 중..." className="inline-flex items-center">
+                                  <Loader2 className="w-3 h-3 text-slate-400 animate-spin" />
+                                </span>
+                              )}
+                              {isMe && msg.status === 'failed' && (
+                                <span className="inline-flex items-center gap-1 text-[10px] text-rose-500 font-bold">
+                                  <span>전송실패</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRetryMessage(msg.id)}
+                                    className="underline hover:text-rose-600 cursor-pointer inline-flex items-center gap-0.5"
+                                    title="다시 보내기"
+                                  >
+                                    <RotateCcw className="w-2.5 h-2.5" /> 재전송
+                                  </button>
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Message Body */}
+                            <div
+                              className={`inline-block px-3.5 py-2.5 rounded-2xl text-xs sm:text-sm text-left leading-relaxed break-words shadow-xs ${
+                                isMe
+                                  ? msg.status === 'failed'
+                                    ? 'bg-rose-500/80 text-white rounded-tr-xs border border-rose-300'
+                                    : 'bg-rose-600 text-white rounded-tr-xs'
+                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 rounded-tl-xs'
+                              }`}
+                            >
+                              {msg.message}
+                              {msg.imageUrl && (
+                                <div className="mt-2">
+                                  <img
+                                    src={msg.imageUrl}
+                                    alt="채팅 업로드 이미지"
+                                    onError={e => {
+                                      (e.currentTarget as HTMLElement).style.display = 'none';
+                                    }}
+                                    className="max-w-[240px] max-h-[200px] rounded-xl object-cover border border-white/20 shadow-sm"
+                                  />
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Action Menu (신고, 차단, 뮤트, 관리자 삭제/채팅제한) */}
+                            <div className={`flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] ${
+                              isMe ? 'justify-end' : 'justify-start'
+                            }`}>
+                              {!isMe && (
+                                <>
+                                  {/* 신고 버튼 */}
+                                  <button
+                                    onClick={() => setReportTarget({
+                                      targetId: msg.id,
+                                      content: msg.message,
+                                      authorName: authorName,
+                                    })}
+                                    className="text-slate-400 hover:text-rose-500 p-1 rounded cursor-pointer transition-colors"
+                                    title="메시지 신고"
+                                  >
+                                    <ShieldAlert className="w-3.5 h-3.5" />
+                                  </button>
+
+                                  {/* 차단 버튼 */}
+                                  <button
+                                    onClick={() => handleBlockUser(authorId, authorName)}
+                                    className={`p-1 rounded cursor-pointer transition-colors ${isBlocked ? 'text-rose-500' : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}
+                                    title={isBlocked ? '차단 해제' : '사용자 차단'}
+                                  >
+                                    <UserX className="w-3.5 h-3.5" />
+                                  </button>
+
+                                  {/* 뮤트 버튼 */}
+                                  <button
+                                    onClick={() => handleMuteUser(authorId, authorName)}
+                                    className={`p-1 rounded cursor-pointer transition-colors ${isMuted ? 'text-amber-500' : 'text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}
+                                    title={isMuted ? '음소거 해제' : '사용자 뮤트'}
+                                  >
+                                    {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                                  </button>
+                                </>
+                              )}
+
+                              {/* Admin Action: 메시지 삭제 */}
+                              {isAdmin && (
+                                <>
+                                  <button
+                                    onClick={() => handleDeleteMessage(msg.id)}
+                                    className="text-slate-400 hover:text-rose-600 p-1 rounded cursor-pointer transition-colors"
+                                    title="관리자 권한: 메시지 삭제"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                                  </button>
+
+                                  {!isMe && (
+                                    <button
+                                      onClick={() => handleRestrictUser(authorId, authorName)}
+                                      className="text-amber-500 hover:text-amber-600 p-1 rounded font-bold text-[10px] cursor-pointer"
+                                      title="관리자 권한: 사용자 채팅 이용제한"
+                                    >
+                                      제한
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })
+                ));
+              })()
             ) : (
               <div className="py-20 text-center text-slate-400 text-xs space-y-1">
                 <p>'{activeRoom.name}' 채널에 아직 전송된 메시지가 없습니다.</p>
@@ -762,6 +949,20 @@ export const ChatView: React.FC = () => {
               </div>
             )}
             <div ref={messagesEndRef} />
+
+            {/* Floating New Messages Alert Banner */}
+            {!isNearBottom && newUnseenCount > 0 && (
+              <div className="sticky bottom-2 inset-x-0 flex justify-center z-20 pointer-events-none">
+                <button
+                  type="button"
+                  onClick={() => scrollToBottom(true)}
+                  className="pointer-events-auto px-4 py-1.5 rounded-full bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg flex items-center gap-1.5 transition-all transform hover:scale-105 cursor-pointer animate-bounce"
+                >
+                  <ArrowDown className="w-3.5 h-3.5" />
+                  <span>새 메시지 {newUnseenCount}건 도착</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Bottom Send Input Bar */}

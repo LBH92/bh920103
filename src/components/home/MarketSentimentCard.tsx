@@ -614,7 +614,7 @@ export const MarketSentimentCard: React.FC<MarketSentimentCardProps> = ({
 
             <div className="text-xs text-slate-600 dark:text-slate-400 space-y-2.5 leading-relaxed">
               <p>
-                <strong>커뮤니티 시장 심리지수(Bull vs Bear Index)</strong>는 Stock Insight 커뮤니티의 모든 실시간 대화 및 종목 토론 게시글을 종합하여 시장 참여자들의 심리를 0부터 100 사이의 수치로 산출합니다.
+                <strong>커뮤니티 시장 심리지수(Bull vs Bear Index)</strong>는 병돌 인베스트먼트 커뮤니티의 모든 실시간 대화 및 종목 토론 게시글을 종합하여 시장 참여자들의 심리를 0부터 100 사이의 수치로 산출합니다.
               </p>
 
               <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-800/60 space-y-1.5 font-mono text-[11px]">

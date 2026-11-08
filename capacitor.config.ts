@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.byeongdol.investment',
-  appName: 'byeongdol-investment',
+  appId: 'com.stockinsight.app',
+  appName: 'Stock Insight',
   webDir: 'dist'
 };
 

@@ -44,13 +44,14 @@ import {
 } from '../../types/chartDrawings';
 import { IndicatorSettingsModal } from './IndicatorSettingsModal';
 import { AdSlot } from '../common/AdSlot';
+import { useApp } from '../../context/AppContext';
 
 interface InteractiveStockChartProps {
   symbol?: string;
   candles?: CandleData[];
   stockPrice: number;
   prevClose: number;
-  currency?: 'KRW' | 'USD';
+  currency?: 'KRW' | 'USD' | 'USDT' | 'BTC';
   buyEntries?: WatchlistBuyEntry[];
 }
 
@@ -94,10 +95,22 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
   currency = 'KRW',
   buyEntries = [],
 }) => {
+  const { isDark } = useApp();
+  const upColor = isDark ? '#F0787D' : '#D94B50';
+  const downColor = isDark ? '#72A9E8' : '#3478C8';
+  const gridColor = isDark ? '#354252' : '#E4E9EF';
+  const subTextColor = isDark ? '#A6B4C4' : '#607184';
+
   const isUSD = currency === 'USD';
   const formatPrice = (val: number) => {
-    if (isUSD) {
+    if (currency === 'USD') {
       return `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+    if (currency === 'USDT') {
+      return `${val.toLocaleString(undefined, { minimumFractionDigits: val < 1 ? 4 : 2 })} USDT`;
+    }
+    if (currency === 'BTC') {
+      return `${val.toFixed(8)} BTC`;
     }
     return `${val.toLocaleString()}원`;
   };
@@ -706,19 +719,19 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
     <>
       <div className="space-y-3 font-sans">
       {/* 1. Interactive Master Toolbar: 기간 | 지표 | 그리기 | 설정 | 초기화 */}
-      <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-2.5 bg-slate-50 dark:bg-slate-900/70 p-2.5 rounded-2xl border border-slate-200/80 dark:border-slate-800">
+      <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-2.5 bg-finance-card p-2.5 rounded-2xl border border-finance-border shadow-xs">
         
         {/* Left Section: Period Selector & Candle/Line Switch */}
         <div className="flex items-center gap-1.5 flex-wrap">
           {/* Kiwoom/Live info Badge */}
-          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-500/10 text-rose-500 border border-rose-500/20 text-xs font-bold font-mono">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-finance-accent/15 text-finance-accent border border-finance-accent/30 text-xs font-bold font-mono">
+            <span className="w-1.5 h-1.5 rounded-full bg-finance-accent animate-pulse"></span>
             <span>{chartMeta?.source === 'kiwoom' ? '키움 Open API' : '실시간 시세'}</span>
             <span className="opacity-60 text-[10px]">({chartMeta?.currency || currency})</span>
           </div>
 
           {/* Primary Period Tabs: 1일 / 1주 / 1개월 / 3개월 / 6개월 / YTD / 1년 / 5년 / 전체 */}
-          <div className="flex p-0.5 bg-slate-200/60 dark:bg-slate-800 rounded-xl text-xs font-semibold overflow-x-auto scrollbar-none">
+          <div className="flex p-0.5 bg-finance-sub-bg rounded-xl text-xs font-semibold overflow-x-auto scrollbar-none border border-finance-border">
             {PRIMARY_PERIODS.map(p => {
               const isActive = period === p.id;
               return (
@@ -731,8 +744,8 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
                   disabled={!p.supported || isLoading}
                   className={`px-2.5 py-1 rounded-lg transition-all shrink-0 font-mono text-xs cursor-pointer ${
                     isActive
-                      ? 'bg-white dark:bg-rose-500 text-slate-900 dark:text-white font-bold shadow-xs'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      ? 'bg-finance-accent text-white font-bold shadow-xs'
+                      : 'text-finance-sub-text hover:text-finance-text'
                   }`}
                   title={`${p.description}`}
                 >
@@ -1061,7 +1074,7 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
       {/* Display bar removed for debugging */}
 
       {/* 3. Main Chart Canvas Area */}
-      <div className="relative w-full rounded-2xl bg-white dark:bg-[#0c0f17] border border-slate-200 dark:border-slate-800/80 p-2 sm:p-3 overflow-hidden min-h-[420px] flex items-center justify-center select-none">
+      <div className="relative w-full rounded-2xl bg-finance-card border border-finance-border p-2 sm:p-3 overflow-hidden min-h-[420px] flex items-center justify-center select-none shadow-xs">
         
         {/* Loading State */}
         {isLoading && (
@@ -1363,7 +1376,7 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
                   const yClose = getPriceY(c.close);
 
                   const candleIsUp = c.close >= c.open;
-                  const candleColor = candleIsUp ? '#ef4444' : '#3b82f6';
+                  const candleColor = candleIsUp ? upColor : downColor;
                   const bodyTop = Math.min(yOpen, yClose);
                   const bodyHeight = Math.max(1.5, Math.abs(yOpen - yClose));
                   const isHovered = hoverIndex === i;
@@ -1631,7 +1644,7 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
                   const x = getCandleX(i);
                   const barH = Math.max(1, (c.volume / maxVolume) * (volumeHeight - 15));
                   const y = volumeStartY + volumeHeight - barH;
-                  const barColor = c.close >= c.open ? '#ef4444' : '#3b82f6';
+                  const barColor = c.close >= c.open ? upColor : downColor;
                   const isHovered = hoverIndex === i;
 
                   return (

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { CommunityPost, CommentItem } from '../../types';
+import { formatPostExactDateTime, formatPostListTime, formatCommunityTime } from '../../utils/dateUtils';
 import { storageService } from '../../services/storageService';
 import { firebaseRepository } from '../../services/firebaseRepository';
 import { PostEditorModal } from './PostEditorModal';
@@ -156,7 +157,7 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
         badge: user.role === 'admin' ? '운영자' : user.tier,
       },
       content: commentText.trim(),
-      createdAt: '방금 전',
+      createdAt: new Date().toISOString(),
       likes: 0,
       likedBy: [],
     };
@@ -334,11 +335,25 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
               {getCategoryLabel(post.category)}
             </span>
 
-            <div className="flex items-center gap-3 text-xs text-slate-400 font-mono">
-              <span className="flex items-center gap-1">
-                <Clock className="w-3.5 h-3.5" />
-                {post.createdAt}
+            <div className="flex items-center gap-3 text-xs text-slate-400 font-mono flex-wrap">
+              <span 
+                className="flex items-center gap-1"
+                title={`작성 시각: ${formatPostExactDateTime(post.createdAt, true)}`}
+              >
+                <Clock className="w-3.5 h-3.5 text-slate-400" />
+                <span>{formatCommunityTime(post.createdAt)}</span>
               </span>
+              {post.updatedAt && post.updatedAt !== post.createdAt && (
+                <>
+                  <span>·</span>
+                  <span 
+                    className="flex items-center gap-1 text-slate-400/90"
+                    title={`최종 수정 시각: ${formatPostExactDateTime(post.updatedAt, true)}`}
+                  >
+                    <span>수정: {formatPostExactDateTime(post.updatedAt, false)}</span>
+                  </span>
+                </>
+              )}
               <span>·</span>
               <span className="flex items-center gap-1">
                 <Eye className="w-3.5 h-3.5" />
@@ -480,9 +495,19 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
                             <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-semibold">
                               {c.author.badge}
                             </span>
-                            <span className="text-[10px] text-slate-400 font-mono">{c.createdAt}</span>
-                            {c.updatedAt && (
-                              <span className="text-[10px] text-slate-400 italic">({c.updatedAt})</span>
+                            <span 
+                              className="text-[10px] text-slate-400 font-mono"
+                              title={`작성: ${formatPostExactDateTime(c.createdAt, true)}`}
+                            >
+                              {formatPostListTime(c.createdAt)}
+                            </span>
+                            {c.updatedAt && c.updatedAt !== c.createdAt && (
+                              <span 
+                                className="text-[10px] text-slate-400/80 italic font-mono"
+                                title={`수정: ${formatPostExactDateTime(c.updatedAt, true)}`}
+                              >
+                                (수정됨)
+                              </span>
                             )}
                           </div>
 

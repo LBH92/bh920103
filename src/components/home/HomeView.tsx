@@ -47,6 +47,8 @@ import { RollingAdBanner } from '../common/RollingAdBanner';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { firebaseRepository } from '../../services/firebaseRepository';
+import { HomeMobileDashboard } from './HomeMobileDashboard';
+import { formatCommunityTime } from '../../utils/dateUtils';
 
 export const HomeView: React.FC = () => {
 
@@ -62,13 +64,14 @@ export const HomeView: React.FC = () => {
     navigateToPost,
     setActiveTab,
     toggleWatchlist,
+    addToWatchlist,
     isWatchlisted,
   } = useApp();
 
   const [activeMoverTab, setActiveMoverTab] = useState<'surge_gain' | 'surge_loss' | 'volume_surge' | 'popular'>('surge_gain');
   const [liveMonitorEvents, setLiveMonitorEvents] = useState<MarketAlertEvent[]>([]);
   const [homeSearchQuery, setHomeSearchQuery] = useState('');
-  const [homeSearchMarketFilter, setHomeSearchMarketFilter] = useState<'ALL' | 'KR' | 'US'>('ALL');
+  const [homeSearchMarketFilter, setHomeSearchMarketFilter] = useState<'ALL' | 'KR' | 'US' | 'COIN'>('ALL');
   const [homeSearchResults, setHomeSearchResults] = useState<Stock[]>([]);
   const [isSearchingHome, setIsSearchingHome] = useState<boolean>(false);
   const [selectedMarketEvent, setSelectedMarketEvent] = useState<MarketEvent | null>(null);
@@ -233,55 +236,85 @@ export const HomeView: React.FC = () => {
 
   return (
     <div className="space-y-6 pb-24 animate-in fade-in duration-150">
-      {/* 1. Real-time Hero Stock Search Bar (한국 · 미국 주식 통합 실시간 검색) */}
-      <div className="relative bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+      {/* 0. Mobile-Optimized Stock App Dashboard (< 768px) */}
+      <HomeMobileDashboard />
+
+      {/* Desktop & Tablet Dashboard (>= 768px) */}
+      <div className="hidden md:block space-y-6">
+        {/* 1. Real-time Hero Stock Search Bar (한국 주식 · 미국 주식 · 가상자산 통합 검색) */}
+        <div className="relative bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
           <div>
             <h1 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
-              <span>한국 · 미국 주식 실시간 검색</span>
+              <span>
+                {homeSearchMarketFilter === 'KR'
+                  ? '한국 주식 실시간 검색'
+                  : homeSearchMarketFilter === 'US'
+                  ? '미국 주식 실시간 검색'
+                  : homeSearchMarketFilter === 'COIN'
+                  ? '가상자산 실시간 검색'
+                  : '한국 · 미국 · 가상자산 통합 검색'}
+              </span>
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-500 border border-rose-500/20 font-mono">
                 LIVE
               </span>
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              KOSPI · KOSDAQ 및 NASDAQ · NYSE 주요 상장 종목, ETF, 초성을 실시간 탐색하세요.
+              {homeSearchMarketFilter === 'KR'
+                ? 'KOSPI · KOSDAQ 전체 상장 보통주, 우선주, ETF, 초성을 실시간 탐색하세요.'
+                : homeSearchMarketFilter === 'US'
+                ? 'NASDAQ · NYSE · AMEX 대표 보통주, 레버리지 ETF, ADR을 실시간 탐색하세요.'
+                : homeSearchMarketFilter === 'COIN'
+                ? '업비트(Upbit) · 바이낸스(Binance) 공식 거래소 전체 현물 마켓을 탐색하세요.'
+                : '국내 주식 2,070+, 미국 8,000+, 가상자산 1,300+ 현물 마켓을 통합 탐색하세요.'}
             </p>
           </div>
 
-          {/* Market Filter Pills */}
-          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl text-xs font-semibold self-start sm:self-auto">
+          {/* Market Filter Pills (한국 주식, 미국 주식, 가상자산, 전체) */}
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl text-xs font-semibold self-start sm:self-auto overflow-x-auto">
             <button
               type="button"
               onClick={() => setHomeSearchMarketFilter('ALL')}
-              className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
                 homeSearchMarketFilter === 'ALL'
                   ? 'bg-rose-500 text-white font-bold shadow-xs'
                   : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              전체
+              전체 통합
             </button>
             <button
               type="button"
               onClick={() => setHomeSearchMarketFilter('KR')}
-              className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
                 homeSearchMarketFilter === 'KR'
                   ? 'bg-indigo-600 text-white font-bold shadow-xs'
                   : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              🇰🇷 한국
+              🇰🇷 한국 주식
             </button>
             <button
               type="button"
               onClick={() => setHomeSearchMarketFilter('US')}
-              className={`px-3 py-1 rounded-lg transition-colors cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
                 homeSearchMarketFilter === 'US'
                   ? 'bg-purple-600 text-white font-bold shadow-xs'
                   : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              🇺🇸 미국
+              🇺🇸 미국 주식
+            </button>
+            <button
+              type="button"
+              onClick={() => setHomeSearchMarketFilter('COIN')}
+              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
+                homeSearchMarketFilter === 'COIN'
+                  ? 'bg-amber-600 text-white font-bold shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              🪙 가상자산
             </button>
           </div>
         </div>
@@ -294,7 +327,15 @@ export const HomeView: React.FC = () => {
               type="text"
               value={homeSearchQuery}
               onChange={e => setHomeSearchQuery(e.target.value)}
-              placeholder="종목명, 티커, 코드, 초성 검색 (예: 삼성전자, NVDA, AAPL, 005930, SOXL, ㅅㅅ)"
+              placeholder={
+                homeSearchMarketFilter === 'KR'
+                  ? '국내 종목명, 종목코드, 초성 검색 (예: 삼성전자, 005930, SK하이닉스, 알테오젠, ㅅㅅ)'
+                  : homeSearchMarketFilter === 'US'
+                  ? '미국 티커, 기업명, 한글명 검색 (예: NVDA, AAPL, TSLA, SOXL, QQQ, 엔비디아)'
+                  : homeSearchMarketFilter === 'COIN'
+                  ? '코인명, 심볼, 마켓 검색 (예: 비트코인, KRW-BTC, 이더리움, 왁스, SOLUSDT, XRP)'
+                  : '종목명, 티커, 코드, 코인명, 초성 검색 (예: 삼성전자, NVDA, SOXL, 비트코인, 왁스, ㅅㅅ)'
+              }
               className="w-full pl-11 pr-14 py-3 sm:py-3.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl text-sm sm:text-base text-slate-900 dark:text-white placeholder-slate-400 font-medium focus:outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 transition-all"
             />
             <div className="absolute right-3.5 flex items-center gap-1.5">
@@ -317,72 +358,115 @@ export const HomeView: React.FC = () => {
           {homeSearchQuery.trim() && (
             <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700/80 rounded-2xl shadow-2xl z-30 overflow-hidden divide-y divide-slate-100 dark:divide-slate-800 animate-in fade-in zoom-in-95 duration-100 max-h-80 overflow-y-auto">
               {homeSearchResults.length > 0 ? (
-                homeSearchResults.map(s => (
-                  <button
-                    key={`${s.market}-${s.symbol}`}
-                    onClick={() => {
-                      navigateToStock(s.symbol);
-                      setHomeSearchQuery('');
-                    }}
-                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/60 text-left transition-colors cursor-pointer group"
-                  >
-                    <div className="flex items-center gap-3 min-w-0 pr-2">
-                      <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded shrink-0 ${
-                        s.market === 'US'
-                          ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'
-                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
-                      }`}>
-                        {s.symbol}
-                      </span>
-                      <div className="truncate">
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-sm sm:text-base text-slate-900 dark:text-white group-hover:text-rose-500 transition-colors">
-                            {s.name}
-                          </span>
-                          <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                            s.market === 'US'
-                              ? 'bg-purple-500/10 text-purple-500 border border-purple-500/20'
-                              : s.market === 'KOSPI'
-                              ? 'bg-indigo-500/10 text-indigo-500 border border-indigo-500/20'
-                              : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
-                          }`}>
-                            {s.market === 'US' ? (s.exchange || 'US') : s.market}
-                          </span>
-                          {s.productType === 'ETF' && (
-                            <span className="text-[9px] font-bold px-1 py-0.2 rounded border bg-amber-500/10 text-amber-500 border-amber-500/20">
-                              ETF
+                homeSearchResults.map(s => {
+                  const registered = isWatchlisted(s.symbol);
+                  return (
+                    <div
+                      key={`${s.market}-${s.symbol}`}
+                      onClick={() => {
+                        navigateToStock(s.symbol);
+                        setHomeSearchQuery('');
+                      }}
+                      className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/60 text-left transition-colors cursor-pointer group gap-2"
+                    >
+                      <div className="flex items-center gap-3 min-w-0 pr-2">
+                        <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded shrink-0 ${
+                          s.market === 'US'
+                            ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'
+                            : s.market === 'COIN'
+                            ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                        }`}>
+                          {s.symbol}
+                        </span>
+                        <div className="truncate">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-sm sm:text-base text-slate-900 dark:text-white group-hover:text-rose-500 transition-colors">
+                              {s.name}
                             </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-slate-400 truncate mt-0.5">
-                          {s.sector || (s.market === 'US' ? '미국 상장 종목' : '국내 상장 종목')}
-                          {s.nameEn && s.nameEn !== s.name && (
-                            <span className="ml-1.5 text-slate-400 font-mono text-[11px]">
-                              ({s.nameEn})
+                            <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                              s.market === 'US'
+                                ? 'bg-purple-500/10 text-purple-500 border border-purple-500/20'
+                                : s.market === 'COIN'
+                                ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
+                                : s.market === 'KOSPI'
+                                ? 'bg-indigo-500/10 text-indigo-500 border border-indigo-500/20'
+                                : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+                            }`}>
+                              {s.market === 'US' ? (s.exchange || 'US') : s.market === 'COIN' ? (s.exchange || 'COIN') : s.market}
                             </span>
-                          )}
+                            {s.productType === 'ETF' && (
+                              <span className="text-[9px] font-bold px-1 py-0.2 rounded border bg-amber-500/10 text-amber-500 border-amber-500/20">
+                                ETF
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs text-slate-400 truncate mt-0.5">
+                            {s.sector || (s.market === 'US' ? '미국 상장 종목' : s.market === 'COIN' ? '가상자산 현물' : '국내 상장 종목')}
+                            {s.tradingPair && (
+                              <span className="ml-1.5 font-mono text-[10px] text-cyan-500 font-semibold">
+                                [{s.tradingPair}]
+                              </span>
+                            )}
+                            {s.nameEn && s.nameEn !== s.name && (
+                              <span className="ml-1.5 text-slate-400 font-mono text-[11px]">
+                                ({s.nameEn})
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="text-right flex items-center gap-3 shrink-0">
-                      <div className="font-mono font-bold text-sm text-slate-900 dark:text-white">
-                        {s.price > 0 ? (
-                          s.currency === 'USD'
-                            ? `$${s.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                            : `${s.price.toLocaleString()}원`
-                        ) : (
-                          <span className="text-xs text-slate-400 font-normal">시세 조회</span>
-                        )}
+
+                      <div className="text-right flex items-center gap-3 shrink-0">
+                        <div>
+                          <div className="font-mono font-bold text-sm text-slate-900 dark:text-white">
+                            {s.price > 0 ? (
+                              s.currency === 'USD'
+                                ? `$${s.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                : s.currency === 'USDT'
+                                ? `${s.price.toLocaleString(undefined, { minimumFractionDigits: s.price < 1 ? 4 : 2 })} USDT`
+                                : s.currency === 'BTC'
+                                ? `${s.price.toFixed(8)} BTC`
+                                : `${s.price.toLocaleString()}원`
+                            ) : (
+                              <span className="text-xs text-slate-400 font-normal">시세 조회</span>
+                            )}
+                          </div>
+                          <PriceBadge change={s.change} changePercent={s.changePercent} size="sm" />
+                        </div>
+
+                        {/* Direct Watchlist Registration Button */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (registered) {
+                              toggleWatchlist(s.symbol);
+                            } else {
+                              addToWatchlist(s.symbol, s);
+                            }
+                          }}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                            registered
+                              ? 'bg-slate-100 dark:bg-slate-800 text-emerald-500 border border-emerald-500/30'
+                              : 'bg-rose-500 hover:bg-rose-600 text-white shadow-xs active:scale-95'
+                          }`}
+                        >
+                          {registered ? (
+                            <span>✓ 등록됨</span>
+                          ) : (
+                            <span>+ 관심 등록</span>
+                          )}
+                        </button>
                       </div>
-                      <PriceBadge change={s.change} changePercent={s.changePercent} size="sm" />
                     </div>
-                  </button>
-                ))
+                  );
+                })
               ) : (
                 <div className="p-6 text-center text-xs text-slate-400 space-y-1">
                   <div>일치하는 검색 결과가 없습니다: '<span className="text-rose-500 font-bold">{homeSearchQuery}</span>'</div>
                   <div className="text-[11px] text-slate-400">
-                    검색 팁: 삼성전자, NVDA, AAPL, 005930, SOXL, 초성(ㅅㅅ, ㅅㅋ)
+                    검색 팁: 삼성전자, NVDA, AAPL, 005930, SOXL, 왁스, 비트코인, 초성(ㅅㅅ, ㅂㅌㅋㅇ)
                   </div>
                 </div>
               )}
@@ -583,7 +667,7 @@ export const HomeView: React.FC = () => {
         </section>
       )}
 
-      {/* Stock Insight 실시간 시장 모니터링 레이더 */}
+      {/* 병돌 인베스트먼트 실시간 시장 모니터링 레이더 */}
       {liveMonitorEvents.length > 0 && (
         <section aria-label="실시간 시장 모니터링 레이더">
           <div className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs">
@@ -594,7 +678,7 @@ export const HomeView: React.FC = () => {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                    <span>Stock Insight 시장 모니터링 레이더</span>
+                    <span>병돌 인베스트먼트 시장 모니터링 레이더</span>
                   </span>
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/30">
                     실시간 {liveMonitorEvents.length}건 감지
@@ -623,47 +707,60 @@ export const HomeView: React.FC = () => {
       <section aria-label="글로벌 및 국내 시장 핵심 지표 현황">
         <div className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
           {/* Header & Category Selection Tabs */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-xl bg-rose-500/10 text-rose-500 shrink-0">
-                <Globe className="w-4 h-4" />
+          <div className="flex flex-col tablet-p:flex-col tablet-l:flex-row sm:flex-row sm:items-center justify-between gap-3 p-4 sm:p-5 tablet:p-4.5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/30">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="p-2 tablet:p-2.5 rounded-xl bg-rose-500/10 text-rose-500 shrink-0">
+                <Globe className="w-4 h-4 tablet:w-4.5 tablet:h-4.5" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
+                  <h2 className="text-sm sm:text-base tablet:text-[17px] font-black text-slate-900 dark:text-white tracking-tight">
                     시장 종합 현황
                   </h2>
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full font-mono ${
+                  <span className={`text-[10px] tablet:text-[11px] font-bold px-2 tablet:px-2.5 py-0.5 rounded-full font-mono shrink-0 whitespace-nowrap ${
                     marketCategory === 'domestic'
                       ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
-                      : marketCategory === 'rates'
+                      : marketCategory === 'crypto'
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                      : marketCategory === 'rates' || marketCategory === 'macro'
                       ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
                       : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
                   }`}>
-                    {marketCategory === 'domestic' ? 'KRX 실시간' : marketCategory === 'rates' ? '공식 고시' : '15~20분 지연 시세'}
+                    {marketCategory === 'domestic'
+                      ? 'KRX 실시간'
+                      : marketCategory === 'crypto'
+                      ? '실시간 호가 (Upbit)'
+                      : marketCategory === 'rates'
+                      ? '중앙은행 공식 고시'
+                      : marketCategory === 'macro'
+                      ? '세계은행/재무부 공식 통계'
+                      : '15~20분 지연 시세'}
                   </span>
                 </div>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                  글로벌 주요 지수 및 환율/금리 현황
+                <p className="text-[11px] tablet:text-[12.5px] text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-1 leading-normal">
+                  한국·글로벌 주식, 가상자산, 원자재, 환율, 금리 및 거시경제 지표 통합 현황
                 </p>
               </div>
             </div>
 
             {/* Controls: Category Selector Tabs + Refresh */}
-            <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-              <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 overflow-x-auto scrollbar-none text-xs font-semibold">
+            <div className="flex items-center gap-2 max-w-full overflow-hidden">
+              <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 overflow-x-auto scrollbar-none text-xs tablet:text-[13px] font-semibold max-w-full">
                 {[
                   { key: 'domestic', label: '국내 (KOR)' },
                   { key: 'us', label: '미국 (USA)' },
                   { key: 'asia', label: '아시아 (Asia)' },
                   { key: 'europe', label: '유럽 (Europe)' },
+                  { key: 'crypto', label: '가상자산 (Crypto)' },
+                  { key: 'commodity', label: '원자재 (Commodity)' },
                   { key: 'forex', label: '환율 (Forex)' },
-                  { key: 'rates', label: '금리 (Rates)' },
+                  { key: 'rates', label: '금리/채권 (Rates)' },
+                  { key: 'macro', label: '거시경제 (Macro)' },
                 ].map(cat => (
                   <button
                     key={cat.key}
                     onClick={() => setMarketCategory(cat.key as GlobalMarketCategory)}
-                    className={`px-2.5 py-1.5 rounded-lg transition-all whitespace-nowrap cursor-pointer ${
+                    className={`px-2.5 tablet:px-3 py-1.5 tablet:py-1.5 rounded-lg transition-all whitespace-nowrap cursor-pointer ${
                       marketCategory === cat.key
                         ? 'bg-white dark:bg-[#131722] text-rose-600 dark:text-rose-400 font-bold shadow-xs'
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
@@ -682,46 +779,46 @@ export const HomeView: React.FC = () => {
                 }}
                 disabled={isGlobalLoading}
                 title="데이터 새로고침"
-                className="p-2 rounded-xl text-slate-500 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer shrink-0"
+                className="p-2 tablet:p-2.5 rounded-xl text-slate-500 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer shrink-0"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${isGlobalLoading ? 'animate-spin text-rose-500' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 tablet:w-4 tablet:h-4 ${isGlobalLoading ? 'animate-spin text-rose-500' : ''}`} />
               </button>
             </div>
           </div>
 
           {/* Tab 1: Domestic Market 6 Core Cards (Preserving existing layout & features) */}
           {marketCategory === 'domestic' && (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 divide-y md:divide-y-0 lg:divide-x divide-slate-100 dark:divide-slate-800">
+            <div className="grid grid-cols-2 md:grid-cols-3 tablet-p:grid-cols-3 tablet-l:grid-cols-6 lg:grid-cols-6 divide-y md:divide-y-0 lg:divide-x tablet-l:divide-x divide-slate-100 dark:divide-slate-800">
               {/* 1. 코스피 (Clickable Interactive Card) */}
               <div 
                 onClick={() => navigateToIndex('KOSPI')}
                 role="button"
                 tabIndex={0}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigateToIndex('KOSPI'); } }}
-                className="p-4 sm:p-5 flex flex-col justify-between cursor-pointer group hover:bg-slate-50/90 dark:hover:bg-slate-800/50 transition-all select-none relative"
+                className="p-4 sm:p-5 tablet:p-4.5 flex flex-col justify-between cursor-pointer group hover:bg-slate-50/90 dark:hover:bg-slate-800/50 transition-all select-none relative"
                 title="코스피 상세 지수 차트 보기"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300 group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors">코스피</span>
-                    <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-bold">KOSPI</span>
+                    <span className="text-xs tablet:text-[14px] font-bold text-slate-700 dark:text-slate-300 group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors whitespace-nowrap">코스피</span>
+                    <span className="text-[10px] tablet:text-[11px] font-mono px-1 py-0.2 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 font-bold tabular-nums">KOSPI</span>
                   </div>
-                  <div className="flex items-center gap-0.5 text-[11px] font-bold text-rose-500 opacity-80 sm:opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-0.5 text-[11px] tablet:text-[12px] font-bold text-rose-500 opacity-80 sm:opacity-0 group-hover:opacity-100 transition-opacity">
                     <span>차트</span>
                     <ChevronRight className="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition-transform" />
                   </div>
                 </div>
-                <div className="mt-2">
-                  <div className="text-2xl sm:text-[26px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors">
+                <div className="mt-2 tablet:mt-2.5">
+                  <div className="text-2xl sm:text-[26px] tablet:text-[21px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors tabular-nums whitespace-nowrap">
                     {kospi.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </div>
-                  <div className="mt-1">
+                  <div className="mt-1 tablet:mt-1.5">
                     <PriceBadge change={kospi.change} changePercent={kospi.changePercent} size="sm" />
                   </div>
                 </div>
-                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] tablet:text-[11.5px] text-slate-400 font-mono tabular-nums whitespace-nowrap">
                   <span>고 {kospi.high} / 저 {kospi.low}</span>
-                  <span className="text-[10px] text-slate-400">
+                  <span className="text-[10px] tablet:text-[11px] text-slate-400">
                     {kospi.lastUpdated ? kospi.lastUpdated.split(' ').slice(-1)[0] : '실시간'}
                   </span>
                 </div>
@@ -733,89 +830,89 @@ export const HomeView: React.FC = () => {
                 role="button"
                 tabIndex={0}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigateToIndex('KOSDAQ'); } }}
-                className="p-4 sm:p-5 flex flex-col justify-between cursor-pointer group hover:bg-slate-50/90 dark:hover:bg-slate-800/50 transition-all select-none relative"
+                className="p-4 sm:p-5 tablet:p-4.5 flex flex-col justify-between cursor-pointer group hover:bg-slate-50/90 dark:hover:bg-slate-800/50 transition-all select-none relative"
                 title="코스닥 상세 지수 차트 보기"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-bold text-slate-700 dark:text-slate-300 group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors">코스닥</span>
-                    <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold">KOSDAQ</span>
+                    <span className="text-xs tablet:text-[14px] font-bold text-slate-700 dark:text-slate-300 group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors whitespace-nowrap">코스닥</span>
+                    <span className="text-[10px] tablet:text-[11px] font-mono px-1 py-0.2 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold tabular-nums">KOSDAQ</span>
                   </div>
-                  <div className="flex items-center gap-0.5 text-[11px] font-bold text-rose-500 opacity-80 sm:opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-0.5 text-[11px] tablet:text-[12px] font-bold text-rose-500 opacity-80 sm:opacity-0 group-hover:opacity-100 transition-opacity">
                     <span>차트</span>
                     <ChevronRight className="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition-transform" />
                   </div>
                 </div>
-                <div className="mt-2">
-                  <div className="text-2xl sm:text-[26px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors">
+                <div className="mt-2 tablet:mt-2.5">
+                  <div className="text-2xl sm:text-[26px] tablet:text-[21px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors tabular-nums whitespace-nowrap">
                     {kosdaq.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </div>
-                  <div className="mt-1">
+                  <div className="mt-1 tablet:mt-1.5">
                     <PriceBadge change={kosdaq.change} changePercent={kosdaq.changePercent} size="sm" />
                   </div>
                 </div>
-                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] tablet:text-[11.5px] text-slate-400 font-mono tabular-nums whitespace-nowrap">
                   <span>고 {kosdaq.high} / 저 {kosdaq.low}</span>
-                  <span className="text-[10px] text-slate-400">
+                  <span className="text-[10px] tablet:text-[11px] text-slate-400">
                     {kosdaq.lastUpdated ? kosdaq.lastUpdated.split(' ').slice(-1)[0] : '실시간'}
                   </span>
                 </div>
               </div>
 
               {/* 3. 원/달러 환율 */}
-              <div className="p-4 sm:p-5 flex flex-col justify-between">
+              <div className="p-4 sm:p-5 tablet:p-4.5 flex flex-col justify-between">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-500 dark:text-slate-400">원/달러 환율</span>
-                  <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">USD/KRW</span>
+                  <span className="text-xs tablet:text-[14px] font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">원/달러 환율</span>
+                  <span className="text-[10px] tablet:text-[11px] font-mono px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">USD/KRW</span>
                 </div>
-                <div className="mt-2">
-                  <div className="text-2xl sm:text-[26px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight">
+                <div className="mt-2 tablet:mt-2.5">
+                  <div className="text-2xl sm:text-[26px] tablet:text-[21px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight tabular-nums whitespace-nowrap">
                     {exchangeRate.rate.toFixed(2)}
-                    <span className="text-xs font-normal text-slate-400 ml-1">원</span>
+                    <span className="text-xs tablet:text-[12px] font-normal text-slate-400 ml-1">원</span>
                   </div>
-                  <div className="mt-1">
+                  <div className="mt-1 tablet:mt-1.5">
                     <PriceBadge change={exchangeRate.change} changePercent={exchangeRate.changePercent} size="sm" />
                   </div>
                 </div>
-                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] tablet:text-[11.5px] text-slate-400 font-mono tabular-nums whitespace-nowrap">
                   <span>고 {exchangeRate.high}</span>
                   <span>저 {exchangeRate.low}</span>
                 </div>
               </div>
 
               {/* 4. 총 거래대금 */}
-              <div className="p-4 sm:p-5 flex flex-col justify-between">
+              <div className="p-4 sm:p-5 tablet:p-4.5 flex flex-col justify-between">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-500 dark:text-slate-400">총 거래대금</span>
-                  <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">KRX</span>
+                  <span className="text-xs tablet:text-[14px] font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">총 거래대금</span>
+                  <span className="text-[10px] tablet:text-[11px] font-mono px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">KRX</span>
                 </div>
-                <div className="mt-2">
-                  <div className="text-2xl sm:text-[26px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight">
+                <div className="mt-2 tablet:mt-2.5">
+                  <div className="text-2xl sm:text-[26px] tablet:text-[21px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight tabular-nums whitespace-nowrap">
                     {totalTradingValue}
-                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 ml-1">조 원</span>
+                    <span className="text-xs tablet:text-[12px] font-bold text-slate-500 dark:text-slate-400 ml-1">조 원</span>
                   </div>
-                  <div className="text-xs font-medium text-slate-500 dark:text-slate-400 mt-1">
+                  <div className="text-xs tablet:text-[12px] font-medium text-slate-500 dark:text-slate-400 mt-1 whitespace-nowrap">
                     유동성 풍부 국면
                   </div>
                 </div>
-                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] tablet:text-[11.5px] text-slate-400 font-mono tabular-nums whitespace-nowrap">
                   <span>코스피 {kospi.tradingValue}조</span>
                   <span>코스닥 {kosdaq.tradingValue}조</span>
                 </div>
               </div>
 
               {/* 5. 상승 종목 수 */}
-              <div className="p-4 sm:p-5 flex flex-col justify-between">
+              <div className="p-4 sm:p-5 tablet:p-4.5 flex flex-col justify-between">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-500 dark:text-slate-400">상승 종목 수</span>
-                  <span className="text-xs font-mono font-bold text-rose-500">▲ ADV</span>
+                  <span className="text-xs tablet:text-[14px] font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">상승 종목 수</span>
+                  <span className="text-xs tablet:text-[12px] font-mono font-bold text-rose-500">▲ ADV</span>
                 </div>
-                <div className="mt-2">
-                  <div className="text-2xl sm:text-[26px] font-black font-mono tracking-tight text-rose-500 leading-tight">
+                <div className="mt-2 tablet:mt-2.5">
+                  <div className="text-2xl sm:text-[26px] tablet:text-[21px] font-black font-mono tracking-tight text-rose-500 leading-tight tabular-nums whitespace-nowrap">
                     {totalAdvanceCount.toLocaleString()}
-                    <span className="text-xs font-medium text-slate-400 ml-1">종목</span>
+                    <span className="text-xs tablet:text-[12px] font-medium text-slate-400 ml-1">종목</span>
                   </div>
-                  <div className="text-xs font-medium text-rose-500/80 mt-1">
+                  <div className="text-xs tablet:text-[11.5px] font-medium text-rose-500/80 mt-1 tabular-nums whitespace-nowrap">
                     코스피 {kospi.advanceCount} / 코스닥 {kosdaq.advanceCount}
                   </div>
                 </div>
@@ -830,17 +927,17 @@ export const HomeView: React.FC = () => {
               </div>
 
               {/* 6. 하락 종목 수 */}
-              <div className="p-4 sm:p-5 flex flex-col justify-between">
+              <div className="p-4 sm:p-5 tablet:p-4.5 flex flex-col justify-between">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-500 dark:text-slate-400">하락 종목 수</span>
-                  <span className="text-xs font-mono font-bold text-blue-500">▼ DEC</span>
+                  <span className="text-xs tablet:text-[14px] font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">하락 종목 수</span>
+                  <span className="text-xs tablet:text-[12px] font-mono font-bold text-blue-500">▼ DEC</span>
                 </div>
-                <div className="mt-2">
-                  <div className="text-2xl sm:text-[26px] font-black font-mono tracking-tight text-blue-500 leading-tight">
+                <div className="mt-2 tablet:mt-2.5">
+                  <div className="text-2xl sm:text-[26px] tablet:text-[21px] font-black font-mono tracking-tight text-blue-500 leading-tight tabular-nums whitespace-nowrap">
                     {totalDeclineCount.toLocaleString()}
-                    <span className="text-xs font-medium text-slate-400 ml-1">종목</span>
+                    <span className="text-xs tablet:text-[12px] font-medium text-slate-400 ml-1">종목</span>
                   </div>
-                  <div className="text-xs font-medium text-blue-500/80 mt-1">
+                  <div className="text-xs tablet:text-[11.5px] font-medium text-blue-500/80 mt-1 tabular-nums whitespace-nowrap">
                     코스피 {kospi.declineCount} / 코스닥 {kosdaq.declineCount}
                   </div>
                 </div>
@@ -877,7 +974,7 @@ export const HomeView: React.FC = () => {
                   <p className="text-xs text-slate-400">글로벌 시장 데이터(15~20분 지연 공시 시세)를 불러오는 중입니다...</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 sm:gap-4 p-4 sm:p-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 tablet-p:grid-cols-2 tablet-l:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-3.5 sm:gap-4 p-4 sm:p-5 tablet:p-4">
                   {(globalSummary?.groups?.[marketCategory as keyof typeof globalSummary.groups] || []).map(item => (
                     <div
                       key={item.id}
@@ -887,75 +984,112 @@ export const HomeView: React.FC = () => {
                         {/* Header: Name, Symbol, Delay Pill */}
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <h3 className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate">
+                            <h3 className="font-bold text-xs sm:text-sm tablet:text-[15px] text-slate-900 dark:text-white truncate whitespace-nowrap">
                               {item.name}
                             </h3>
                             <div className="flex items-center gap-1.5 mt-0.5">
-                              <span className="font-mono text-[10px] font-bold px-1.5 py-0.2 rounded bg-slate-200/70 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                              <span className="font-mono text-[10px] tablet:text-[12px] font-bold px-1.5 py-0.2 rounded bg-slate-200/70 dark:bg-slate-800 text-slate-600 dark:text-slate-400 tabular-nums">
                                 {item.symbol}
                               </span>
-                              <span className="text-[10px] text-slate-400">
+                              <span className="text-[10px] tablet:text-[11.5px] text-slate-400">
                                 {item.currency}
                               </span>
                             </div>
                           </div>
 
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 ${
-                            item.delayStatus === 'official_notice'
-                              ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
-                              : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
-                          }`}>
-                            {item.delayLabel}
-                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span className={`text-[10px] tablet:text-[11px] font-bold px-1.5 tablet:px-2 py-0.5 rounded whitespace-nowrap ${
+                              item.delayStatus === 'realtime'
+                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                                : item.delayStatus === 'official_notice' || item.delayStatus === 'annual' || item.delayStatus === 'monthly'
+                                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
+                                : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
+                            }`}>
+                              {item.delayLabel}
+                            </span>
+                            <button
+                              type="button"
+                              title={isWatchlisted(item.symbol) ? '관심종목 등록됨' : '관심종목 추가'}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (isWatchlisted(item.symbol)) {
+                                  toggleWatchlist(item.symbol);
+                                } else {
+                                  addToWatchlist(item.symbol, {
+                                    name: item.name,
+                                    price: item.value,
+                                    change: item.change,
+                                    changePercent: item.changePercent,
+                                    market: (item.category === 'rates' ? 'INDEX' : (item.category === 'forex' ? 'KR' : (item.category === 'crypto' ? 'COIN' : 'US'))) as any,
+                                    currency: (item.currency === 'KRW' ? 'KRW' : 'USD') as any,
+                                  });
+                                }
+                              }}
+                              className={`p-1 tablet:p-1.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer ${
+                                isWatchlisted(item.symbol) ? 'text-amber-500' : 'text-slate-400 hover:text-rose-500'
+                              }`}
+                            >
+                              <Bookmark className="w-3.5 h-3.5 tablet:w-4 tablet:h-4" fill={isWatchlisted(item.symbol) ? 'currentColor' : 'none'} />
+                            </button>
+                          </div>
                         </div>
 
                         {/* Values or Error State */}
                         {item.status === 'error' ? (
-                          <div className="my-4 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/40 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+                          <div className="my-4 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/40 flex items-center gap-2 text-xs tablet:text-[13px] text-amber-700 dark:text-amber-300">
                             <AlertCircle className="w-4 h-4 shrink-0" />
                             <span>{item.errorMessage || '해당 데이터 일시 지연 상태'}</span>
                           </div>
                         ) : (
-                          <div className="mt-3 flex items-baseline justify-between gap-2">
-                            <div>
-                              <div className="text-xl sm:text-2xl font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight">
-                                {item.displayValue ? item.displayValue : (
-                                  <>
-                                    {item.value.toLocaleString(undefined, {
-                                      minimumFractionDigits: item.category === 'rates' ? 3 : 2,
-                                      maximumFractionDigits: item.category === 'rates' ? 3 : 2
-                                    })}
-                                    {item.unit && <span className="text-xs font-normal text-slate-400 ml-1">{item.unit}</span>}
-                                  </>
-                                )}
+                          <div className="mt-3 tablet:mt-3.5 flex flex-col justify-between">
+                            <div className="flex items-baseline justify-between gap-2">
+                              <div>
+                                <div className="text-xl sm:text-2xl tablet:text-[21px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight tabular-nums whitespace-nowrap">
+                                  {item.displayValue ? item.displayValue : (
+                                    <>
+                                      {item.value.toLocaleString(undefined, {
+                                        minimumFractionDigits: item.category === 'rates' ? 3 : 2,
+                                        maximumFractionDigits: item.category === 'rates' ? 3 : 2
+                                      })}
+                                      {item.unit && <span className="text-xs tablet:text-[12px] font-normal text-slate-400 ml-1">{item.unit}</span>}
+                                    </>
+                                  )}
+                                </div>
+                                <div className="mt-1.5 flex items-center gap-1.5">
+                                  {item.change === 0 && (item.category === 'rates' || item.category === 'macro') ? (
+                                    <span className="text-[11px] tablet:text-[12px] font-bold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">
+                                      변동 없음
+                                    </span>
+                                  ) : (
+                                    <PriceBadge change={item.change} changePercent={item.changePercent} size="sm" />
+                                  )}
+                                </div>
                               </div>
-                              <div className="mt-1.5 flex items-center gap-1.5">
-                                {item.change === 0 && item.category === 'rates' ? (
-                                  <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">
-                                    동결 (변동 없음)
-                                  </span>
-                                ) : (
-                                  <PriceBadge change={item.change} changePercent={item.changePercent} size="sm" />
-                                )}
-                              </div>
+
+                              {/* Sparkline (if historical data exists) */}
+                              {item.sparkline && item.sparkline.length >= 2 && (
+                                <div className="shrink-0 pt-1">
+                                  <MiniSparkline data={item.sparkline} isUp={item.change >= 0} width={76} height={28} />
+                                </div>
+                              )}
                             </div>
 
-                            {/* Sparkline (if historical data exists) */}
-                            {item.sparkline && item.sparkline.length >= 2 && (
-                              <div className="shrink-0 pt-1">
-                                <MiniSparkline data={item.sparkline} isUp={item.change >= 0} width={76} height={28} />
-                              </div>
+                            {/* Additional notes/context */}
+                            {item.notes && (
+                              <p className="text-[11px] tablet:text-[12px] text-slate-500 dark:text-slate-400 mt-2 line-clamp-1 bg-slate-100/60 dark:bg-slate-800/50 px-2 py-1 rounded">
+                                {item.notes}
+                              </p>
                             )}
                           </div>
                         )}
                       </div>
 
                       {/* Footer: Provider and Source Timestamp */}
-                      <div className="mt-3 pt-2.5 border-t border-slate-200/60 dark:border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400 gap-2">
+                      <div className="mt-3 pt-2.5 border-t border-slate-200/60 dark:border-slate-800/80 flex items-center justify-between text-[10px] tablet:text-[11px] text-slate-400 gap-2">
                         <span className="truncate" title={item.provider}>
                           {item.provider}
                         </span>
-                        <span className="font-mono shrink-0">
+                        <span className="font-mono shrink-0 tabular-nums">
                           {item.marketTime ? item.marketTime.replace(' (KST)', '') : (item.lastUpdated ? item.lastUpdated.replace(' (KST)', '') : '')}
                         </span>
                       </div>
@@ -967,18 +1101,26 @@ export const HomeView: React.FC = () => {
           )}
 
           {/* Section Footer: Attribution & Principles Notice */}
-          <div className="px-4 py-2.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-900/30 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-[11px] text-slate-400">
+          <div className="px-4 tablet:px-5 py-2.5 tablet:py-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-900/30 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-[11px] tablet:text-[12px] text-slate-400">
             <div className="flex items-center gap-1.5 min-w-0">
-              <Info className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <Info className="w-3.5 h-3.5 tablet:w-4 tablet:h-4 text-slate-400 shrink-0" />
               <span className="truncate">
-                {marketCategory === 'domestic'
-                  ? '국내 데이터: KRX 한국거래소 · 키움 Open API 및 야후 파이낸스 실시간/준실시간 연동'
-                  : '해외 데이터: Yahoo Finance 공개 API · 한국은행(BOK) · 미국 연방준비제도(FRB) 공시 (15~20분 지연, 키움 API 미사용)'}
+                {marketCategory === 'domestic' && '국내 데이터: KRX 한국거래소 · 키움 Open API 및 야후 파이낸스 실시간/준실시간 연동'}
+                {marketCategory === 'crypto' && '가상자산 데이터: 업비트(Upbit) 공개 호가창 API 및 바이낸스(Binance) 공개 시세 (실시간)'}
+                {marketCategory === 'commodity' && '원자재 데이터: COMEX / NYMEX / ICE 국제 원자재 선물 공개 지연 시세 (15분 지연)'}
+                {marketCategory === 'macro' && '거시경제 데이터: 세계은행(World Bank) Open Data (CC-BY 4.0) & 미국 재무부(U.S. Treasury) 공식 재정 통계'}
+                {marketCategory === 'forex' && '환율 데이터: 유럽중앙은행(Frankfurter ECB) 공식 기준환율 및 FX 오픈 데이터'}
+                {marketCategory === 'rates' && '금리/채권 데이터: 한국은행(BOK) · 미국 연준(FOMC) 공식 기준금리 및 CBOE 국채수익률'}
+                {['us', 'asia', 'europe'].includes(marketCategory) && '해외 증시 데이터: 각국 주요 거래소(S&P, 나스닥, 도쿄, 상하이, 홍콩, 독일, 유로스톡스) 15~20분 지연 공시 시세'}
               </span>
             </div>
-            {globalLastFetched && marketCategory !== 'domestic' && (
-              <div className="font-mono text-[10px] text-slate-400 shrink-0">
+            {globalLastFetched && marketCategory !== 'domestic' ? (
+              <div className="font-mono text-[10px] tablet:text-[11px] text-slate-400 shrink-0">
                 조회 시각: {globalLastFetched}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 shrink-0 font-mono text-[10px] tablet:text-[11px]">
+                <span>실시간 수신</span>
               </div>
             )}
           </div>
@@ -1466,7 +1608,7 @@ export const HomeView: React.FC = () => {
                     <span aria-hidden="true">·</span>
                     <span className="text-amber-500 font-semibold">{post.author.badge}</span>
                     <span aria-hidden="true">·</span>
-                    <span>{post.createdAt}</span>
+                    <span className="font-mono text-[11px] text-slate-400">{formatCommunityTime(post.createdAt)}</span>
 
                     {post.symbolName && (
                       <span className="font-semibold text-rose-500 ml-auto text-[11px]">
@@ -1502,6 +1644,7 @@ export const HomeView: React.FC = () => {
           </div>
         </div>
       </section>
+      </div>
 
       {/* 시장 이벤트 상세 모달 */}
       <MarketEventDetailModal

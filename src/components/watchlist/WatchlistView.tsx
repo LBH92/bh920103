@@ -14,11 +14,14 @@ import {
   Search,
   GripVertical,
   RefreshCw,
-  Zap
+  Zap,
+  Bell
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { Stock } from '../../types';
 import { PriceBadge } from '../common/PriceBadge';
 import { MockTradeModal } from '../portfolio/MockTradeModal';
+import { WatchlistNotificationSettingsModal } from '../alerts/WatchlistNotificationSettingsModal';
 import { useStockPurchases } from '../../hooks/useStockPurchases';
 import { WatchlistBuyEntry } from '../../types';
 
@@ -26,6 +29,7 @@ export const WatchlistView: React.FC = () => {
   const { 
     stocks, 
     watchlist, 
+    watchlistDetails,
     toggleWatchlist, 
     reorderWatchlist, 
     navigateToStock, 
@@ -38,12 +42,12 @@ export const WatchlistView: React.FC = () => {
     refreshWatchlistQuotes
   } = useApp();
 
-  const { purchases, savePurchases } = useStockPurchases(user?.id);
+  const { purchases } = useStockPurchases(user?.id);
 
   // Helper for stats
   const getPurchasesStats = (entries: WatchlistBuyEntry[], currentPrice: number) => {
-    const totalQty = entries.reduce((acc, cur) => acc + cur.quantity, 0);
-    const totalCost = entries.reduce((acc, cur) => acc + cur.price * cur.quantity, 0);
+    const totalQty = entries.reduce((acc: number, cur: WatchlistBuyEntry) => acc + cur.quantity, 0);
+    const totalCost = entries.reduce((acc: number, cur: WatchlistBuyEntry) => acc + cur.price * cur.quantity, 0);
     const avgPrice = totalQty > 0 ? Math.round(totalCost / totalQty) : 0;
     const evaluationAmount = totalQty * currentPrice;
     const profit = evaluationAmount - totalCost;
@@ -51,10 +55,12 @@ export const WatchlistView: React.FC = () => {
     return { totalQty, avgPrice, totalCost, evaluationAmount, profit, profitRate };
   };
 
+
   // Current timestamp for last update time
   const [lastUpdateTime, setLastUpdateTime] = useState(() => new Date().toLocaleTimeString('ko-KR'));
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedTradeStock, setSelectedTradeStock] = useState<typeof stocks[0] | null>(null);
+  const [isNotificationSettingsOpen, setIsNotificationSettingsOpen] = useState(false);
 
   useEffect(() => {
     if (watchlist.length > 0) {
@@ -80,9 +86,7 @@ export const WatchlistView: React.FC = () => {
   }, []);
 
   // Filter and preserve order from user's watchlist array
-  const watchlistStocks = watchlist
-    .map(symbol => stocks.find(s => s.symbol === symbol))
-    .filter((s): s is typeof stocks[0] => Boolean(s));
+  const watchlistStocks = watchlistDetails;
 
   // Compute portfolio simulation statistics
   const totalValue = watchlistStocks.reduce((acc, cur) => acc + cur.price * 10, 0);
@@ -161,7 +165,16 @@ export const WatchlistView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
+        <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+          <button
+            onClick={() => setIsNotificationSettingsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-xs transition-all cursor-pointer shadow-xs"
+            title="관심종목 급변 브라우저 알림 설정 (Firestore 저장)"
+          >
+            <Bell className="w-3.5 h-3.5 text-rose-500" />
+            <span>급변 알림 설정</span>
+          </button>
+
           <button
             onClick={handleManualRefresh}
             disabled={isRefreshing}
@@ -249,7 +262,7 @@ export const WatchlistView: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-sans">
-                {watchlistStocks.map((stock, idx) => {
+                {watchlistStocks.map((stock: Stock, idx: number) => {
                   const isUp = stock.change >= 0;
                   const stats = getPurchasesStats(purchases[stock.symbol] || [], stock.price);
                   return (
@@ -371,13 +384,14 @@ export const WatchlistView: React.FC = () => {
                     </tr>
                   );
                 })}
+
               </tbody>
             </table>
           </div>
 
           {/* Mobile Card List View */}
           <div className="divide-y divide-slate-100 dark:divide-slate-800 md:hidden font-sans">
-            {watchlistStocks.map((stock, idx) => {
+            {watchlistStocks.map((stock: Stock, idx: number) => {
               const isUp = stock.change >= 0;
               return (
                 <div
@@ -457,6 +471,7 @@ export const WatchlistView: React.FC = () => {
                 </div>
               );
             })}
+
           </div>
         </div>
       ) : (
@@ -491,6 +506,12 @@ export const WatchlistView: React.FC = () => {
           initialType="BUY"
         />
       )}
+
+      {/* Watchlist Rapid Change Notification Settings Modal (Firestore persistent) */}
+      <WatchlistNotificationSettingsModal
+        isOpen={isNotificationSettingsOpen}
+        onClose={() => setIsNotificationSettingsOpen(false)}
+      />
     </div>
   );
 };

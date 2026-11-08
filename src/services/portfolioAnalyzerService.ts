@@ -24,6 +24,7 @@ export const portfolioAnalyzerService = {
       unrealizedPnL += pnl;
 
       portfolioHoldings.push({
+        id: h.id,
         symbol: h.symbol,
         name: h.name,
         quantity: h.quantity,

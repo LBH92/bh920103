@@ -58,13 +58,23 @@ export class RealStockRepository implements IStockRepository {
         throw new Error(`서버 응답 오류 (HTTP ${res.status})`);
       }
 
-      const data: Stock[] = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        stockCache.set(cacheKey, data, 5000);
-        return data;
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const text = await res.text();
+        try {
+          const data: Stock[] = JSON.parse(text);
+          if (Array.isArray(data) && data.length > 0) {
+            stockCache.set(cacheKey, data, 5000);
+            return data;
+          }
+        } catch (parseErr) {
+          console.warn('[RealStockRepository] /api/stocks JSON parse error, using fallback');
+        }
+      } else {
+        console.warn('[RealStockRepository] /api/stocks non-JSON response, using fallback');
       }
     } catch (err) {
-      console.error('[RealStockRepository] /api/stocks fetch failed:', err);
+      console.warn('[RealStockRepository] /api/stocks fetch failed:', err);
     }
 
     // Fallback if network or server error
@@ -84,12 +94,20 @@ export class RealStockRepository implements IStockRepository {
     try {
       const res = await fetch(`/api/stocks/${symbol}`);
       if (res.ok) {
-        const data: Stock = await res.json();
-        stockCache.set(cacheKey, data, 5000);
-        return data;
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const text = await res.text();
+          try {
+            const data: Stock = JSON.parse(text);
+            if (data && data.symbol) {
+              stockCache.set(cacheKey, data, 5000);
+              return data;
+            }
+          } catch {}
+        }
       }
     } catch (err) {
-      console.error(`[RealStockRepository] /api/stocks/${symbol} failed:`, err);
+      console.warn(`[RealStockRepository] /api/stocks/${symbol} failed:`, err);
     }
 
     // Fallback to all stocks cache
@@ -105,12 +123,18 @@ export class RealStockRepository implements IStockRepository {
     try {
       const res = await fetch(`/api/stocks/quotes?symbols=${encodeURIComponent(symbols.join(','))}`);
       if (res.ok) {
-        const data: Stock[] = await res.json();
-        if (Array.isArray(data) && data.length > 0) {
-          for (const s of data) {
-            stockCache.set(`real_stock_${s.symbol}`, s, 5000);
-          }
-          return data;
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const text = await res.text();
+          try {
+            const data: Stock[] = JSON.parse(text);
+            if (Array.isArray(data) && data.length > 0) {
+              for (const s of data) {
+                stockCache.set(`real_stock_${s.symbol}`, s, 5000);
+              }
+              return data;
+            }
+          } catch {}
         }
       }
     } catch (err) {
@@ -132,19 +156,24 @@ export class RealStockRepository implements IStockRepository {
       const url = `/api/stocks/search?q=${encodeURIComponent(q)}${options.market && options.market !== 'ALL' ? `&market=${encodeURIComponent(options.market)}` : ''}&limit=${options.limit || 12}`;
       const res = await fetch(url);
       if (res.ok) {
-        const results: Stock[] = await res.json();
-        if (Array.isArray(results)) {
-          return results;
+        try {
+          const results: Stock[] = await res.json();
+          if (Array.isArray(results)) {
+            return results;
+          }
+        } catch (parseErr) {
+          console.error('[RealStockRepository] Search API JSON parse error.');
         }
       } else {
-        console.warn(`[RealStockRepository] Search API returned error: ${res.status}`);
+        const text = await res.text();
+        console.warn(`[RealStockRepository] Search API returned error ${res.status}: ${text.substring(0, 100)}`);
       }
     } catch (err) {
       console.error('[RealStockRepository] /api/stocks/search failed:', err);
     }
 
     // 3. Score and prioritize matches
-    if (options.market === 'US') {
+    if (options.market === 'US' || options.market === 'COIN') {
       return []; // Return empty instead of falling back to domestic data
     }
 
@@ -285,15 +314,27 @@ export class RealStockRepository implements IStockRepository {
     try {
       const res = await fetch('/api/indices');
       if (res.ok) {
-        const data: StockIndex[] = await res.json();
-        stockCache.set(cacheKey, data, 5000);
-        return data;
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const text = await res.text();
+          try {
+            const data: StockIndex[] = JSON.parse(text);
+            if (Array.isArray(data) && data.length > 0) {
+              stockCache.set(cacheKey, data, 5000);
+              return data;
+            }
+          } catch (e) {
+            console.warn('[RealStockRepository] getIndices parse error.');
+          }
+        } else {
+          console.warn('[RealStockRepository] getIndices non-JSON response, using fallback.');
+        }
       }
     } catch (err) {
-      console.error('[RealStockRepository] getIndices failed:', err);
+      console.warn('[RealStockRepository] getIndices failed:', err);
     }
 
-    return INITIAL_INDICES;
+    return stockCache.get<StockIndex[]>(cacheKey) || INITIAL_INDICES;
   }
 
   /**
@@ -307,15 +348,27 @@ export class RealStockRepository implements IStockRepository {
     try {
       const res = await fetch('/api/exchange-rate');
       if (res.ok) {
-        const data: ExchangeRate = await res.json();
-        stockCache.set(cacheKey, data, 6000);
-        return data;
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const text = await res.text();
+          try {
+            const data: ExchangeRate = JSON.parse(text);
+            if (data && typeof data.rate === 'number' && !isNaN(data.rate)) {
+              stockCache.set(cacheKey, data, 5000);
+              return data;
+            }
+          } catch (e) {
+            console.warn('[RealStockRepository] getExchangeRate parse error.');
+          }
+        } else {
+          console.warn('[RealStockRepository] getExchangeRate non-JSON response, using fallback.');
+        }
       }
     } catch (err) {
-      console.error('[RealStockRepository] getExchangeRate failed:', err);
+      console.warn('[RealStockRepository] getExchangeRate failed:', err);
     }
 
-    return INITIAL_EXCHANGE_RATE;
+    return stockCache.get<ExchangeRate>(cacheKey) || INITIAL_EXCHANGE_RATE;
   }
 
   /**
@@ -325,12 +378,17 @@ export class RealStockRepository implements IStockRepository {
     this.subscribers.add(callback);
 
     if (!this.pollIntervalId) {
+      let isPolling = false;
       this.pollIntervalId = setInterval(async () => {
+        if (isPolling) return;
+        isPolling = true;
         try {
           const freshStocks = await this.getAllStocks(true);
           this.subscribers.forEach(cb => cb(freshStocks));
-        } catch {}
-      }, 10000);
+        } catch {} finally {
+          isPolling = false;
+        }
+      }, 15000);
     }
 
     return () => {

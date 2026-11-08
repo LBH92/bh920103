@@ -13,7 +13,8 @@ import {
   ArrowDownRight,
   X,
   Flame,
-  Globe
+  Globe,
+  BarChart2
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Stock } from '../../types';
@@ -23,11 +24,12 @@ import { matchHangulSearch } from '../../utils/hangul';
 import { isSurgeGain, isSurgeLoss, isVolumeSurge } from '../../utils/marketThresholds';
 import { MarketHeatmap } from './MarketHeatmap';
 import { formatTradingValue } from '../../utils/format';
+import { TabletStockTradingView } from './TabletStockTradingView';
 
 export const StockListView: React.FC = () => {
   const { stocks, navigateToStock, watchlist, toggleWatchlist, isWatchlisted, setActiveTab } = useApp();
 
-  const [viewMode, setViewMode] = useState<'list' | 'heatmap'>('list');
+  const [viewMode, setViewMode] = useState<'trading' | 'list' | 'heatmap'>('trading');
   const [currentMarketTab, setCurrentMarketTab] = useState<'ALL' | 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
@@ -92,7 +94,7 @@ export const StockListView: React.FC = () => {
           <button
             key={tab}
             onClick={() => setCurrentMarketTab(tab)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${
+            className={`px-4 py-1.5 rounded-lg text-sm tablet:text-[13px] font-bold transition-all whitespace-nowrap ${
               currentMarketTab === tab
                 ? 'bg-white dark:bg-slate-700 text-rose-600 dark:text-rose-400 shadow-sm'
                 : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
@@ -106,18 +108,30 @@ export const StockListView: React.FC = () => {
       {/* Page Title & Search Bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-black text-slate-900 dark:text-white">
+          <h2 className="text-2xl tablet:text-[21px] font-black text-slate-900 dark:text-white truncate">
             {currentMarketTab === 'ALL' ? '종합 시장 시세' : currentMarketTab === 'KOSPI' ? '코스피 시장' : currentMarketTab === 'KOSDAQ' ? '코스닥 시장' : currentMarketTab === 'US' ? '미국 시장' : '가상자산 시장'}
           </h2>
-          <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+          <p className="text-xs sm:text-sm tablet:text-[13px] text-slate-500 dark:text-slate-400 mt-0.5">
             실시간 시장 시세 및 재무 지표를 탐색하세요.
           </p>
         </div>
 
         {/* Actions & Search */}
         <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
-          {/* View Mode Toggle: List vs Heatmap */}
+          {/* View Mode Toggle: Trading vs List vs Heatmap */}
           <div className="flex items-center bg-slate-100 dark:bg-slate-800/80 rounded-xl p-1 border border-slate-200/60 dark:border-slate-700/60 shrink-0">
+            <button
+              onClick={() => setViewMode('trading')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                viewMode === 'trading'
+                  ? 'bg-white dark:bg-slate-700 text-rose-600 dark:text-rose-400 shadow-xs'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+              title="업비트형 태블릿/PC 2열 거래 화면"
+            >
+              <BarChart2 className="w-3.5 h-3.5" />
+              <span>2열 거래화면</span>
+            </button>
             <button
               onClick={() => setViewMode('list')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
@@ -173,7 +187,9 @@ export const StockListView: React.FC = () => {
         </div>
       </div>
 
-      {viewMode === 'heatmap' ? (
+      {viewMode === 'trading' ? (
+        <TabletStockTradingView />
+      ) : viewMode === 'heatmap' ? (
         <MarketHeatmap />
       ) : (
         <>
@@ -386,59 +402,57 @@ export const StockListView: React.FC = () => {
                       <div className="flex items-center gap-2.5">
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="font-bold text-slate-900 dark:text-white group-hover:text-rose-500 transition-colors">
+                            <span className="font-bold text-slate-900 dark:text-white tablet:text-[14.5px] group-hover:text-rose-500 transition-colors whitespace-nowrap">
                               {stock.name}
                             </span>
-                            <span className="text-xs font-mono text-slate-400">
+                            <span className="text-xs tablet:text-[11.5px] font-mono tabular-nums text-slate-400">
                               {stock.symbol}
                             </span>
                             <MarketBadge market={stock.market} exchange={stock.exchange} />
 
                             {isSurgeGain(stock.changePercent) && (
-                              <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20">
+                              <span className="px-1.5 py-0.2 rounded text-[10px] tablet:text-[11px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 whitespace-nowrap">
                                 급등
                               </span>
                             )}
                             {isSurgeLoss(stock.changePercent) && (
-                              <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-blue-500/10 text-blue-500 border border-blue-500/20">
+                              <span className="px-1.5 py-0.2 rounded text-[10px] tablet:text-[11px] font-bold bg-blue-500/10 text-blue-500 border border-blue-500/20 whitespace-nowrap">
                                 급락
                               </span>
                             )}
                             {isVolumeSurge(stock.volumeRatio) && (
-                              <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                              <span className="px-1.5 py-0.2 rounded text-[10px] tablet:text-[11px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 whitespace-nowrap">
                                 거래급증
                               </span>
                             )}
                           </div>
-                          <span className="text-xs text-slate-400">{stock.sector}</span>
+                          <span className="text-xs tablet:text-[11.5px] text-slate-400 whitespace-nowrap">{stock.sector}</span>
                         </div>
                       </div>
                     </td>
                     <td className="py-3.5 px-4 text-right">
-                      <div className="font-bold font-mono text-slate-900 dark:text-white">
+                      <div className="font-bold font-mono tablet:text-[14px] text-slate-900 dark:text-white tabular-nums whitespace-nowrap">
                         {stock.price.toLocaleString()}원
                       </div>
                       <PriceBadge change={stock.change} changePercent={stock.changePercent} size="sm" />
                     </td>
-                    <td className="py-3.5 px-4 text-right font-mono text-xs text-slate-700 dark:text-slate-300">
+                    <td className="py-3.5 px-4 text-right font-mono text-xs tablet:text-[12px] tabular-nums whitespace-nowrap text-slate-700 dark:text-slate-300">
                       {stock.volume.toLocaleString()}주
                     </td>
-                    <td className="py-3.5 px-4 text-right font-mono text-xs">
+                    <td className="py-3.5 px-4 text-right font-mono text-xs tablet:text-[12px] tabular-nums whitespace-nowrap">
                       <span className={`font-bold ${stock.volumeRatio >= 200 ? 'text-amber-500' : 'text-slate-400'}`}>
                         {stock.volumeRatio}%
                       </span>
                     </td>
-                    <td className="py-3.5 px-4 text-right font-mono text-xs text-slate-700 dark:text-slate-300">
+                    <td className="py-3.5 px-4 text-right font-mono text-xs tablet:text-[12px] tabular-nums whitespace-nowrap text-slate-700 dark:text-slate-300">
                       {formatTradingValue(stock.tradingValue)}
-
-
                     </td>
-                    <td className="py-3.5 px-4 text-right font-mono text-xs text-slate-700 dark:text-slate-300">
+                    <td className="py-3.5 px-4 text-right font-mono text-xs tablet:text-[12px] tabular-nums whitespace-nowrap text-slate-700 dark:text-slate-300">
                       {stock.marketCap >= 10000
                         ? `${(stock.marketCap / 10000).toFixed(1)}조 원`
                         : `${stock.marketCap.toLocaleString()}억 원`}
                     </td>
-                    <td className="py-3.5 px-4 text-right text-xs font-mono">
+                    <td className="py-3.5 px-4 text-right text-xs tablet:text-[11.5px] font-mono tabular-nums whitespace-nowrap">
                       <div className={stock.foreignNetBuy >= 0 ? 'text-rose-500' : 'text-blue-500'}>
                         외: {stock.foreignNetBuy >= 0 ? '+' : ''}{stock.foreignNetBuy}억
                       </div>

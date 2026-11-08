@@ -292,11 +292,11 @@ export const LadderGame: React.FC = () => {
     if (!pathResults) return;
 
     const lines = [
-      '🎯 [Stock Insight 사다리타기 결과]',
+      '🎯 [병돌 인베스트먼트 사다리타기 결과]',
       '--------------------------------',
       ...pathResults.map(p => `• ${p.participant} ➔ ${p.result}`),
       '--------------------------------',
-      'Stock Insight에서 진행되었습니다.',
+      '병돌 인베스트먼트에서 진행되었습니다.',
     ];
 
     navigator.clipboard.writeText(lines.join('\n'));

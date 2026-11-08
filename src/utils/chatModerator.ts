@@ -1,5 +1,5 @@
 /**
- * Chat Moderation Utility for Stock Insight
+ * Chat Moderation Utility for 병돌 인베스트먼트
  * Includes bad words filter, anti-spam, and rate-limiting
  */
 

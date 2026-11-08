@@ -107,7 +107,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
               <div>
                 <div className="flex items-center gap-1.5">
                   <span className="font-black text-sm tracking-tight text-slate-900 dark:text-white">
-                    Stock Insight
+                    병돌 인베스트먼트
                   </span>
                   <span className="px-1.5 py-0.2 rounded text-[10px] font-black bg-rose-500/10 text-rose-500 border border-rose-500/20">
                     ADMIN

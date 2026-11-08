@@ -17,8 +17,10 @@ import {
   AlertTriangle,
   RefreshCw,
   LogIn,
-  ShieldCheck
+  ShieldCheck,
+  Calendar
 } from 'lucide-react';
+import { formatPostListTime, formatPostExactDateTime } from '../../utils/dateUtils';
 import { useApp } from '../../context/AppContext';
 import { CommunityPost, PostCategory } from '../../types';
 import { storageService } from '../../services/storageService';
@@ -501,8 +503,14 @@ export const CommunityView: React.FC = () => {
                           </span>
                         </div>
 
-                        <span className="text-[11px] text-slate-400 font-mono">
-                          · {post.createdAt || '방금 전'}
+                        <span 
+                          className="text-[11px] text-slate-400 font-mono"
+                          title={`작성일시: ${formatPostExactDateTime(post.createdAt, true)}${post.updatedAt && post.updatedAt !== post.createdAt ? `\n수정일시: ${formatPostExactDateTime(post.updatedAt, true)}` : ''}`}
+                        >
+                          · {formatPostListTime(post.createdAt)}
+                          {post.updatedAt && post.updatedAt !== post.createdAt && (
+                            <span className="ml-1 text-[10px] text-slate-400/80 font-sans">(수정됨)</span>
+                          )}
                         </span>
                       </div>
 

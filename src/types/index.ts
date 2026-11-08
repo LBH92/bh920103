@@ -24,15 +24,20 @@ export interface Stock {
   instNetBuy: number; // 기관 순매수 (억 원)
   candles: CandleData[];
   sparkline: number[];
-  currency?: 'KRW' | 'USD';
+  currency?: 'KRW' | 'USD' | 'USDT' | 'BTC';
   exchange?: string;
   delayStatus?: string;
   delayLabel?: string;
   marketSession?: 'REGULAR' | 'PRE' | 'POST' | 'CLOSED';
   lastUpdated?: string;
-  dataSource?: 'kiwoom' | 'yahoo' | 'mock';
+  dataSource?: 'kiwoom' | 'yahoo' | 'upbit' | 'binance' | 'mock';
   nameEn?: string;
-  productType?: 'EQUITY' | 'ETF' | 'INDEX';
+  productType?: 'EQUITY' | 'ETF' | 'ADR' | 'INDEX' | 'SPOT';
+  tradingPair?: string;
+  baseCurrency?: string;
+  quoteCurrency?: string;
+  warning?: boolean;
+  quoteAvailable?: boolean;
   isStale?: boolean;
 }
 
@@ -63,12 +68,12 @@ export interface KiwoomChartResponse {
   selectedDate?: string;
   isHistoricalView?: boolean;
   marketStatus?: 'OPEN' | 'CLOSED' | 'DELAYED';
-  source: 'kiwoom' | 'yahoo' | 'mock';
+  source: 'kiwoom' | 'yahoo' | 'upbit' | 'binance' | 'mock';
   cached: boolean;
   timestamp: number;
   error?: string | null;
   serverIp?: string;
-  currency?: 'KRW' | 'USD';
+  currency?: 'KRW' | 'USD' | 'USDT' | 'BTC';
 }
 
 export interface StockIndex {
@@ -162,6 +167,7 @@ export interface OrderBook {
   totalBidVolume: number;
   bestAskPrice?: number; // 최우선 매도호가 (Ask 1: 매수 체결 기준가)
   bestBidPrice?: number; // 최우선 매수호가 (Bid 1: 매도 체결 기준가)
+  timestamp?: string;
 }
 
 export interface StockNews {
@@ -321,11 +327,13 @@ export interface ChatMessage {
     height?: number;
   };
   timestamp: string;
+  createdAt?: string;
   sentiment?: 'bull' | 'bear' | 'neutral';
   likes: number;
   tempId?: string;
   _sortTime?: number;
   isDeleted?: boolean;
+  status?: 'sending' | 'sent' | 'failed';
 }
 
 export interface PriceAlert {
@@ -394,6 +402,23 @@ export interface AppNotification {
   read: boolean; // 읽음 / 읽지 않음 상태 구분
   createdAt: string;
   timestamp: string;
+}
+
+export interface UserNotificationSettings {
+  uid: string;
+  browserPushEnabled: boolean;          // 브라우저 Notification API 푸시 알림
+  surgeGainEnabled: boolean;            // 관심종목 급등 알림
+  surgeGainThreshold: number;           // 급등 기준 등락률 (%) e.g. 3.0, 5.0
+  surgeLossEnabled: boolean;            // 관심종목 급락 알림
+  surgeLossThreshold: number;           // 급락 기준 등락률 (%) e.g. -3.0, -5.0
+  volumeSurgeEnabled: boolean;          // 거래량 급증 알림
+  volumeSurgeThreshold: number;         // 거래량 급증 기준 (%) e.g. 200
+  cooldownMinutes: number;              // 동일 종목 재알림 방지 쿨다운 시간(분)
+  soundEnabled: boolean;                // 알림 효과음 재생
+  quietHoursEnabled: boolean;           // 방해금지 시간대 설정
+  quietHoursStart: string;              // 방해금지 시작 e.g. "22:00"
+  quietHoursEnd: string;                // 방해금지 종료 e.g. "08:00"
+  updatedAt: string;
 }
 
 export interface StockSmartAlert {
@@ -787,11 +812,20 @@ export interface HistoricalSimulationRecord {
   createdAt: string;
 }
 
-export type GlobalMarketCategory = 'domestic' | 'us' | 'asia' | 'europe' | 'forex' | 'rates';
+export type GlobalMarketCategory = 
+  | 'domestic' 
+  | 'us' 
+  | 'asia' 
+  | 'europe' 
+  | 'crypto' 
+  | 'commodity' 
+  | 'forex' 
+  | 'rates' 
+  | 'macro';
 
 export interface GlobalMarketItem {
   id: string;
-  category: 'us' | 'asia' | 'europe' | 'forex' | 'rates';
+  category: 'us' | 'asia' | 'europe' | 'forex' | 'rates' | 'crypto' | 'commodity' | 'macro' | 'domestic';
   name: string;
   symbol: string;
   value: number;
@@ -804,25 +838,42 @@ export interface GlobalMarketItem {
   low?: number;
   open?: number;
   prevClose?: number;
+  volume?: number;
+  tradingValue?: number;
   sparkline?: number[];
   provider: string;
-  delayStatus: 'delayed_15m' | 'delayed_20m' | 'official_close' | 'official_notice';
+  delayStatus: 'delayed_15m' | 'delayed_20m' | 'official_close' | 'official_notice' | 'realtime' | 'annual' | 'monthly';
   delayLabel: string;
   isRealtime: boolean;
   marketSession?: 'OPEN' | 'CLOSED' | 'PRE' | 'POST';
   marketTime?: string;
   lastUpdated: string;
-  status: 'ok' | 'delayed' | 'error';
+  status: 'ok' | 'delayed' | 'error' | 'unavailable';
   errorMessage?: string;
+  notes?: string;
+  license?: string;
+}
+
+export interface ProviderMetadata {
+  name: string;
+  assetScope: string;
+  cost: string;
+  license: string;
+  updateFrequency: string;
+  officialSourceUrl: string;
 }
 
 export interface GlobalMarketSummaryResponse {
   groups: {
+    domestic?: GlobalMarketItem[];
     us: GlobalMarketItem[];
     asia: GlobalMarketItem[];
     europe: GlobalMarketItem[];
+    crypto: GlobalMarketItem[];
+    commodity: GlobalMarketItem[];
     forex: GlobalMarketItem[];
     rates: GlobalMarketItem[];
+    macro: GlobalMarketItem[];
   };
   fetchedAt: string;
   cached: boolean;
@@ -831,6 +882,7 @@ export interface GlobalMarketSummaryResponse {
     description: string;
     disclaimer: string;
   };
+  providers?: ProviderMetadata[];
 }
 
 // ==========================================
@@ -955,6 +1007,7 @@ export interface PortfolioSummary {
 }
 
 export interface PortfolioHolding {
+  id?: string;
   symbol: string;
   name: string;
   quantity: number;
@@ -991,7 +1044,7 @@ export interface QuoteResult {
   delayLabel: string;
   isRealtime: boolean;
   provider: string;
-  status: 'ok' | 'delayed' | 'error';
+  status: 'ok' | 'delayed' | 'error' | 'unavailable';
   asOf: string;
   quoteTimestamp: number;
   bestAskPrice: number;

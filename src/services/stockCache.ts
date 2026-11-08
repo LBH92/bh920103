@@ -1,5 +1,5 @@
 /**
- * Firebase / Cache Layer for Stock Insight
+ * Firebase / Cache Layer for 병돌 인베스트먼트
  * 
  * Pipeline: API -> 서버 -> StockRepository -> Firebase/Cache -> 웹
  * 

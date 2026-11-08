@@ -1,6 +1,6 @@
 {
 	"appId": "com.byeongdol.investment",
-	"appName": "byeongdol-investment",
+	"appName": "병돌 인베스트먼트",
 	"webDir": "dist",
 	"plugins": {
 		"SplashScreen": {

@@ -10,6 +10,10 @@
  */
 
 import { GlobalMarketItem, GlobalMarketSummaryResponse } from '../src/types/index';
+import { cryptoDataProvider } from './providers/cryptoDataProvider.js';
+import { commodityDataProvider } from './providers/commodityDataProvider.js';
+import { macroEconomicProvider } from './providers/macroEconomicProvider.js';
+import { unifiedFinancialHubService } from './unifiedFinancialHubService.js';
 
 interface CacheEntry<T> {
   data: T;
@@ -244,6 +248,18 @@ const GLOBAL_TICKERS: TickerConfig[] = [
     is100Yen: true,
   },
   {
+    id: 'eurkrw',
+    category: 'forex',
+    name: '원/유로 (EUR/KRW)',
+    symbol: 'EUR/KRW',
+    ticker: 'EURKRW=X',
+    currency: 'KRW',
+    unit: '원',
+    provider: 'FX Open Data / Yahoo Finance',
+    delayStatus: 'delayed_15m',
+    delayLabel: '15분 지연',
+  },
+  {
     id: 'cnykrw',
     category: 'forex',
     name: '원/위안 (CNY/KRW)',
@@ -256,11 +272,47 @@ const GLOBAL_TICKERS: TickerConfig[] = [
     delayLabel: '15분 지연',
   },
   {
-    id: 'eurkrw',
+    id: 'gbpkrw',
     category: 'forex',
-    name: '원/유로 (EUR/KRW)',
-    symbol: 'EUR/KRW',
-    ticker: 'EURKRW=X',
+    name: '원/파운드 (GBP/KRW)',
+    symbol: 'GBP/KRW',
+    ticker: 'GBPKRW=X',
+    currency: 'KRW',
+    unit: '원',
+    provider: 'FX Open Data / Yahoo Finance',
+    delayStatus: 'delayed_15m',
+    delayLabel: '15분 지연',
+  },
+  {
+    id: 'cadkrw',
+    category: 'forex',
+    name: '원/캐나다달러 (CAD/KRW)',
+    symbol: 'CAD/KRW',
+    ticker: 'CADKRW=X',
+    currency: 'KRW',
+    unit: '원',
+    provider: 'FX Open Data / Yahoo Finance',
+    delayStatus: 'delayed_15m',
+    delayLabel: '15분 지연',
+  },
+  {
+    id: 'audkrw',
+    category: 'forex',
+    name: '원/호주달러 (AUD/KRW)',
+    symbol: 'AUD/KRW',
+    ticker: 'AUDKRW=X',
+    currency: 'KRW',
+    unit: '원',
+    provider: 'FX Open Data / Yahoo Finance',
+    delayStatus: 'delayed_15m',
+    delayLabel: '15분 지연',
+  },
+  {
+    id: 'chfkrw',
+    category: 'forex',
+    name: '원/스위스프랑 (CHF/KRW)',
+    symbol: 'CHF/KRW',
+    ticker: 'CHFKRW=X',
     currency: 'KRW',
     unit: '원',
     provider: 'FX Open Data / Yahoo Finance',
@@ -269,6 +321,21 @@ const GLOBAL_TICKERS: TickerConfig[] = [
   },
 
   // 5. 금리 (Rates & Yields)
+  {
+    id: 'fed_rate',
+    category: 'rates',
+    name: '미국 기준금리 (Fed Funds Rate)',
+    symbol: 'FED-RATE',
+    ticker: 'INTERNAL:FED',
+    currency: '%',
+    unit: '%',
+    provider: '미국 연방준비제도 (Federal Reserve) FOMC',
+    delayStatus: 'official_notice',
+    delayLabel: '공식 고시',
+    isCustomRate: true,
+    fixedRateValue: 4.625,
+    fixedRateRange: '4.50 ~ 4.75%',
+  },
   {
     id: 'bok_rate',
     category: 'rates',
@@ -281,23 +348,55 @@ const GLOBAL_TICKERS: TickerConfig[] = [
     delayStatus: 'official_notice',
     delayLabel: '공식 고시',
     isCustomRate: true,
-    fixedRateValue: 3.50,
+    fixedRateValue: 3.00,
+    fixedRateRange: '3.00%',
   },
   {
-    id: 'fed_rate',
+    id: 'ecb_rate',
     category: 'rates',
-    name: '미국 기준금리 (Fed Funds)',
-    symbol: 'FED-RATE',
-    ticker: 'INTERNAL:FED',
+    name: '유로존 기준금리 (ECB Deposit/Refi)',
+    symbol: 'ECB-RATE',
+    ticker: 'INTERNAL:ECB',
     currency: '%',
     unit: '%',
-    provider: '미국 연방준비제도 (Federal Reserve) FOMC',
+    provider: '유럽중앙은행 (ECB) 통화정책이사회',
     delayStatus: 'official_notice',
     delayLabel: '공식 고시',
     isCustomRate: true,
-    fixedRateValue: 5.50,
-    fixedRateRange: '5.25 ~ 5.50%',
+    fixedRateValue: 3.00,
+    fixedRateRange: '수신 3.00% / 기준 3.15%',
   },
+  {
+    id: 'boe_rate',
+    category: 'rates',
+    name: '영국 기준금리 (BOE Bank Rate)',
+    symbol: 'BOE-RATE',
+    ticker: 'INTERNAL:BOE',
+    currency: '%',
+    unit: '%',
+    provider: '영국은행 (Bank of England) MPC',
+    delayStatus: 'official_notice',
+    delayLabel: '공식 고시',
+    isCustomRate: true,
+    fixedRateValue: 4.75,
+    fixedRateRange: '4.75%',
+  },
+  {
+    id: 'boj_rate',
+    category: 'rates',
+    name: '일본 기준금리 (BOJ Policy)',
+    symbol: 'BOJ-RATE',
+    ticker: 'INTERNAL:BOJ',
+    currency: '%',
+    unit: '%',
+    provider: '일본은행 (Bank of Japan) 금융정책결정회의',
+    delayStatus: 'official_notice',
+    delayLabel: '공식 고시',
+    isCustomRate: true,
+    fixedRateValue: 0.25,
+    fixedRateRange: '0.25%',
+  },
+  // 10Y Sovereign Bond Yields
   {
     id: 'us10y',
     category: 'rates',
@@ -306,9 +405,69 @@ const GLOBAL_TICKERS: TickerConfig[] = [
     ticker: '^TNX',
     currency: '%',
     unit: '%',
-    provider: 'CBOE / Yahoo Finance',
+    provider: 'CBOE / 미국 재무부 유통수익률',
     delayStatus: 'delayed_15m',
     delayLabel: '15분 지연',
+  },
+  {
+    id: 'kr10y',
+    category: 'rates',
+    name: '한국 10년물 국채수익률',
+    symbol: 'KR-10Y',
+    ticker: 'INTERNAL:KR10Y',
+    currency: '%',
+    unit: '%',
+    provider: '한국은행 / 금융투자협회 (KOFIA)',
+    delayStatus: 'official_notice',
+    delayLabel: '공식 고시',
+    isCustomRate: true,
+    fixedRateValue: 2.85,
+    fixedRateRange: '2.850%',
+  },
+  {
+    id: 'jp10y',
+    category: 'rates',
+    name: '일본 10년물 국채수익률',
+    symbol: 'JP-10Y',
+    ticker: 'INTERNAL:JP10Y',
+    currency: '%',
+    unit: '%',
+    provider: '일본은행 (BOJ) / 도쿄증권거래소',
+    delayStatus: 'official_notice',
+    delayLabel: '공식 고시',
+    isCustomRate: true,
+    fixedRateValue: 1.05,
+    fixedRateRange: '1.050%',
+  },
+  {
+    id: 'de10y',
+    category: 'rates',
+    name: '독일 10년물 분트 수익률',
+    symbol: 'DE-10Y',
+    ticker: 'INTERNAL:DE10Y',
+    currency: '%',
+    unit: '%',
+    provider: '도이체 분데스방크 (Bundesbank)',
+    delayStatus: 'official_notice',
+    delayLabel: '공식 고시',
+    isCustomRate: true,
+    fixedRateValue: 2.18,
+    fixedRateRange: '2.180%',
+  },
+  {
+    id: 'cn10y',
+    category: 'rates',
+    name: '중국 10년물 국채수익률',
+    symbol: 'CN-10Y',
+    ticker: 'INTERNAL:CN10Y',
+    currency: '%',
+    unit: '%',
+    provider: '중국인민은행 (PBOC) / CFETS',
+    delayStatus: 'official_notice',
+    delayLabel: '공식 고시',
+    isCustomRate: true,
+    fixedRateValue: 1.82,
+    fixedRateRange: '1.820%',
   },
   {
     id: 'us2y',
@@ -500,8 +659,13 @@ export async function getGlobalMarketSummary(): Promise<GlobalMarketSummaryRespo
 
   const fetchedAt = formatKST(new Date());
 
-  // Fetch in parallel with individual error resilience
-  const items = await Promise.all(GLOBAL_TICKERS.map(cfg => fetchSingleTicker(cfg)));
+  // Fetch in parallel with individual error resilience across all public providers
+  const [items, cryptoItems, commodityItems, macroItems] = await Promise.all([
+    Promise.all(GLOBAL_TICKERS.map(cfg => fetchSingleTicker(cfg))),
+    cryptoDataProvider.getCryptoItems().catch(() => []),
+    commodityDataProvider.getCommodityItems().catch(() => []),
+    macroEconomicProvider.getMacroItems().catch(() => []),
+  ]);
 
   const groups: GlobalMarketSummaryResponse['groups'] = {
     us: items.filter(it => it.category === 'us'),
@@ -509,6 +673,9 @@ export async function getGlobalMarketSummary(): Promise<GlobalMarketSummaryRespo
     europe: items.filter(it => it.category === 'europe'),
     forex: items.filter(it => it.category === 'forex'),
     rates: items.filter(it => it.category === 'rates'),
+    crypto: (cryptoItems || []) as any,
+    commodity: (commodityItems || []) as any,
+    macro: (macroItems || []) as any,
   };
 
   const response: GlobalMarketSummaryResponse = {
@@ -516,10 +683,11 @@ export async function getGlobalMarketSummary(): Promise<GlobalMarketSummaryRespo
     fetchedAt,
     cached: false,
     providerInfo: {
-      primary: 'Yahoo Finance Public Data / BOK / Federal Reserve',
-      description: '미국·유럽·아시아 주요 거래소 및 공공기관 공시 데이터',
-      disclaimer: '해외 시장 데이터는 각 거래소 규정에 따라 15~20분 지연 제공되며, 기준금리는 공시치입니다.',
+      primary: 'World Bank / U.S. Treasury / ECB / Upbit / Binance / Yahoo Global',
+      description: '글로벌 주요 거래소, 세계은행, 미국 재무부, 중앙은행 공식 공공 데이터',
+      disclaimer: '해외 증시 및 원자재는 15~20분 지연, 가상자산은 실시간 공개 호가, 거시경제는 정부/기관 공식 공시치입니다.',
     },
+    providers: unifiedFinancialHubService.getProvidersInfo(),
   };
 
   // Cache for 25 seconds (prevents excessive calls while keeping fresh)
