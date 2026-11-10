@@ -370,12 +370,17 @@ export function evaluateUserAlertRules(
       userAlertCooldownMap.set(cooldownKey, now);
       rule.lastTriggeredAt = now;
 
-      // Add to front of notifications list
+      // Add to front of notifications list and keep only the latest 100
       serverNotifications = [newNotification, ...serverNotifications].slice(0, 100);
       generated.push(newNotification);
       dispatchFcmForNotification(newNotification);
       console.log(`[UserAlertEngine] 🔔 Notification: ${newNotification.title} (UID: ${rule.uid})`);
     }
+  }
+
+  // Cleanup old notifications periodically
+  if (serverNotifications.length > 100) {
+    serverNotifications = serverNotifications.slice(0, 100);
   }
 
   // 2. Automatically monitor active users' watchlist stocks for anomaly movements
@@ -541,6 +546,11 @@ export function evaluateUserAlertRules(
           generated.push(notif);
           dispatchFcmForNotification(notif);
         }
+      }
+
+      // Cleanup
+      if (serverNotifications.length > 100) {
+        serverNotifications = serverNotifications.slice(0, 100);
       }
     }
 

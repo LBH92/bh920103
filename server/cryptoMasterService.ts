@@ -451,7 +451,7 @@ class CryptoMasterService {
   /**
    * Fetch live quote from Binance
    */
-  private async fetchBinanceLiveQuote(symbol: string, meta?: CryptoMasterItem): Promise<Stock | null> {
+  private async fetchBinanceLiveQuote(symbol: string, meta?: CryptoMasterItem, retries = 2): Promise<Stock | null> {
     try {
       const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`;
       const controller = new AbortController();
@@ -512,6 +512,10 @@ class CryptoMasterService {
         dataSource: 'binance' as any,
       };
     } catch (err: any) {
+      if (retries > 0) {
+        console.warn(`[CryptoMasterService] Binance quote error for ${symbol}, retrying... (${retries})`);
+        return this.fetchBinanceLiveQuote(symbol, meta, retries - 1);
+      }
       console.warn(`[CryptoMasterService] Binance quote error for ${symbol}:`, err.message);
       return null;
     }

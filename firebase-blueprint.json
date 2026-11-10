@@ -313,7 +313,7 @@
     },
     "MockOrder": {
       "title": "MockOrder",
-      "description": "모의 투자 매수/매도 주문 체결 기록",
+      "description": "모의 투자 주문 및 체결 내역 컬렉션",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "주문 체결 ID" },
@@ -358,7 +358,7 @@
         "createdAt": { "type": "string", "description": "시뮬레이션 생성 일시" }
       },
       "required": ["id", "uid", "symbol", "stockName", "entryDate", "entryPrice", "quantity", "totalInvestment", "createdAt"]
-    }
+    },
     "GameHistory": {
       "title": "GameHistory",
       "description": "사용자별 미니게임 플레이 기록",
@@ -407,6 +407,54 @@
         "updatedAt": { "type": "string", "description": "최근 갱신 일시" }
       },
       "required": ["uid", "browserPushEnabled", "surgeGainEnabled", "surgeGainThreshold", "surgeLossEnabled", "surgeLossThreshold", "updatedAt"]
+    },
+    "GomokuMatch": {
+      "title": "GomokuMatch",
+      "description": "오목 실시간 대전 기록",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "매치 ID" },
+        "blackPlayerId": { "type": "string", "description": "흑 플레이어 UID" },
+        "whitePlayerId": { "type": "string", "description": "백 플레이어 UID" },
+        "turn": { "type": "string", "enum": ["black", "white"], "description": "현재 턴" },
+        "boardState": { "type": "array", "items": { "type": "array", "items": { "type": "string", "nullable": true } }, "description": "보드 상태" },
+        "status": { "type": "string", "enum": ["waiting", "playing", "finished"], "description": "게임 상태" },
+        "winner": { "type": "string", "enum": ["black", "white", "draw"], "description": "승자" },
+        "createdAt": { "type": "string", "description": "생성 일시" },
+        "updatedAt": { "type": "string", "description": "갱신 일시" }
+      },
+      "required": ["id", "blackPlayerId", "whitePlayerId", "turn", "boardState", "status", "createdAt"]
+    },
+    "UserStats": {
+      "title": "UserStats",
+      "description": "사용자별 게임 전적 및 레이팅",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "rating": { "type": "number", "description": "ELO 레이팅" },
+        "wins": { "type": "number", "description": "승리 수" },
+        "losses": { "type": "number", "description": "패배 수" },
+        "draws": { "type": "number", "description": "무승부 수" },
+        "updatedAt": { "type": "string", "description": "갱신 일시" }
+      },
+      "required": ["uid", "rating", "wins", "losses", "draws", "updatedAt"]
+    },
+    "JanggiMatch": {
+      "title": "JanggiMatch",
+      "description": "장기 실시간 대전 기록",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "매치 ID" },
+        "choPlayerId": { "type": "string", "description": "초 플레이어 UID" },
+        "hanPlayerId": { "type": "string", "description": "한 플레이어 UID" },
+        "turn": { "type": "string", "enum": ["cho", "han"], "description": "현재 턴" },
+        "boardState": { "type": "object", "description": "보드 상태 (JSON)" },
+        "status": { "type": "string", "enum": ["waiting", "playing", "finished"], "description": "게임 상태" },
+        "winner": { "type": "string", "enum": ["cho", "han", "draw"], "description": "승자" },
+        "createdAt": { "type": "string", "description": "생성 일시" },
+        "updatedAt": { "type": "string", "description": "갱신 일시" }
+      },
+      "required": ["id", "choPlayerId", "hanPlayerId", "turn", "boardState", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -505,6 +553,18 @@
     "/userNotificationSettings/{uid}": {
       "schema": "UserNotificationSettings",
       "description": "사용자별 관심종목 급변 브라우저 알림 설정 컬렉션"
+    },
+    "/gomokuMatches/{matchId}": {
+      "schema": "GomokuMatch",
+      "description": "오목 실시간 대전 기록 컬렉션"
+    },
+    "/janggiMatches/{matchId}": {
+      "schema": "JanggiMatch",
+      "description": "장기 실시간 대전 기록 컬렉션"
+    },
+    "/userStats/{uid}": {
+      "schema": "UserStats",
+      "description": "사용자별 게임 전적 및 레이팅 컬렉션"
     }
   }
 }

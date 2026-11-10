@@ -24,6 +24,7 @@ import { CommunityPost, CommentItem } from '../../types';
 import { formatPostExactDateTime, formatPostListTime, formatCommunityTime } from '../../utils/dateUtils';
 import { storageService } from '../../services/storageService';
 import { firebaseRepository } from '../../services/firebaseRepository';
+import { getErrorMessage } from '../../utils/firestoreError';
 import { PostEditorModal } from './PostEditorModal';
 import { ReportModal } from './ReportModal';
 import { PriceBadge } from '../common/PriceBadge';
@@ -46,6 +47,7 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
   } = useApp();
 
   const [post, setPost] = useState<CommunityPost | undefined>(() => storageService.getPostById(postId));
+  const [isLoading, setIsLoading] = useState(true);
   const [commentText, setCommentText] = useState('');
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
@@ -61,6 +63,9 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
     authorName: string;
   } | null>(null);
 
+  // Operation locks
+  const [isProcessing, setIsProcessing] = useState(false);
+
   // Comment pagination limit
   const [commentLimit, setCommentLimit] = useState(15);
   const visibleComments = (post?.comments || []).slice(0, commentLimit);
@@ -69,9 +74,13 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
   // Load from Firestore & increment view count on mount
   useEffect(() => {
     let isSubscribed = true;
+    setIsLoading(true);
     firebaseRepository.getPostById(postId).then(remotePost => {
-      if (isSubscribed && remotePost) {
-        setPost(remotePost);
+      if (isSubscribed) {
+        if (remotePost) {
+          setPost(remotePost);
+        }
+        setIsLoading(false);
       }
     });
 
@@ -92,7 +101,18 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
     }
   };
 
+  if (isLoading) {
+    return (
+      <div className="py-20 text-center">
+        <div className="w-8 h-8 border-4 border-rose-500/30 border-t-rose-600 rounded-full animate-spin mx-auto" />
+        <p className="text-slate-400 mt-4">게시글을 불러오는 중...</p>
+      </div>
+    );
+  }
+
   if (!post) {
+    // Wait until Firestore load finishes before showing 'not found'
+    if (isLoading) return null;
     return (
       <div className="py-20 text-center space-y-3">
         <p className="text-slate-400">게시글을 찾을 수 없거나 이미 삭제되었습니다.</p>
@@ -112,41 +132,63 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
 
   // Like Toggle
   const handleToggleLike = async () => {
+    if (isProcessing) return;
     if (!requireAuth('게시글 추천')) return;
     if (!user) return;
 
-    // Optimistic local update
-    const updated = storageService.togglePostLike(post.id, user.id);
-    if (updated) {
-      setPost({ ...updated });
-    }
+    setIsProcessing(true);
+    const prevPost = { ...post };
 
-    // Firestore update
-    await firebaseRepository.togglePostLike(post.id, user.id);
+    try {
+      // Optimistic local update
+      const updated = storageService.togglePostLike(post.id, user.id);
+      if (updated) {
+        setPost({ ...updated });
+      }
+
+      // Firestore update
+      await firebaseRepository.togglePostLike(post.id, user.id);
+    } catch (err: any) {
+      showToast(getErrorMessage(err.message), 'error');
+      // Revert
+      setPost(prevPost);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // Delete Post
   const handleDeletePost = async () => {
+    if (isProcessing) return;
     if (!isAuthor) {
       showToast('삭제 권한이 없습니다.', 'error');
       return;
     }
 
     if (window.confirm('정말 이 게시글을 삭제하시겠습니까?')) {
-      await firebaseRepository.deletePost(post.id);
-      storageService.deletePost(post.id);
-      showToast('게시글이 삭제되었습니다.', 'info');
-      navigateToPostList();
+      setIsProcessing(true);
+      try {
+        await firebaseRepository.deletePost(post.id);
+        storageService.deletePost(post.id);
+        showToast('게시글이 삭제되었습니다.', 'info');
+        navigateToPostList();
+      } catch (err: any) {
+        showToast(getErrorMessage(err.message), 'error');
+        setIsProcessing(false);
+      }
     }
   };
 
   // Add Comment
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isProcessing) return;
     if (!requireAuth('댓글 작성')) return;
     if (!user) return;
     if (!commentText.trim()) return;
 
+    setIsProcessing(true);
+    const prevPost = { ...post };
     const newCommentItem: CommentItem = {
       id: `c-${Date.now()}`,
       postId: post.id,
@@ -164,14 +206,20 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
 
     // 1. Storage update
     storageService.addComment(post.id, user, commentText.trim());
+    // Optimistic UI update
+    setPost(prev => prev ? ({ ...prev, comments: [...(prev.comments || []), newCommentItem] }) : prev);
 
     // 2. Firestore update
-    await firebaseRepository.addComment(post.id, newCommentItem);
-
-    const refreshed = storageService.getPostById(post.id);
-    if (refreshed) setPost({ ...refreshed });
-    setCommentText('');
-    showToast('댓글이 등록되었습니다.', 'success');
+    try {
+      await firebaseRepository.addComment(post.id, newCommentItem);
+      setCommentText('');
+      showToast('댓글이 등록되었습니다.', 'success');
+    } catch (err: any) {
+      setPost(prevPost); // Rollback
+      showToast(getErrorMessage(err.message), 'error');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // Start Comment Edit
@@ -196,6 +244,7 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
 
   // Delete Comment
   const handleDeleteComment = async (commentId: string, commentAuthorId: string) => {
+    if (isProcessing) return;
     const canDelete = Boolean(user && (user.id === commentAuthorId || user.role === 'admin'));
     if (!canDelete) {
       showToast('댓글 삭제 권한이 없습니다.', 'error');
@@ -203,12 +252,22 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
     }
 
     if (window.confirm('댓글을 삭제하시겠습니까?')) {
-      storageService.deleteComment(post.id, commentId);
-      await firebaseRepository.deleteComment(post.id, commentId);
-
-      const refreshed = storageService.getPostById(post.id);
-      if (refreshed) setPost({ ...refreshed });
-      showToast('댓글이 삭제되었습니다.', 'info');
+      setIsProcessing(true);
+      const prevPost = { ...post };
+      
+      // Optimistic UI update
+      setPost(prev => prev ? ({ ...prev, comments: (prev.comments || []).filter(c => c.id !== commentId) }) : prev);
+      
+      try {
+        await firebaseRepository.deleteComment(post.id, commentId);
+        storageService.deleteComment(post.id, commentId);
+        showToast('댓글이 삭제되었습니다.', 'info');
+      } catch (err: any) {
+        showToast(getErrorMessage(err.message), 'error');
+        setPost(prevPost); // Rollback
+      } finally {
+        setIsProcessing(false);
+      }
     }
   };
 

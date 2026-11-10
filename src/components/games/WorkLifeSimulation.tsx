@@ -347,6 +347,14 @@ export const WorkLifeSimulation: React.FC = () => {
   // 4. Advance to Next Year & Financial Settlement
   const handleAdvanceYear = () => {
     if (!activeGame || isProcessing) return;
+    
+    // 멱등성 확보: 연도 체크
+    // 마지막 처리된 연도가 현재 연도와 같으면 이미 처리된 것으로 간주
+    const lastProcessedYear = activeGame.timeline[activeGame.timeline.length - 1]?.year || 0;
+    if (lastProcessedYear >= activeGame.year) {
+      return; 
+    }
+    
     setIsProcessing(true);
 
     const nextAge = activeGame.age + 1;

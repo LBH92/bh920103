@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Search, 
   Filter, 
@@ -25,13 +25,46 @@ import { isSurgeGain, isSurgeLoss, isVolumeSurge } from '../../utils/marketThres
 import { MarketHeatmap } from './MarketHeatmap';
 import { formatTradingValue } from '../../utils/format';
 import { TabletStockTradingView } from './TabletStockTradingView';
+import { stockRepository } from '../../services/stockRepository';
 
 export const StockListView: React.FC = () => {
   const { stocks, navigateToStock, watchlist, toggleWatchlist, isWatchlisted, setActiveTab } = useApp();
 
   const [viewMode, setViewMode] = useState<'trading' | 'list' | 'heatmap'>('trading');
   const [currentMarketTab, setCurrentMarketTab] = useState<'ALL' | 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN'>('ALL');
+  // Search functionality
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchResults, setSearchResults] = useState<Stock[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+
+  useEffect(() => {
+    const handler = setTimeout(async () => {
+      const q = searchTerm.trim();
+      if (q.length >= 2) {
+        setIsSearching(true);
+        try {
+          // Use realStockRepository.searchStocks API
+          const results = await stockRepository.searchStocks({ 
+            query: q, 
+            limit: 20, 
+            market: currentMarketTab !== 'ALL' ? currentMarketTab : undefined 
+          });
+          setSearchResults(results);
+        } catch (err) {
+          console.error('[StockListView] Search API error:', err);
+          setSearchResults([]);
+        } finally {
+          setIsSearching(false);
+        }
+      } else {
+        setSearchResults([]);
+      }
+    }, 200);
+
+    return () => clearTimeout(handler);
+  }, [searchTerm, currentMarketTab]);
+
+  // Use API search results if available, otherwise filter local stocks list
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
   const [conditionFilter, setConditionFilter] = useState<'ALL' | 'SURGE' | 'PLUNGE' | 'VOLUME'>('ALL');
   const [sortField, setSortField] = useState<'marketCap' | 'tradingValue' | 'changePercent' | 'volume' | 'volumeRatio'>('marketCap');
@@ -40,14 +73,7 @@ export const StockListView: React.FC = () => {
   // Extract sectors
   const sectors = ['ALL', '반도체', '바이오', '2차전지', '방위산업', '자동차', 'IT인터넷'];
 
-  // Filter with Chosung, partial, code, and name support + Condition Filters
-  const filtered = stocks.filter(stock => {
-    const matchesSearch =
-      !searchTerm.trim() ||
-      matchHangulSearch(stock.name, searchTerm) ||
-      stock.symbol.toLowerCase().includes(searchTerm.trim().toLowerCase()) ||
-      stock.sector.toLowerCase().includes(searchTerm.toLowerCase());
-
+  const displayStocks = searchTerm.trim().length >= 2 ? searchResults : stocks.filter(stock => {
     const matchesMarketTab = currentMarketTab === 'ALL' ||
       (currentMarketTab === 'KOSPI' && stock.market === 'KOSPI') ||
       (currentMarketTab === 'KOSDAQ' && stock.market === 'KOSDAQ') ||
@@ -63,11 +89,11 @@ export const StockListView: React.FC = () => {
       (conditionFilter === 'PLUNGE' && isSurgeLoss(stock.changePercent)) ||
       (conditionFilter === 'VOLUME' && isVolumeSurge(stock.volumeRatio));
 
-    return matchesSearch && matchesMarketTab && matchesSector && matchesCondition;
+    return matchesMarketTab && matchesSector && matchesCondition;
   });
 
   // Sort
-  const sorted = [...filtered].sort((a, b) => {
+  const sorted = [...displayStocks].sort((a, b) => {
     let aVal = a[sortField];
     let bVal = b[sortField];
     if (sortOrder === 'asc') {

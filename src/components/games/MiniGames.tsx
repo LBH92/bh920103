@@ -15,10 +15,13 @@ import {
 import { LadderGame } from './LadderGame';
 import { LunchSelector } from './LunchSelector';
 import { WorkLifeSimulation } from './WorkLifeSimulation';
+import { GomokuGame } from './GomokuGame';
+import { JanggiGame } from './JanggiGame';
+import { HoldemGame } from './HoldemGame';
 import { useApp } from '../../context/AppContext';
 import { firebaseRepository } from '../../services/firebaseRepository';
 
-export type MiniGameId = 'ladder' | 'lunch' | 'work';
+export type MiniGameId = 'ladder' | 'lunch' | 'work' | 'gomoku' | 'janggi' | 'holdem';
 
 interface GameMetadata {
   id: MiniGameId;
@@ -71,6 +74,42 @@ const GAME_CATALOG: GameMetadata[] = [
       '1인 예산 한도와 맵기 선호도를 조절하고, 제외할 메뉴를 직접 태그로 추가할 수 있습니다.',
       '최근 선택한 메뉴 3회 반복 방지 옵션으로 매일 새로운 메뉴를 추천받을 수 있습니다.',
       '현재 GPS 위치 또는 주변 동네/역명을 입력하면 카카오맵/네이버지도 실제 맛집 검색으로 즉시 연결됩니다.',
+    ],
+  },
+  {
+    id: 'gomoku',
+    title: '실시간 1:1 오목',
+    badge: '정식 대전',
+    badgeColor: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
+    icon: <Grid className="w-6 h-6" />,
+    shortDesc: '정석 규칙의 15x15 오목. AI 4단계 난이도와 친구 대전을 지원합니다.',
+    rules: [
+      '흑백 돌을 번갈아 놓아 가로·세로·대각선 5개를 먼저 연결하면 승리합니다.',
+      'AI 난이도별 실력을 테스트하고, 친구와 방을 만들어 실시간으로 대전하세요.',
+    ],
+  },
+  {
+    id: 'janggi',
+    title: '전통 장기 (Janggi)',
+    badge: '정식 대전',
+    badgeColor: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
+    icon: <Grid className="w-6 h-6" />,
+    shortDesc: '전통 규칙의 9x10 장기. 전술 수싸움의 진수를 경험하세요.',
+    rules: [
+      '차, 포, 마, 상, 사, 졸, 궁을 이용해 상대 궁을 먼저 장군(외통수) 치면 승리합니다.',
+      'AI 난이도별 실력을 테스트하고, 친구와 방을 만들어 실시간으로 대전하세요.',
+    ],
+  },
+  {
+    id: 'holdem',
+    title: '텍사스 홀덤',
+    badge: '정식 대전',
+    badgeColor: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
+    icon: <Grid className="w-6 h-6" />,
+    shortDesc: '전략과 심리전의 정수, 텍사스 홀덤.',
+    rules: [
+      '52장 카드로 진행되는 포커 게임입니다.',
+      '자신의 카드와 공유 카드를 조합하여 가장 높은 족보를 만드세요.',
     ],
   },
 ];
@@ -260,7 +299,7 @@ export const MiniGames: React.FC = () => {
             ))}
           </div>
 
-          {/* 4. Extensible Coming Soon Section (오목 / 장기) */}
+          {/* 4. Extensible Coming Soon Section (장기) */}
           <div className="bg-slate-50/60 dark:bg-slate-900/30 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-6 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -270,20 +309,7 @@ export const MiniGames: React.FC = () => {
               <span className="text-[11px] text-slate-400">2인 보드게임 엔진 준비 중</span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="p-4 rounded-xl bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 flex items-center justify-between opacity-70">
-                <div className="space-y-0.5">
-                  <div className="font-bold text-slate-900 dark:text-white text-xs flex items-center gap-1.5">
-                    <Lock className="w-3.5 h-3.5 text-slate-400" />
-                    실시간 1:1 오목 (Gomoku)
-                  </div>
-                  <p className="text-[11px] text-slate-400">사내 동료와의 점심 커피 내기 맞대결</p>
-                </div>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500">
-                  오픈 예정
-                </span>
-              </div>
-
+            <div className="grid grid-cols-1 gap-4">
               <div className="p-4 rounded-xl bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 flex items-center justify-between opacity-70">
                 <div className="space-y-0.5">
                   <div className="font-bold text-slate-900 dark:text-white text-xs flex items-center gap-1.5">
@@ -305,6 +331,9 @@ export const MiniGames: React.FC = () => {
       {activeGame === 'ladder' && <LadderGame key="ladder" />}
       {activeGame === 'lunch' && <LunchSelector key="lunch" />}
       {activeGame === 'work' && <WorkLifeSimulation key="work" />}
+      {activeGame === 'gomoku' && <GomokuGame key="gomoku" />}
+      {activeGame === 'janggi' && <JanggiGame key="janggi" />}
+      {activeGame === 'holdem' && <HoldemGame key="holdem" />}
     </div>
   );
 };

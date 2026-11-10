@@ -1,0 +1,17 @@
+{
+  "title": "JanggiMatch",
+  "description": "장기 실시간 대전 기록",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "description": "매치 ID" },
+    "choPlayerId": { "type": "string", "description": "초 플레이어 UID" },
+    "hanPlayerId": { "type": "string", "description": "한 플레이어 UID" },
+    "turn": { "type": "string", "enum": ["cho", "han"], "description": "현재 턴" },
+    "boardState": { "type": "object", "description": "보드 상태 (FEN 또는 JSON)" },
+    "status": { "type": "string", "enum": ["waiting", "playing", "finished"], "description": "게임 상태" },
+    "winner": { "type": "string", "enum": ["cho", "han", "draw"], "description": "승자" },
+    "createdAt": { "type": "string", "description": "생성 일시" },
+    "updatedAt": { "type": "string", "description": "갱신 일시" }
+  },
+  "required": ["id", "choPlayerId", "hanPlayerId", "turn", "boardState", "status", "createdAt"]
+}

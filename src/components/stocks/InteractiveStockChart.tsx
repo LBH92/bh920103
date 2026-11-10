@@ -499,12 +499,22 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
   // Zoom Handler (Mouse Wheel)
   const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
-    if (rawCandles.length === 0) return;
+    if (rawCandles.length === 0 || !svgRef.current) return;
 
-    const zoomFactor = e.deltaY > 0 ? 1.15 : 0.85; // deltaY > 0: zoom out, deltaY < 0: zoom in
-    const newCount = Math.round(viewCount * zoomFactor);
-    const clampedCount = Math.max(15, Math.min(rawCandles.length, newCount));
-    setViewCount(clampedCount);
+    const rect = svgRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const zoomFactor = e.deltaY > 0 ? 1.15 : 0.85;
+
+    // Calculate current relative position of mouse
+    const relativeMouseX = (mouseX - paddingLeft) / innerWidth;
+    const prevCount = viewCount;
+    const nextCount = Math.max(15, Math.min(rawCandles.length, Math.round(prevCount * zoomFactor)));
+
+    // Adjust offset to keep mouse position fixed
+    const newOffset = Math.max(0, Math.min(rawCandles.length - nextCount, Math.round(viewOffset + (prevCount - nextCount) * relativeMouseX)));
+
+    setViewCount(nextCount);
+    setViewOffset(newOffset);
   };
 
   // Zoom In / Out Buttons
@@ -632,7 +642,6 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
       setActiveTool('none');
     }
   };
-
   const handleMouseLeave = () => {
     setIsPanning(false);
     panStartRef.current = null;
@@ -680,15 +689,24 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
         const clampedIndex = Math.max(0, Math.min(visibleCandles.length - 1, index));
         setHoverIndex(clampedIndex);
       }
-    } else if (e.touches.length === 2 && touchStartDistRef.current) {
+    } else if (e.touches.length === 2 && touchStartDistRef.current && svgRef.current) {
       // Pinch zoom
       const t1 = e.touches[0];
       const t2 = e.touches[1];
       const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
       const ratio = touchStartDistRef.current / dist;
       if (Math.abs(ratio - 1) > 0.05) {
-        const newCount = Math.round(viewCount * ratio);
-        setViewCount(Math.max(15, Math.min(rawCandles.length, newCount)));
+        const rect = svgRef.current.getBoundingClientRect();
+        const centerX = ((t1.clientX + t2.clientX) / 2) - rect.left;
+        const relativeCenterX = (centerX - paddingLeft) / innerWidth;
+        
+        const prevCount = viewCount;
+        const nextCount = Math.max(15, Math.min(rawCandles.length, Math.round(prevCount * ratio)));
+        
+        const newOffset = Math.max(0, Math.min(rawCandles.length - nextCount, Math.round(viewOffset + (prevCount - nextCount) * relativeCenterX)));
+        
+        setViewCount(nextCount);
+        setViewOffset(newOffset);
         touchStartDistRef.current = dist;
       }
     }
@@ -699,6 +717,19 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
     panStartRef.current = null;
     touchStartDistRef.current = null;
   };
+
+  // Keyboard navigation & Shape deletion
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedShapeId) {
+          deleteSelectedShape();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedShapeId]);
 
   // Delete Shape
   const deleteSelectedShape = () => {

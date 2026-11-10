@@ -946,11 +946,12 @@ export const firebaseRepository = {
   },
 
   subscribeChat(
-    roomId: string, 
-    callback: (messages: ChatMessage[]) => void, 
+    roomId: string,
+    callback: (messages: ChatMessage[]) => void,
     messageLimit: number = 50,
     onError?: (err: any) => void
   ): () => void {
+    let active = true;
     try {
       const q = query(
         collection(db, 'chatMessages'),
@@ -958,37 +959,19 @@ export const firebaseRepository = {
         orderBy('serverCreatedAt', 'desc'),
         limit(messageLimit)
       );
-      console.log(`[Firebase] Creating chat listener for room: ${roomId} (limit: ${messageLimit})`);
+      
+      console.log(`[Firebase] Creating chat listener for room: ${roomId}`);
       const unsubscribe = onSnapshot(q, snap => {
+        if (!active) return;
+
         const list: ChatMessage[] = [];
         snap.forEach(docSnap => {
           const d = docSnap.data();
-          if (d.isDeleted) return; // Client-side filtering
-          
-          let time = '--:--';
-          let createdAtIso = '';
-          let sortTime = 0;
+          if (d.isDeleted) return;
 
-          if (d.serverCreatedAt && typeof d.serverCreatedAt.toMillis === 'function') {
-            const dt = d.serverCreatedAt.toDate();
-            time = formatChatTime(dt);
-            createdAtIso = dt.toISOString();
-            sortTime = d.serverCreatedAt.toMillis();
-          } else if (d.createdAt) {
-            const dt = parseToDate(d.createdAt);
-            if (dt) {
-              time = formatChatTime(dt);
-              createdAtIso = dt.toISOString();
-              sortTime = dt.getTime();
-            } else if (typeof d.createdAt === 'string') {
-              createdAtIso = d.createdAt;
-              time = formatChatTime(d.createdAt);
-            }
-          }
-
-          if (!time || time === '--:--') {
-            time = typeof d.timestamp === 'string' && d.timestamp ? formatChatTime(d.timestamp) : '--:--';
-          }
+          // Epoch sort time: serverCreatedAt or createdAt string
+          const date = parseToDate(d.serverCreatedAt || d.createdAt);
+          const sortTime = date ? date.getTime() : 0;
 
           list.push({
             id: docSnap.id,
@@ -1002,27 +985,31 @@ export const firebaseRepository = {
             message: d.content || '',
             imageUrl: d.imageUrl || '',
             tempId: d.tempId || undefined,
-            timestamp: time,
-            createdAt: createdAtIso,
+            timestamp: formatChatTime(date || d.createdAt),
+            createdAt: date ? date.toISOString() : (d.createdAt || ''),
             sentiment: d.sentiment,
             likes: 0,
             _sortTime: sortTime,
             status: 'sent',
           });
         });
-        // Sort chronologically ascending (oldest first -> newest last)
+        
+        // Chronological: Oldest first (ascending sortTime)
         list.sort((a: any, b: any) => (a._sortTime || 0) - (b._sortTime || 0));
         callback(list);
       }, err => {
+        if (!active) return;
         if (err.code === 'cancelled') {
-          console.debug(`[Firebase] Chat listener cancelled for room ${roomId}:`, err.message);
+          console.debug(`[Firebase] Chat listener cancelled for room ${roomId}`);
         } else {
           console.error('Firestore onSnapshot error in subscribeChat:', err);
           handleFirestoreError(err, OperationType.LIST, 'chatMessages');
           if (onError) onError(err);
         }
       });
+
       return () => {
+        active = false;
         console.log(`[Firebase] Cleaning up chat listener for room: ${roomId}`);
         unsubscribe();
       };
@@ -1030,7 +1017,7 @@ export const firebaseRepository = {
       console.warn('subscribeChat exception:', err);
       handleFirestoreError(err, OperationType.LIST, 'chatMessages');
       if (onError) onError(err);
-      return () => {};
+      return () => { active = false; };
     }
   },
 
@@ -1114,12 +1101,11 @@ export const firebaseRepository = {
     }
   },
 
-  async sendChatMessage(msg: Omit<ChatMessage, 'id' | 'timestamp' | 'likes'>, tempId?: string): Promise<string> {
-    const col = collection(db, 'chatMessages');
-    const docRef = doc(col);
+  async sendChatMessage(msg: Omit<ChatMessage, 'id' | 'timestamp' | 'likes'>, messageId: string, tempId?: string): Promise<string> {
+    const docRef = doc(db, 'chatMessages', messageId);
     const nowIso = new Date().toISOString();
     await setDoc(docRef, {
-      id: docRef.id,
+      id: messageId,
       tempId: tempId || null,
       roomId: msg.roomId,
       authorId: msg.author.id,
@@ -1134,7 +1120,7 @@ export const firebaseRepository = {
       status: 'active',
       isDeleted: false,
     });
-    return docRef.id;
+    return messageId;
   },
 
   async deleteChatMessage(messageId: string): Promise<void> {
@@ -1652,5 +1638,115 @@ export const firebaseRepository = {
       console.warn('Firebase getOfficeGameRecords failed:', err);
       return [];
     }
+  },
+  async updateUserStats(uid: string, rating: number, win: boolean, draw: boolean): Promise<void> {
+    const userStatsRef = doc(db, 'userStats', uid);
+    const snap = await getDoc(userStatsRef);
+    if (!snap.exists()) {
+      await setDoc(userStatsRef, {
+        uid,
+        rating,
+        wins: win ? 1 : 0,
+        losses: !win && !draw ? 1 : 0,
+        draws: draw ? 1 : 0,
+        updatedAt: new Date().toISOString(),
+      });
+    } else {
+      const data = snap.data();
+      await updateDoc(userStatsRef, {
+        rating,
+        wins: (data.wins || 0) + (win ? 1 : 0),
+        losses: (data.losses || 0) + (!win && !draw ? 1 : 0),
+        draws: (data.draws || 0) + (draw ? 1 : 0),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  },
+
+  async createGomokuMatch(blackPlayerId: string): Promise<string> {
+    const docRef = doc(collection(db, 'gomokuMatches'));
+    await setDoc(docRef, {
+      id: docRef.id,
+      blackPlayerId,
+      whitePlayerId: '',
+      turn: 'black',
+      boardState: Array(15).fill(null).map(() => Array(15).fill(null)),
+      status: 'waiting',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    return docRef.id;
+  },
+
+  async joinGomokuMatch(matchId: string, whitePlayerId: string): Promise<void> {
+    await updateDoc(doc(db, 'gomokuMatches', matchId), {
+      whitePlayerId,
+      status: 'playing',
+      updatedAt: new Date().toISOString(),
+    });
+  },
+
+  async updateMatchMove(matchId: string, boardState: any, turn: 'black' | 'white', winner?: 'black' | 'white' | 'draw'): Promise<void> {
+    const updateData: any = {
+      boardState,
+      turn,
+      updatedAt: new Date().toISOString(),
+    };
+    if (winner) {
+      updateData.status = 'finished';
+      updateData.winner = winner;
+    }
+    await updateDoc(doc(db, 'gomokuMatches', matchId), updateData);
+  },
+
+  subscribeMatch(matchId: string, callback: (match: any) => void): () => void {
+    return onSnapshot(doc(db, 'gomokuMatches', matchId), snap => {
+      if (snap.exists()) {
+        callback(snap.data());
+      }
+    });
+  },
+  async createJanggiMatch(choPlayerId: string): Promise<string> {
+    const docRef = doc(collection(db, 'janggiMatches'));
+    await setDoc(docRef, {
+      id: docRef.id,
+      choPlayerId,
+      hanPlayerId: '',
+      turn: 'cho',
+      boardState: {}, // Need a structured board state
+      status: 'waiting',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    return docRef.id;
+  },
+
+  async joinJanggiMatch(matchId: string, hanPlayerId: string): Promise<void> {
+    await updateDoc(doc(db, 'janggiMatches', matchId), {
+      hanPlayerId,
+      status: 'playing',
+      updatedAt: new Date().toISOString(),
+    });
+  },
+
+  async updateJanggiMatchMove(matchId: string, boardState: any, turn: 'cho' | 'han', winner?: 'cho' | 'han' | 'draw'): Promise<void> {
+    const updateData: any = {
+      boardState,
+      turn,
+      updatedAt: new Date().toISOString(),
+    };
+    if (winner) {
+      updateData.status = 'finished';
+      updateData.winner = winner;
+    }
+    await updateDoc(doc(db, 'janggiMatches', matchId), updateData);
+  },
+
+  subscribeJanggiMatch(matchId: string, callback: (match: any) => void): () => void {
+    return onSnapshot(doc(db, 'janggiMatches', matchId), snap => {
+      if (snap.exists()) {
+        callback(snap.data());
+      }
+    });
   },
 };

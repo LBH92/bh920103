@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { stockRepository } from '../../services/stockRepository';
 import { 
   Search, 
   TrendingUp, 
@@ -37,22 +38,34 @@ export const HomeMobileDashboard: React.FC = () => {
   const [query, setQuery] = useState<string>('');
 
   // 1. Search Results if user types in mobile search box
-  const searchResults = useMemo(() => {
-    if (!query.trim()) return [];
-    const q = query.trim();
-    return stocks.filter(stock => {
-      // Market filter check
-      if (searchFilter === 'KR' && stock.market !== 'KOSPI' && stock.market !== 'KOSDAQ') return false;
-      if (searchFilter === 'US' && stock.market !== 'US' && !isUSStockSymbol(stock.symbol)) return false;
-      if (searchFilter === 'COIN' && stock.market !== 'COIN' && !stock.symbol.includes('-')) return false;
+  const [searchResults, setSearchResults] = useState<Stock[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
 
-      return (
-        matchHangulSearch(stock.name, q) ||
-        stock.symbol.toLowerCase().includes(q.toLowerCase()) ||
-        stock.sector.toLowerCase().includes(q.toLowerCase())
-      );
-    }).slice(0, 15);
-  }, [stocks, query, searchFilter]);
+  useEffect(() => {
+    const handler = setTimeout(async () => {
+      const q = query.trim();
+      if (q.length >= 2) {
+        setIsSearching(true);
+        try {
+          const results = await stockRepository.searchStocks({ 
+            query: q, 
+            limit: 15,
+            market: searchFilter !== 'ALL' ? searchFilter : undefined
+          });
+          setSearchResults(results);
+        } catch (err) {
+          console.error('[HomeMobileDashboard] Search API error:', err);
+          setSearchResults([]);
+        } finally {
+          setIsSearching(false);
+        }
+      } else {
+        setSearchResults([]);
+      }
+    }, 200);
+
+    return () => clearTimeout(handler);
+  }, [query, searchFilter]);
 
   // 2. Filtered Stocks for the Active Tab
   const tabStocks = useMemo(() => {

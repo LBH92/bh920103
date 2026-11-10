@@ -70,11 +70,16 @@ export const aiBriefingClient = {
       const MAX_RETRIES = 3;
 
       async function doFetch(): Promise<any> {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
         const res = await fetch('/api/ai/stock-briefing', {
           method: 'POST',
           headers,
           body: JSON.stringify({ query, symbol, uid }),
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
 
         if (res.status === 429 && retryCount < MAX_RETRIES) {
           const retryAfter = parseInt(res.headers.get('Retry-After') || '1') * 1000;

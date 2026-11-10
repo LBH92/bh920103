@@ -1,6 +1,6 @@
 {
-  "summary":  "Security specifications for Firebase integration, including data invariants and red-team test payloads to address Firestore security concerns.",
-  "updatedAt":  "2026-11-01T13:02:53.834337725Z",
+  "summary":  "Security specification (Pillar of Hardened Rules) for Byeongdol Investment. Documents data invariants and identifies vulnerabilities in existing Firestore rules for the hardening phase.",
+  "updatedAt":  "2026-11-09T16:48:35.754679416Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

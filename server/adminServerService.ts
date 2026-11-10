@@ -94,21 +94,7 @@ export async function verifyFirebaseIdToken(token: string): Promise<{ uid: strin
   return null;
 }
 
-// In-Memory store for Server Admin State
-const initialLogs: ServerAdminLog[] = [
-  {
-    id: `log-${Date.now() - 3600000}`,
-    adminId: 'lr018vf8CcW5fAv707vsl77qJy53',
-    adminName: '총괄관리자(임병현)',
-    adminRole: 'superadmin',
-    action: 'SYSTEM_BOOT',
-    targetType: 'system',
-    targetId: 'server-core',
-    details: 'Stock Insight 관리자 보안 감사 및 감시 엔진 초기화 완료',
-    createdAt: new Date(Date.now() - 3600000).toLocaleString('ko-KR'),
-    timestamp: Date.now() - 3600000,
-  }
-];
+// Firestore Store for Server Admin Logs
 
 const initialSettings: Record<string, ServerAdminSetting> = {
   maintenance_mode: {
@@ -182,7 +168,17 @@ const initialSettings: Record<string, ServerAdminSetting> = {
   }
 };
 
-const adminLogs: ServerAdminLog[] = [...initialLogs];
+export const ADMIN_LOGS_COLLECTION = 'admin_logs';
+
+export async function saveAdminLog(log: ServerAdminLog) {
+  try {
+    await adminDb.collection(ADMIN_LOGS_COLLECTION).doc(log.id).set(log);
+  } catch (e) {
+    console.error('[AdminServer] Failed to save log to Firestore:', e);
+  }
+}
+
+const adminLogs: ServerAdminLog[] = [];
 const adminSettings = { ...initialSettings };
 
 // Root Superadmin identification constants
@@ -406,8 +402,14 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
   });
 
   // 2. Admin Logs (Read-only immutable)
-  router.get('/logs', (req, res) => {
-    res.json(adminLogs);
+  router.get('/logs', async (req, res) => {
+    try {
+      const logsSnap = await adminDb.collection(ADMIN_LOGS_COLLECTION).orderBy('timestamp', 'desc').limit(500).get();
+      const logs = logsSnap.docs.map(d => d.data());
+      res.json(logs);
+    } catch (e) {
+      res.json(adminLogs);
+    }
   });
 
   router.post('/logs', (req, res) => {
@@ -437,6 +439,7 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
     if (adminLogs.length > 500) {
       adminLogs.pop();
     }
+    saveAdminLog(newLog);
 
     res.status(201).json(newLog);
   });
@@ -474,6 +477,7 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
       createdAt: new Date().toLocaleString('ko-KR'),
       timestamp: Date.now(),
     });
+    saveAdminLog(adminLogs[0]);
 
     res.json(adminSettings[key]);
   });

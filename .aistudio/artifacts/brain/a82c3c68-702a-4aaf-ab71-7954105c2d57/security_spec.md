@@ -1,26 +1,29 @@
-# Security Specification
+# Security Specification: Byeongdol Investment (Phase 1)
+
+This document outlines the security invariants and hardening plan for the Firestore implementation.
 
 ## 1. Data Invariants
-- A user can only access their own watchlists, alerts, and virtual portfolio data.
-- Only an administrator can access adminReports, adminLogs, and systemMetrics.
-- Posts can only be deleted by administrators (or authors, if implemented).
-- All timestamps must be server-side timestamps.
+- **Identity Integrity**: All user-owned documents (e.g., `watchlists`, `virtualHoldings`, `gameHistory`) MUST be tied to the `uid` of the authenticated user.
+- **Relational Integrity**: Access to resources must be verified against the authenticated user's ID.
+- **Admin Isolation**: Only designated administrator UIDs (or emails verified via auth lookup) can perform system-wide management actions.
 
-## 2. Dirty Dozen Payloads
-1.  Attempt to create a watchlist entry with another user's UID.
-2.  Attempt to update another user's watchlist item.
-3.  Attempt to read adminReports as a standard user.
-4.  Attempt to inject a 10MB string into a chat message.
-5.  Attempt to set `role: 'superadmin'` in user profile update.
-6.  Attempt to update `createdAt` field on a post.
-7.  Attempt to delete a chat message not owned by the user (and not an admin).
-8.  Attempt to read `chatRestrictions` with a non-authenticated user.
-9.  Attempt to update `status` of a post via a standard user without authorization.
-10. Attempt to inject SQL-like characters in `title` or `content`.
-11. Attempt to create an alert with a negative target price.
-12. Attempt to create a chat room with an excessively long name.
+## 2. The "Dirty Dozen" Payloads (Examples to Test)
+1. **Identity Spoofing**: Attempt to update another user's `virtualHoldings` by changing the `uid` field.
+2. **Admin Privilege Escalation**: Attempt to write to `adminSettings` as a standard user.
+3. **Ghost Field Injection**: Add `role: "admin"` to a `user` document creation.
+4. **Invalid ID Injection**: Pass a 2KB string as a `documentId` for a `get` request.
+5. **PII Leak**: Attempt to read another user's `users/{userId}/private` data.
+6. **Terminal State Modification**: Attempt to update a `gameHistory` that is already marked `status: "finished"`.
+7. **Orphaned Record Creation**: Create a `watchlist` entry without a valid owner `uid`.
+8. **Timestamp Tampering**: Set `createdAt` to a future date.
+9. **Invalid Schema Update**: Attempt to update a `stock` document with a non-numeric `price` field.
+10. **Chat Restriction Bypass**: Attempt to send a message as a user who has an entry in `chatRestrictions`.
+11. **Bulk Operation Abuse**: Attempt a `list` query on `chatMessages` without restricting by `roomId`.
+12. **Self-Assigned Role**: During user registration, set `role` to `admin` in the payload.
 
-## 3. Security Audit Plan
-- Implement `isValidId` and other hardening helpers in `firestore.rules`.
-- Ensure all `allow` rules follow the explicit pillars of security.
-- Re-run red team tests after rule updates.
+## 3. Security Analysis of Existing Rules
+- **Issues Found**:
+    - Missing `isValidId()` in several collections.
+    - Blanket `allow read` on collections that may contain user-specific or sensitive data.
+    - `isAdmin()` function relies on client-token emails, which can be spoofed if `email_verified` is not checked.
+    - Schema validation helpers (`isValid[Entity]`) are largely absent, relying on simple field checks.

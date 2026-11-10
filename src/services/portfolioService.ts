@@ -713,6 +713,16 @@ export const portfolioService = {
       let executedOrder: MockOrder | null = null;
       try {
         await runTransaction(db, async (tx) => {
+          // 1. Idempotency Check
+          if (idempotencyKey) {
+            const idKeyRef = doc(db, 'idempotencyKeys', idempotencyKey);
+            const idKeySnap = await tx.get(idKeyRef);
+            if (idKeySnap.exists()) {
+              throw new Error('이미 처리된 주문입니다.');
+            }
+            tx.set(idKeyRef, { uid, createdAt: now });
+          }
+
           const accRef = doc(db, 'mockAccounts', uid);
           const accSnap = await tx.get(accRef);
 

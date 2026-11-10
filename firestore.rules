@@ -2,18 +2,18 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     // 1. Reusable Security Helpers
-    function isSignedIn() { return request.auth != null; }
+    function isSignedIn() { return request.auth != null && (request.auth.token.email_verified == true || request.auth.token.firebase.sign_in_provider == 'google.com'); }
     function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
     function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
     function isAdmin() {
-      return isSignedIn() && (
-        (request.auth.token.email == 'byunghyunlim92@gmail.com') ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'superadmin'))
-      );
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+    function isValidUser(data) {
+      return data.uid is string && data.email is string && data.role in ['user', 'moderator', 'admin', 'superadmin'] &&
+             data.createdAt is timestamp && data.status in ['active', 'suspended'];
     }
 
     // 2. Global Safety Net
@@ -21,10 +21,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Dedicated Admins Collection to avoid recursion
+    match /admins/{uid} {
+        allow read: if isOwner(uid);
+        allow write: if false; // Managed externally
+    }
+
     match /users/{userId} {
-      allow read: if isSignedIn();
-      allow create: if isOwner(userId) && isValidId(userId) && incoming().keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt', 'status']) && incoming().uid == request.auth.uid;
-      allow update: if (isOwner(userId) || isAdmin()) && isValidId(userId);
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUser(incoming()) && incoming().uid == request.auth.uid;
+      allow update: if (isOwner(userId) || isAdmin()) && isValidId(userId) && isValidUser(incoming());
       allow delete: if isAdmin();
     }
     match /stocks/{symbol} {
@@ -33,223 +39,117 @@ service cloud.firestore {
     }
     match /watchlists/{watchlistId} {
       allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && incoming().uid == request.auth.uid && isValidId(watchlistId);
-      allow update: if isSignedIn() && (
+      allow create: if isSignedIn() && isValidId(watchlistId) && incoming().uid == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(watchlistId) && (
         (resource.data.uid == request.auth.uid && incoming().uid == request.auth.uid) || 
-        isAdmin()
-      ) && isValidId(watchlistId);
-      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-    }
-    match /posts/{postId} {
-      allow read: if !('isDeleted' in resource.data) || resource.data.isDeleted != true;
-      allow create: if isSignedIn() && incoming().authorId == request.auth.uid && isValidId(postId);
-      allow update: if isSignedIn() && (
-        (resource.data.authorId == request.auth.uid && incoming().authorId == request.auth.uid) ||
-        isAdmin()
-      ) && isValidId(postId);
-      allow delete: if isAdmin();
-    }
-    match /communityPosts/{postId} {
-      allow read: if !('isDeleted' in resource.data) || resource.data.isDeleted != true;
-      allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
-      allow update: if isSignedIn() && (
-        resource.data.authorId == request.auth.uid ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount', 'likeCount', 'likedBy', 'commentCount', 'comments', 'updatedAt']) ||
-        isAdmin()
-      ) && (!('isDeleted' in resource.data) || resource.data.isDeleted != true);
-      allow delete: if isAdmin();
-    }
-    match /comments/{commentId} {
-      allow read: if true;
-      allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
-      allow update: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
-      allow delete: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
-    }
-    match /alerts/{alertId} {
-      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) || 
         isAdmin()
       );
       allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
     }
-    match /notifications/{notifId} {
-      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && (request.resource.data.uid == request.auth.uid || isAdmin());
-      allow update: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    match /posts/{postId} {
+      allow get: if isSignedIn() && (!('isDeleted' in resource.data) || resource.data.isDeleted != true);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(postId) && incoming().authorId == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(postId) && (
+        (resource.data.authorId == request.auth.uid && incoming().authorId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+    match /communityPosts/{postId} {
+      allow get: if isSignedIn() && (!('isDeleted' in resource.data) || resource.data.isDeleted != true);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(postId) && incoming().authorId == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(postId) && (
+        resource.data.authorId == request.auth.uid ||
+        incoming().diff(existing()).affectedKeys().hasOnly(['viewCount', 'likeCount', 'likedBy', 'commentCount', 'comments', 'updatedAt']) ||
+        isAdmin()
+      ) && (!('isDeleted' in resource.data) || resource.data.isDeleted != true);
+      allow delete: if isAdmin();
     }
     match /chatRooms/{roomId} {
-      allow read: if true;
-      allow create: if isSignedIn();
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(roomId) && incoming().creatorId == request.auth.uid;
       allow update, delete: if isSignedIn() && (resource.data.creatorId == request.auth.uid || isAdmin());
     }
     match /chatMessages/{msgId} {
-      allow read: if isAdmin() || resource.data.isDeleted != true;
-      allow create: if isSignedIn() && 
-        request.resource.data.authorId == request.auth.uid &&
-        request.resource.data.content is string &&
-        request.resource.data.content.size() > 0 &&
-        request.resource.data.content.size() <= 1000 &&
-        request.resource.data.roomId is string;
-      allow update: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && (isAdmin() || resource.data.isDeleted != true);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(msgId) && incoming().authorId == request.auth.uid && incoming().content is string && incoming().content.size() > 0 && incoming().content.size() <= 1000;
+      allow update: if isSignedIn() && isValidId(msgId) && (resource.data.authorId == request.auth.uid || isAdmin());
       allow delete: if isAdmin();
     }
-    match /chatRestrictions/{userId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin();
+    match /alerts/{alertId} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(alertId) && incoming().uid == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(alertId) && (resource.data.uid == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+    match /virtualHoldings/{holdingId} {
+      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(holdingId) && incoming().uid == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(holdingId) && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+    match /gameHistory/{historyId} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(historyId) && incoming().uid == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(historyId) && (resource.data.uid == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+    match /officeGameState/{uid} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(uid) && incoming().uid == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(uid) && (resource.data.uid == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+    match /inquiries/{inquiryId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(inquiryId) && incoming().userId == request.auth.uid;
+      allow update: if isAdmin();
       allow delete: if isAdmin();
     }
-    match /chat_restrictions/{userId} {
-      allow read: if isAdmin();
-      allow delete: if isAdmin();
+    match /gomokuMatches/{matchId} {
+      allow read: if isSignedIn() && (resource.data.blackPlayerId == request.auth.uid || resource.data.whitePlayerId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(matchId) && incoming().blackPlayerId == request.auth.uid;
+      allow update: if isSignedIn() && (resource.data.blackPlayerId == request.auth.uid || resource.data.whitePlayerId == request.auth.uid) && resource.data.status != 'finished' || isAdmin();
     }
-    match /reports/{reportId} {
-      allow create: if isSignedIn() && request.resource.data.reporterId == request.auth.uid;
-      allow read, update, delete: if isAdmin();
+    match /janggiMatches/{matchId} {
+      allow read: if isSignedIn() && (resource.data.choPlayerId == request.auth.uid || resource.data.hanPlayerId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && isValidId(matchId) && incoming().choPlayerId == request.auth.uid;
+      allow update: if isSignedIn() && (resource.data.choPlayerId == request.auth.uid || resource.data.hanPlayerId == request.auth.uid) && resource.data.status != 'finished' || isAdmin();
     }
-    match /adminReports/{reportId} {
-      allow create: if isSignedIn();
-      allow read, update, delete: if isAdmin();
-    }
-    match /notices/{noticeId} {
-      allow read: if true;
-      allow write, delete: if isAdmin();
-    }
-    match /news/{newsId} {
-      allow read: if true;
-      allow write, delete: if isAdmin();
-    }
-    match /bannedWords/{wordId} {
+    match /userStats/{uid} {
       allow read: if isSignedIn();
-      allow write, delete: if isAdmin();
-    }
-    match /filters/{filterId} {
-      allow read: if isSignedIn();
-      allow write, delete: if isAdmin();
+      allow update: if isAdmin();
     }
     match /adminLogs/{logId} {
-      allow read, write: if isAdmin();
-    }
-    match /adminAuditLogs/{logId} {
       allow read, write: if isAdmin();
     }
     match /adminSettings/{settingId} {
       allow read, write: if isAdmin();
     }
-    match /adminAlerts/{alertId} {
-      allow read, write: if isAdmin();
-    }
-    match /systemMetrics/{metricId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-    match /systemConfig/{configId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-    match /adStats/{adId} {
-      allow read: if isAdmin();
-      allow write: if true;
-    }
-    match /advertisements/{adId} {
-      allow read: if resource.data.isActive == true || isAdmin();
-      allow write: if isAdmin();
-    }
-    match /inquiries/{inquiryId} {
-      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
-    }
-    match /users/{userId}/fcmTokens/{tokenId} {
-      allow read, write: if isOwner(userId) || isAdmin();
-    }
-    match /virtualHoldings/{holdingId} {
-      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
-        isAdmin()
-      );
-    }
-    match /virtualHoldingHistory/{historyId} {
-      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
-        isAdmin()
-      );
-    }
-    match /mockAccounts/{accountId} {
-      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isOwner(accountId) || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
-        isAdmin()
-      );
-      allow delete: if isOwner(accountId) || isAdmin();
+
+    match /mockAccounts/{uid} {
+      allow read, update: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid);
     }
     match /mockHoldings/{holdingId} {
-      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
-        isAdmin()
-      );
+      allow read, update, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && incoming().uid == request.auth.uid;
     }
     match /mockOrders/{orderId} {
-      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
-        isAdmin()
-      );
-    }
-    match /historicalSimulations/{simId} {
-      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
-        isAdmin()
-      );
-    }
-    match /calendarAlertSettings/{settingId} {
-      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isOwner(settingId) || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
-        isOwner(settingId) ||
-        isAdmin()
-      );
-    }
-    match /gameHistory/{historyId} {
       allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
-        isAdmin()
-      );
-      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && incoming().uid == request.auth.uid;
     }
-    match /officeGameState/{uid} {
-      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update: if isSignedIn() && (
-        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
-        isAdmin()
-      );
-      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    match /idempotencyKeys/{key} {
+       allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+       allow create: if isSignedIn() && incoming().uid == request.auth.uid;
     }
-    match /userGeminiKeys/{uid} {
-      allow read, write: if isOwner(uid);
-    }
-    match /userNotificationSettings/{userId} {
-      allow read: if isSignedIn() && (isOwner(userId) || isAdmin());
-      allow create, update: if isSignedIn() && (isOwner(userId) || isAdmin()) && isValidId(userId);
-      allow delete: if isSignedIn() && (isOwner(userId) || isAdmin());
+    
+    // Default deny all other collections
+    match /{document=**} {
+      allow read, write: if isAdmin();
     }
   }
 }
-

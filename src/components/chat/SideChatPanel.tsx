@@ -240,8 +240,10 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
 
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+    const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
     const newMsgPayload = {
+      id: messageId,
       roomId: activeRoomId,
       author: {
         id: user.id,
@@ -267,7 +269,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
       scrollToBottom();
 
       // 2. Real Firestore Persistence with serverTimestamp
-      await firebaseRepository.sendChatMessage(newMsgPayload);
+      await firebaseRepository.sendChatMessage(newMsgPayload, messageId);
     } catch (err: any) {
       console.error('Failed to send chat message:', err);
       setSendError('메시지 전송에 실패했습니다. 다시 시도해 주세요.');
@@ -669,7 +671,9 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
                   onInsertText={emoji => setInputText(prev => prev + emoji)}
                   onImageUploaded={url => {
                     if (!user) return;
+                    const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
                     const imageMsgPayload = {
+                      id: messageId,
                       roomId: activeRoomId,
                       author: {
                         id: user.id,
@@ -684,7 +688,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
                     };
                     const sent = storageService.sendChatMessage(imageMsgPayload);
                     setMessages(prev => [...prev, sent]);
-                    firebaseRepository.sendChatMessage(imageMsgPayload, sent.id).catch(() => {});
+                    firebaseRepository.sendChatMessage(imageMsgPayload, messageId).catch(() => {});
                   }}
                 />
               </div>
@@ -720,7 +724,9 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
                             const res = await fetch('/api/chat/upload', { method: 'POST', body: formData });
                             const data = await res.json();
                             if (res.ok && data.url) {
+                              const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
                               const imageMsgPayload = {
+                                id: messageId,
                                 roomId: activeRoomId,
                                 author: {
                                   id: user.id,
@@ -735,7 +741,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
                               };
                               const sent = storageService.sendChatMessage(imageMsgPayload);
                               setMessages(prev => [...prev, sent]);
-                              firebaseRepository.sendChatMessage(imageMsgPayload, sent.id).catch(() => {});
+                              firebaseRepository.sendChatMessage(imageMsgPayload, messageId).catch(() => {});
                             }
                           }
                         }

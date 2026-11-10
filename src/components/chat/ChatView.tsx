@@ -36,7 +36,8 @@ import {
   formatChatDividerDate, 
   formatChatTime, 
   formatChatExactDateTime, 
-  getKstDateKey 
+  getKstDateKey,
+  parseToDate 
 } from '../../utils/dateUtils';
 import { firebaseRepository } from '../../services/firebaseRepository';
 import { storageService } from '../../services/storageService';
@@ -80,7 +81,7 @@ export const ChatView: React.FC = () => {
   const [sentiment, setSentiment] = useState<'bull' | 'bear' | 'neutral'>('bull');
   
   // Pending / Failed messages tracked locally for retry
-  const [failedMessagePayloads, setFailedMessagePayloads] = useState<Record<string, any>>({});
+  const [failedMessagePayloads, setFailedMessagePayloads] = useState<Record<string, { payload: any, messageId: string }>>({});
   
   // Scroll & New Message Floating Banner states
   const [isNearBottom, setIsNearBottom] = useState<boolean>(true);
@@ -372,10 +373,13 @@ export const ChatView: React.FC = () => {
     const now = new Date();
     const nowIso = now.toISOString();
     const timeStr = formatChatTime(now);
-    const tempId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const tempId = `temp-${messageId}`;
 
     const newMsgPayload = {
-      id: tempId,
+      id: messageId,
+      tempId: tempId,
       roomId: activeRoomId,
       author: {
         id: user.id,
@@ -409,25 +413,26 @@ export const ChatView: React.FC = () => {
 
     // Firebase Firestore send
     try {
-      await firebaseRepository.sendChatMessage(newMsgPayload);
-      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, status: 'sent' } : m));
+      await firebaseRepository.sendChatMessage(newMsgPayload, messageId, tempId);
+      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'sent' } : m));
     } catch (err) {
       console.warn('Firebase chat send error:', err);
       // Mark as failed and store payload for retry
-      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, status: 'failed' } : m));
-      setFailedMessagePayloads(prev => ({ ...prev, [tempId]: newMsgPayload }));
+      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, status: 'failed' } : m));
+      setFailedMessagePayloads(prev => ({ ...prev, [messageId]: { payload: newMsgPayload, messageId } }));
       showToast('메시지 전송에 실패했습니다. 재전송 버튼을 눌러 다시 시도하세요.', 'error');
     }
   };
 
   // Retry sending a failed message
   const handleRetryMessage = async (msgId: string) => {
-    const payload = failedMessagePayloads[msgId];
-    if (!payload) return;
+    const entry = failedMessagePayloads[msgId];
+    if (!entry) return;
+    const { payload, messageId } = entry;
 
     setMessages(prev => prev.map(m => m.id === msgId ? { ...m, status: 'sending' } : m));
     try {
-      await firebaseRepository.sendChatMessage(payload);
+      await firebaseRepository.sendChatMessage(payload, messageId, payload.tempId);
       setMessages(prev => prev.map(m => m.id === msgId ? { ...m, status: 'sent' } : m));
       setFailedMessagePayloads(prev => {
         const copy = { ...prev };
@@ -714,6 +719,7 @@ export const ChatView: React.FC = () => {
 
                 displayMessages.forEach(msg => {
                   const rawTime = msg.createdAt || msg.timestamp;
+                  const d = parseToDate(rawTime);
                   const dateKey = getKstDateKey(rawTime);
                   const dividerLabel = formatChatDividerDate(rawTime);
 
@@ -746,6 +752,8 @@ export const ChatView: React.FC = () => {
                       const isRestrictedAuthor = restrictedUsers.includes(authorId);
                       const isRevealed = revealedMessages[msg.id];
                       const isTest = isTestPlaceholder(msg);
+                      
+                      // Using dateUtils for consistent KST formatting
                       const msgTime = formatChatTime(msg.createdAt || msg.timestamp);
                       const exactTimeTooltip = formatChatExactDateTime(msg.createdAt || msg.timestamp);
 
