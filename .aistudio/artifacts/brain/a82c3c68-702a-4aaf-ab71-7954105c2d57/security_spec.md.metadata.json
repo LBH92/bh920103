@@ -1,6 +1,0 @@
-{
-  "summary":  "Security specification (Pillar of Hardened Rules) for Byeongdol Investment. Documents data invariants and identifies vulnerabilities in existing Firestore rules for the hardening phase.",
-  "updatedAt":  "2026-11-09T16:48:35.754679416Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

@@ -6,11 +6,15 @@
  * - All external API calls, keys, rate limiting, and caching live here on the server.
  */
 
-import { CandleData, Stock, StockIndex, ExchangeRate, KiwoomChartResponse } from '../src/types';
-import { kiwoomApiService } from './kiwoomApiService';
+import fs from 'fs';
+import path from 'path';
+import { CandleData, ChartCandleType, Stock, StockIndex, ExchangeRate, KiwoomChartResponse } from '../src/types';
+import { kiwoomApiService, KiwoomInvestorFlowResult } from './kiwoomApiService';
 import { serverResilienceService } from './serverResilienceService';
 import { toProviderTicker, isUSStockSymbol } from '../src/utils/stocks/ticker';
+import { sanitizeAndValidateCandles } from '../src/utils/chartSanitizer';
 import { usStockSearchService } from './usStockMaster';
+import { cryptoMasterService } from './cryptoMasterService';
 
 interface ServerCacheEntry<T> {
   data: T;
@@ -19,10 +23,155 @@ interface ServerCacheEntry<T> {
 }
 
 const serverCache = new Map<string, ServerCacheEntry<any>>();
+const MAX_SERVER_CACHE_ENTRIES = 1000;
+
+export function pruneServerCache(): number {
+  const now = Date.now();
+  let removed = 0;
+  for (const [key, entry] of serverCache.entries()) {
+    if (now - entry.timestamp >= Math.max(entry.ttlMs * 2, 60000)) {
+      serverCache.delete(key);
+      removed++;
+    }
+  }
+  while (serverCache.size > MAX_SERVER_CACHE_ENTRIES) {
+    const oldestKey = serverCache.keys().next().value;
+    if (!oldestKey) break;
+    serverCache.delete(oldestKey);
+    removed++;
+  }
+  return removed;
+}
+
+const CACHE_FILE_PATH = path.join(process.cwd(), '.last_valid_stocks.json');
+
+function loadLastValidStockCache(): Map<string, Stock> {
+  try {
+    if (fs.existsSync(CACHE_FILE_PATH)) {
+      const raw = fs.readFileSync(CACHE_FILE_PATH, 'utf-8');
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object') {
+        const restored = new Map<string, Stock>();
+        for (const [sym, val] of Object.entries(data)) {
+          const st = val as Stock;
+          if (st && typeof st === 'object' && typeof st.price === 'number' && Number.isFinite(st.price) && st.price > 0) {
+            restored.set(sym, st);
+          }
+        }
+        return restored;
+      }
+    }
+  } catch (err) {
+    console.warn('[StockAPI] Failed to load last valid stock cache from disk:', err);
+  }
+  return new Map<string, Stock>();
+}
+
+
+
+async function atomicWriteCacheAsync(serialized: string): Promise<void> {
+  const tmpPath = `${CACHE_FILE_PATH}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    await fs.promises.writeFile(tmpPath, serialized, 'utf-8');
+    await fs.promises.rename(tmpPath, CACHE_FILE_PATH);
+  } catch (err) {
+    try {
+      await fs.promises.unlink(tmpPath);
+    } catch {}
+    throw err;
+  }
+}
+
+let persistCacheTimer: NodeJS.Timeout | null = null;
+let persistChain: Promise<void> = Promise.resolve();
+let persistQueued = false;
+
+function writeCacheSnapshotAsync(): Promise<void> {
+  if (persistQueued) return persistChain;
+  persistQueued = true;
+  persistChain = persistChain
+    .then(async () => {
+      persistQueued = false;
+      const obj = Object.fromEntries(lastValidStockCache.entries());
+      await atomicWriteCacheAsync(JSON.stringify(obj));
+    })
+    .catch((err) => {
+      persistQueued = false;
+      console.warn('[StockAPI] Failed to persist last valid stock cache to disk:', err);
+    });
+  return persistChain;
+}
+
+function schedulePersistLastValidStockCache() {
+  if (persistCacheTimer) return;
+  persistCacheTimer = setTimeout(() => {
+    persistCacheTimer = null;
+    void writeCacheSnapshotAsync();
+  }, 3000);
+}
+
+export async function flushLastValidStockCache(): Promise<void> {
+  if (persistCacheTimer) {
+    clearTimeout(persistCacheTimer);
+    persistCacheTimer = null;
+  }
+  await persistChain.catch(() => {});
+  const tmpPath = `${CACHE_FILE_PATH}.tmp.${process.pid}.sync`;
+  try {
+    const obj = Object.fromEntries(lastValidStockCache.entries());
+    fs.writeFileSync(tmpPath, JSON.stringify(obj), 'utf-8');
+    fs.renameSync(tmpPath, CACHE_FILE_PATH);
+  } catch (err) {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+    console.warn('[StockAPI] Failed to flush last valid stock cache to disk:', err);
+  }
+}
+
+const lastValidStockCache = loadLastValidStockCache();
+
+function validateAndPreserveStock(symbol: string, stock: Stock | null): Stock | null {
+  if (!stock || stock.price <= 0 || !Number.isFinite(stock.price)) {
+    const lastValid = lastValidStockCache.get(symbol);
+    if (lastValid) {
+      return {
+        ...lastValid,
+        isStale: true,
+        delayLabel: '최근 정상 시세 유지 (시세 확인 중)',
+      };
+    }
+    return null;
+  }
+
+  // Strict OHLC Integrity & Candle Validation
+  if (stock.candles && Array.isArray(stock.candles)) {
+    const seenTimes = new Set<string>();
+    stock.candles = stock.candles.filter(c => {
+      if (!c || typeof c.open !== 'number' || typeof c.high !== 'number' || typeof c.low !== 'number' || typeof c.close !== 'number') return false;
+      if (c.open <= 0 || c.high <= 0 || c.low <= 0 || c.close <= 0) return false;
+      if (!Number.isFinite(c.open) || !Number.isFinite(c.high) || !Number.isFinite(c.low) || !Number.isFinite(c.close)) return false;
+      if (c.high < Math.max(c.open, c.close) || c.low > Math.min(c.open, c.close)) return false;
+      if (seenTimes.has(c.time)) return false;
+      seenTimes.add(c.time);
+      return true;
+    });
+  }
+
+  lastValidStockCache.set(symbol, stock);
+  schedulePersistLastValidStockCache();
+  return stock;
+}
 
 let inFlightAllStocks: Promise<FetchAllStocksResult> | null = null;
 let inFlightIndices: Promise<FetchIndicesResult> | null = null;
 let inFlightExchange: Promise<ExchangeRate> | null = null;
+const inFlightSingleStock = new Map<string, Promise<FetchStockResult>>();
+
+export function toCompactStockQuote(stock: Stock): Stock {
+  if (!stock.candles || stock.candles.length === 0) return stock;
+  return { ...stock, candles: [] };
+}
 
 function getFromCache<T>(key: string): T | null {
   const entry = serverCache.get(key);
@@ -39,6 +188,9 @@ function setInCache<T>(key: string, data: T, ttlMs: number): void {
     timestamp: Date.now(),
     ttlMs,
   });
+  if (serverCache.size > MAX_SERVER_CACHE_ENTRIES) {
+    pruneServerCache();
+  }
 }
 
 // Korean Stock Registry with Ticker mappings
@@ -89,10 +241,15 @@ export interface FetchAllStocksResult {
  * Priority 3: Master stock cache / mock
  */
 export async function fetchRealStockDataWithSource(symbol: string): Promise<FetchStockResult> {
-  const cacheKey = `stock_real_source_${symbol}`;
+  const cleanSym = symbol.toUpperCase().trim();
+  const cacheKey = `stock_real_source_${cleanSym}`;
   const cached = getFromCache<FetchStockResult>(cacheKey);
   if (cached) return cached;
 
+  const existingInFlight = inFlightSingleStock.get(cleanSym);
+  if (existingInFlight) return existingInFlight;
+
+  const task = (async (): Promise<FetchStockResult> => {
   const masterItem = kiwoomApiService.getMasterStock(symbol);
   const item = TRACKED_STOCKS.find(s => s.symbol.toUpperCase() === symbol.toUpperCase());
   const usMaster = usStockSearchService.getBySymbol(symbol) || usStockSearchService.getBySymbol(symbol.replace('-', '.'));
@@ -121,6 +278,10 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
             { time: '09:00', open: kiwoomData.openPrice || price, high: price, low: kiwoomData.openPrice || price, close: price, volume: 10000 }
           ];
         }
+        const investorFlow = await kiwoomApiService
+          .fetchInvestorFlow(symbol, { amtQtyType: '1', tradeType: '0', unitType: '1' })
+          .catch(() => null);
+        const hasInvestorFlow = Boolean(investorFlow?.available && investorFlow.foreignNetBuy !== null && investorFlow.instNetBuy !== null);
         const sparkline = kiwoomCandles.slice(-7).map(c => c.close);
         const stock: Stock = {
           symbol,
@@ -144,17 +305,30 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
           pbr: kiwoomData.pbr || 1.4,
           eps: kiwoomData.eps || Math.round(price / 15.2),
           dividendYield: 1.5,
-          foreignNetBuy: 0,
-          instNetBuy: 0,
+          foreignNetBuy: hasInvestorFlow ? investorFlow!.foreignNetBuy : null,
+          instNetBuy: hasInvestorFlow ? investorFlow!.instNetBuy : null,
+          individualNetBuy: hasInvestorFlow ? investorFlow!.individualNetBuy : null,
+          foreignNetBuyAmountMillion: hasInvestorFlow ? investorFlow!.foreignAmountMillion : null,
+          instNetBuyAmountMillion: hasInvestorFlow ? investorFlow!.instAmountMillion : null,
+          individualNetBuyAmountMillion: hasInvestorFlow ? investorFlow!.individualAmountMillion : null,
+          investorUnit: '억원',
+          investorDataAvailable: hasInvestorFlow,
+          investorDataSource: hasInvestorFlow ? investorFlow!.investorDataSource : '수급 데이터 미수신',
+          investorBaseDate: hasInvestorFlow ? (investorFlow!.baseDate ?? undefined) : undefined,
+          investorUpdateTime: hasInvestorFlow ? (investorFlow!.updateTime ?? undefined) : undefined,
           candles: kiwoomCandles,
           sparkline: sparkline.length >= 2 ? sparkline : [prevClose, price],
           currency: 'KRW',
+          exchange: stockMarket,
           dataSource: 'kiwoom',
           lastUpdated: new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' }),
         };
-        const result: FetchStockResult = { stock, dataSource: 'kiwoom' };
-        setInCache(cacheKey, result, 5000);
-        return result;
+        const validStock = validateAndPreserveStock(symbol, stock);
+        if (validStock) {
+          const result: FetchStockResult = { stock: validStock, dataSource: 'kiwoom' };
+          setInCache(cacheKey, result, 5000);
+          return result;
+        }
       }
     } catch (kiwoomErr: any) {
       console.log(`[StockAPI] Kiwoom API notice for ${symbol}, using Yahoo fallback: ${kiwoomErr.message}`);
@@ -186,19 +360,9 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
       if (result) {
         const meta = result.meta;
         const rawPrice = meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0;
-        const rawPrevClose = meta.chartPreviousClose ?? rawPrice;
         const price = isUS ? Number(rawPrice.toFixed(2)) : Math.round(rawPrice);
-        const prevClose = isUS ? Number(rawPrevClose.toFixed(2)) : Math.round(rawPrevClose);
-        const rawChange = price - prevClose;
-        const change = isUS ? Number(rawChange.toFixed(2)) : Math.round(rawChange);
-        const changePercent = prevClose !== 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
-        const volume = meta.regularMarketVolume || 1000000;
-        const openPrice = isUS ? Number((meta.regularMarketDayLow || price).toFixed(2)) : Math.round(meta.regularMarketDayLow || price);
-        const highPrice = isUS ? Number((meta.regularMarketDayHigh || price).toFixed(2)) : Math.round(meta.regularMarketDayHigh || price);
-        const lowPrice = isUS ? Number((meta.regularMarketDayLow || price).toFixed(2)) : Math.round(meta.regularMarketDayLow || price);
-        const tradingValue = isUS ? Math.round((price * volume) / 1000000) : Math.round((price * volume) / 100000000); // US: 백만 달러, KR: 억 원
 
-        // Parse Historical Candles
+        // Parse Historical Candles first so we can derive accurate previous trading day close
         const candles: CandleData[] = [];
         const timestamps = result.timestamp || [];
         const quote = result.indicators?.quote?.[0] || {};
@@ -222,6 +386,30 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
             });
           }
         }
+
+        // Note: Yahoo v8 /chart meta.chartPreviousClose is the close BEFORE the chart range (e.g., 3 months ago),
+        // NOT yesterday's close. Prefer meta.previousClose / regularMarketPreviousClose or second-to-last daily candle.
+        let rawPrevClose =
+          (typeof meta.previousClose === 'number' && meta.previousClose > 0 ? meta.previousClose : undefined) ??
+          (typeof meta.regularMarketPreviousClose === 'number' && meta.regularMarketPreviousClose > 0 ? meta.regularMarketPreviousClose : undefined);
+        if (rawPrevClose === undefined) {
+          if (candles.length >= 2) {
+            const lastCandle = candles[candles.length - 1];
+            const isSameAsLatest = price > 0 && Math.abs(lastCandle.close - price) / price < 0.005;
+            rawPrevClose = isSameAsLatest ? candles[candles.length - 2].close : lastCandle.close;
+          } else {
+            rawPrevClose = meta.chartPreviousClose ?? rawPrice;
+          }
+        }
+        const prevClose = isUS ? Number(rawPrevClose.toFixed(2)) : Math.round(rawPrevClose);
+        const rawChange = price - prevClose;
+        const change = isUS ? Number(rawChange.toFixed(2)) : Math.round(rawChange);
+        const changePercent = prevClose !== 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
+        const volume = meta.regularMarketVolume || 1000000;
+        const openPrice = isUS ? Number((meta.regularMarketDayLow || price).toFixed(2)) : Math.round(meta.regularMarketDayLow || price);
+        const highPrice = isUS ? Number((meta.regularMarketDayHigh || price).toFixed(2)) : Math.round(meta.regularMarketDayHigh || price);
+        const lowPrice = isUS ? Number((meta.regularMarketDayLow || price).toFixed(2)) : Math.round(meta.regularMarketDayLow || price);
+        const tradingValue = isUS ? Math.round((price * volume) / 1000000) : Math.round((price * volume) / 100000000); // US: 백만 달러, KR: 억 원
 
         const sparkline = candles.slice(-7).map(c => c.close);
         const high52w = meta.fiftyTwoWeekHigh ? (isUS ? Number(meta.fiftyTwoWeekHigh.toFixed(2)) : Math.round(meta.fiftyTwoWeekHigh)) : (isUS ? Number((price * 1.3).toFixed(2)) : Math.round(price * 1.3));
@@ -254,8 +442,10 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
           pbr: isUS ? 4.2 : 1.4,
           eps: isUS ? Number((price / 28.5).toFixed(2)) : Math.round(price / 15.2),
           dividendYield: isUS ? 0.8 : 1.5,
-          foreignNetBuy: 0,
-          instNetBuy: 0,
+           foreignNetBuy: null,
+       instNetBuy: null,
+       investorDataAvailable: false,
+       investorDataSource: '수급 데이터 미수신',
           candles,
           sparkline: sparkline.length >= 2 ? sparkline : [prevClose, price],
           currency,
@@ -266,21 +456,31 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
           lastUpdated: new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' }),
         };
 
-        const fetchResult: FetchStockResult = { stock, dataSource: 'yahoo' };
-        setInCache(cacheKey, fetchResult, 10000);
-        return fetchResult;
+        const validStock = validateAndPreserveStock(symbol, stock);
+        if (validStock) {
+          const fetchResult: FetchStockResult = { stock: validStock, dataSource: 'yahoo' };
+          setInCache(cacheKey, fetchResult, 10000);
+          return fetchResult;
+        }
       }
     }
   } catch (err: any) {
     console.log(`[StockAPI] Yahoo data notice for ${symbol}: ${err.message}`);
   }
 
-  // 3. Stale Data Handling (if API fetch fails)
+  // 3. Stale Data & Last Valid Price Fallback (if API fetch fails)
   const expiredCache = serverCache.get(cacheKey);
   if (expiredCache && expiredCache.data?.stock) {
-    console.log(`[StockAPI] Returning stale data for ${symbol}`);
-    const staleStock = { ...expiredCache.data.stock, isStale: true };
-    return { stock: staleStock, dataSource: expiredCache.data.dataSource };
+    const staleStock = { ...expiredCache.data.stock, isStale: true, delayLabel: '오래된 시세 (캐시)' };
+    const validStale = validateAndPreserveStock(symbol, staleStock);
+    if (validStale) {
+      return { stock: validStale, dataSource: expiredCache.data.dataSource };
+    }
+  }
+
+  const lastValid = lastValidStockCache.get(symbol);
+  if (lastValid) {
+    return { stock: { ...lastValid, isStale: true, delayLabel: '최근 정상 시세 유지' }, dataSource: 'yahoo' };
   }
 
   // 4. Mock fallback (ONLY if source is NOT REAL)
@@ -307,11 +507,14 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
       pbr: 1.4,
       eps: Math.round((masterItem.lastPrice || 0) / 15.2),
       dividendYield: 1.5,
-      foreignNetBuy: 0,
-      instNetBuy: 0,
+       foreignNetBuy: null,
+       instNetBuy: null,
+       investorDataAvailable: false,
+       investorDataSource: '수급 데이터 미수신',
       candles: [],
       sparkline: [masterItem.lastPrice || 0, masterItem.lastPrice || 0],
       currency: 'KRW',
+      exchange: masterItem.market,
       dataSource: 'mock',
       lastUpdated: new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' }),
     };
@@ -319,6 +522,12 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
   }
 
   return { stock: null, dataSource: 'mock' };
+  })().finally(() => {
+    inFlightSingleStock.delete(cleanSym);
+  });
+
+  inFlightSingleStock.set(cleanSym, task);
+  return task;
 }
 
 /**
@@ -341,7 +550,11 @@ export async function fetchAllRealStocksWithSource(): Promise<FetchAllStocksResu
 
   inFlightAllStocks = (async () => {
     try {
-      const majorSymbols = ['005930', '000660', '005380', '000270', '196170', '042700', '064350', '034020', '373220', '247540', '086520', '207940', '035420', '035720', '005490', '012330', '105560', '055550', '417860'];
+      const majorSymbols = [
+        '005930', '000660', '005380', '000270', '196170', '042700', '064350', '034020', '373220', '247540',
+        '086520', '207940', '035420', '035720', '005490', '012330', '105560', '055550', '417860',
+        'AAPL', 'NVDA', 'MSFT', 'TSLA', 'AMZN', 'GOOGL', 'META',
+      ];
       const majorStockMap = new Map<string, Stock>();
       let primarySource: 'kiwoom' | 'yahoo' | 'mock' = 'mock';
 
@@ -363,6 +576,8 @@ export async function fetchAllRealStocksWithSource(): Promise<FetchAllStocksResu
         name: t.name,
         market: t.market,
         sector: t.sector,
+        currency: (t as any).currency || (t.market === 'US' ? 'USD' : 'KRW'),
+        exchange: (t as any).exchange || t.market,
         lastPrice: 0,
         listCount: 0,
         marketCap: 0,
@@ -371,12 +586,15 @@ export async function fetchAllRealStocksWithSource(): Promise<FetchAllStocksResu
       const results: Stock[] = baseList.map(item => {
         const live = majorStockMap.get(item.code);
         if (live) return live;
+        const isUS = item.currency === 'USD' || item.market === 'US';
         const price = item.lastPrice || 0;
         return {
           symbol: item.code,
           name: item.name,
           market: item.market,
           sector: item.sector,
+          currency: isUS ? 'USD' : 'KRW',
+          exchange: item.exchange,
           price,
           change: 0,
           changePercent: 0,
@@ -387,17 +605,20 @@ export async function fetchAllRealStocksWithSource(): Promise<FetchAllStocksResu
           highPrice: price,
           lowPrice: price,
           prevClose: price,
-          high52w: Math.round(price * 1.3),
-          low52w: Math.round(price * 0.7),
+          high52w: isUS ? Number((price * 1.3).toFixed(2)) : Math.round(price * 1.3),
+          low52w: isUS ? Number((price * 0.7).toFixed(2)) : Math.round(price * 0.7),
           marketCap: item.marketCap || 0,
-          per: 15.2,
-          pbr: 1.4,
-          eps: Math.round(price / 15.2),
-          dividendYield: 1.5,
-          foreignNetBuy: 0,
-          instNetBuy: 0,
+          per: isUS ? 28.5 : 15.2,
+          pbr: isUS ? 4.2 : 1.4,
+          eps: isUS ? Number((price / 28.5).toFixed(2)) : Math.round(price / 15.2),
+          dividendYield: isUS ? 0.8 : 1.5,
+           foreignNetBuy: null,
+       instNetBuy: null,
+       investorDataAvailable: false,
+       investorDataSource: '수급 데이터 미수신',
           candles: [],
           sparkline: [price, price],
+          isStale: true,
         };
       });
 
@@ -479,7 +700,7 @@ export async function fetchRealIndicesWithSource(): Promise<FetchIndicesResult> 
       const list: StockIndex[] = await Promise.all(
         indexDefs.map(async (def): Promise<StockIndex> => {
           try {
-            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(def.ticker)}?interval=1d&range=2d`;
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(def.ticker)}?interval=1d&range=5d`;
             const res = await serverResilienceService.resilientFetch(url, {
               headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
             }, {
@@ -490,12 +711,27 @@ export async function fetchRealIndicesWithSource(): Promise<FetchIndicesResult> 
             });
             if (res.ok) {
               const json = await res.json();
-              const meta = json.chart?.result?.[0]?.meta;
+              const chartRes = json.chart?.result?.[0];
+              const meta = chartRes?.meta;
               if (meta) {
                 const val = Number((meta.regularMarketPrice || def.defaultVal).toFixed(2));
-                const prev = Number((meta.chartPreviousClose || val).toFixed(2));
+                const rawCloses: any[] = chartRes?.indicators?.quote?.[0]?.close || [];
+                const validCloses = rawCloses.filter((c: any): c is number => typeof c === 'number' && Number.isFinite(c) && c > 0);
+                let rawPrev =
+                  (typeof meta.previousClose === 'number' && meta.previousClose > 0 ? meta.previousClose : undefined) ??
+                  (typeof meta.regularMarketPreviousClose === 'number' && meta.regularMarketPreviousClose > 0 ? meta.regularMarketPreviousClose : undefined);
+                if (rawPrev === undefined) {
+                  if (validCloses.length >= 2) {
+                    const lastClose = validCloses[validCloses.length - 1];
+                    const isSameAsLatest = val > 0 && Math.abs(lastClose - val) / val < 0.005;
+                    rawPrev = isSameAsLatest ? validCloses[validCloses.length - 2] : lastClose;
+                  } else {
+                    rawPrev = meta.chartPreviousClose || val;
+                  }
+                }
+                const prev = Number(rawPrev.toFixed(2));
                 const change = Number((val - prev).toFixed(2));
-                const changePercent = Number(((change / prev) * 100).toFixed(2));
+                const changePercent = prev > 0 ? Number(((change / prev) * 100).toFixed(2)) : 0;
 
                 return {
                   name: def.name,
@@ -571,8 +807,19 @@ export async function fetchRealExchangeRate(): Promise<ExchangeRate> {
   if (inFlightExchange) return inFlightExchange;
 
   inFlightExchange = (async () => {
+    const nowStr = new Date().toLocaleString('ko-KR', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }) + ' KST';
+
     try {
-      const url = 'https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?interval=1d&range=2d';
+      const url = 'https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?interval=1d&range=5d';
       const res = await serverResilienceService.resilientFetch(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
       }, {
@@ -583,22 +830,45 @@ export async function fetchRealExchangeRate(): Promise<ExchangeRate> {
       });
       if (res.ok) {
         const json = await res.json();
-        const meta = json.chart?.result?.[0]?.meta;
-        if (meta) {
-          const rate = Number((meta.regularMarketPrice || 1380.0).toFixed(2));
-          const prev = Number((meta.chartPreviousClose || rate).toFixed(2));
+        const chartRes = json.chart?.result?.[0];
+        const meta = chartRes?.meta;
+        if (meta && typeof meta.regularMarketPrice === 'number' && meta.regularMarketPrice > 0) {
+          const rate = Number(meta.regularMarketPrice.toFixed(2));
+          const rawCloses: any[] = chartRes?.indicators?.quote?.[0]?.close || [];
+          const validCloses = rawCloses.filter((c: any): c is number => typeof c === 'number' && Number.isFinite(c) && c > 0);
+          let rawPrev =
+            (typeof meta.previousClose === 'number' && meta.previousClose > 0 ? meta.previousClose : undefined) ??
+            (typeof meta.regularMarketPreviousClose === 'number' && meta.regularMarketPreviousClose > 0 ? meta.regularMarketPreviousClose : undefined);
+          if (rawPrev === undefined) {
+            if (validCloses.length >= 2) {
+              const lastClose = validCloses[validCloses.length - 1];
+              const isSameAsLatest = Math.abs(lastClose - rate) / rate < 0.005;
+              rawPrev = isSameAsLatest ? validCloses[validCloses.length - 2] : lastClose;
+            } else {
+              rawPrev = meta.chartPreviousClose || rate;
+            }
+          }
+          const prev = Number(rawPrev.toFixed(2));
           const change = Number((rate - prev).toFixed(2));
-          const changePercent = Number(((change / prev) * 100).toFixed(2));
+          const changePercent = prev !== 0 ? Number(((change / prev) * 100).toFixed(2)) : 0;
 
           const data: ExchangeRate = {
             currency: 'USD/KRW',
-            name: '미국 달러',
+            baseCurrency: 'USD',
+            quoteCurrency: 'KRW',
+            pair: 'USD/KRW',
+            name: '원/달러 환율',
             rate,
             change,
             changePercent,
-            high: Number((meta.regularMarketDayHigh || rate + 2).toFixed(2)),
-            low: Number((meta.regularMarketDayLow || rate - 2).toFixed(2)),
+            high: Number((meta.regularMarketDayHigh || rate).toFixed(2)),
+            low: Number((meta.regularMarketDayLow || rate).toFixed(2)),
             sparkline: [prev, rate],
+            lastUpdated: nowStr,
+            timestamp: Date.now(),
+            status: 'ok',
+            isStale: false,
+            provider: 'Yahoo Finance FX (KRW=X)',
           };
           setInCache(cacheKey, data, 20000);
           return data;
@@ -608,18 +878,69 @@ export async function fetchRealExchangeRate(): Promise<ExchangeRate> {
       console.log('[StockAPI] Yahoo exchange rate fetch notice:', err.message);
     }
 
-    const fallback: ExchangeRate = {
+    // Secondary official reference fallback: ECB Frankfurter (explicitly marked delayed/official reference)
+    try {
+      const ecbRes = await fetch('https://api.frankfurter.app/latest?from=USD&to=KRW');
+      if (ecbRes.ok) {
+        const ecbJson: any = await ecbRes.json();
+        const ecbRate = ecbJson?.rates?.KRW;
+        if (typeof ecbRate === 'number' && ecbRate > 0) {
+          const rate = Number(ecbRate.toFixed(2));
+          const ecbData: ExchangeRate = {
+            currency: 'USD/KRW',
+            baseCurrency: 'USD',
+            quoteCurrency: 'KRW',
+            pair: 'USD/KRW',
+            name: '원/달러 환율 (ECB 고시)',
+            rate,
+            change: 0,
+            changePercent: 0,
+            high: rate,
+            low: rate,
+            sparkline: [rate, rate],
+            lastUpdated: `${ecbJson.date || ''} (ECB 고시)`,
+            timestamp: Date.now(),
+            status: 'delayed',
+            isStale: false,
+            provider: 'European Central Bank (Frankfurter)',
+          };
+          setInCache(cacheKey, ecbData, 60000);
+          return ecbData;
+        }
+      }
+    } catch {}
+
+    // If expired cache exists, return it explicitly marked stale (do not pretend it is fresh)
+    const expiredCache = serverCache.get(cacheKey);
+    if (expiredCache?.data && typeof expiredCache.data.rate === 'number' && expiredCache.data.rate > 0) {
+      return {
+        ...expiredCache.data,
+        status: 'stale',
+        isStale: true,
+        errorMessage: '실시간 환율 갱신 실패로 만료된 최근 환율을 표시합니다. 원화 환산이 중단됩니다.',
+      };
+    }
+
+    // Honest unavailable/error payload (no silent arbitrary rate like 1382.50)
+    return {
       currency: 'USD/KRW',
-      name: '미국 달러',
-      rate: 1382.50,
-      change: -2.30,
-      changePercent: -0.17,
-      high: 1385.00,
-      low: 1380.50,
-      sparkline: [1384.80, 1382.50],
+      baseCurrency: 'USD',
+      quoteCurrency: 'KRW',
+      pair: 'USD/KRW',
+      name: '원/달러 환율',
+      rate: 0,
+      change: 0,
+      changePercent: 0,
+      high: 0,
+      low: 0,
+      sparkline: [],
+      lastUpdated: nowStr,
+      timestamp: Date.now(),
+      status: 'error',
+      isStale: true,
+      provider: 'Yahoo Finance FX / ECB',
+      errorMessage: '실시간 USD/KRW 환율 데이터를 수신할 수 없습니다.',
     };
-    setInCache(cacheKey, fallback, 20000);
-    return fallback;
   })().finally(() => {
     inFlightExchange = null;
   });
@@ -629,9 +950,31 @@ export async function fetchRealExchangeRate(): Promise<ExchangeRate> {
 
 export interface FetchStockChartOptions {
   period?: string;
-  date?: string;
+  candleType?: ChartCandleType;
+  date?: string; // YYYY-MM-DD
   startDate?: string;
   endDate?: string;
+}
+
+function formatExchangeTimestamp(epochMs: number, isUS: boolean, includeTime: boolean): string {
+  const tz = isUS ? 'America/New_York' : 'Asia/Seoul';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    ...(includeTime ? { hour: '2-digit', minute: '2-digit', hour12: false } : {}),
+  }).formatToParts(new Date(epochMs));
+
+  const map: Record<string, string> = {};
+  for (const p of parts) {
+    map[p.type] = p.value;
+  }
+  const datePart = `${map.year}-${map.month}-${map.day}`;
+  if (!includeTime) return datePart;
+  const hh = map.hour === '24' ? '00' : map.hour || '00';
+  const mm = map.minute || '00';
+  return `${datePart} ${hh}:${mm}`;
 }
 
 export async function fetchUnifiedStockChart(
@@ -640,26 +983,33 @@ export async function fetchUnifiedStockChart(
 ): Promise<KiwoomChartResponse> {
   const cleanSymbol = symbol.toUpperCase().trim();
   const rawPeriod = (options.period || '1d').toLowerCase().trim();
+  const requestedCandleType = options.candleType;
   const targetDate = options.date?.trim() || null;
   const usMaster = usStockSearchService.getBySymbol(cleanSymbol) || usStockSearchService.getBySymbol(cleanSymbol.replace('-', '.'));
   const isUS = !!usMaster || isUSStockSymbol(cleanSymbol);
 
-  // Cache key per symbol, period, and target date - strictly isolated
-  const cacheKey = `chart_unified_${cleanSymbol}_${rawPeriod}_${targetDate || 'latest'}`;
+  // Cache key per symbol, period, candleType, and target date - strictly isolated
+  const cacheKey = `chart_unified_${cleanSymbol}_${rawPeriod}_${requestedCandleType || 'auto'}_${targetDate || 'latest'}`;
   const cached = getFromCache<KiwoomChartResponse>(cacheKey);
   if (cached) return cached;
 
   // Determine Yahoo ticker
   let yahooTicker = isUS ? toProviderTicker(cleanSymbol) : cleanSymbol;
   if (!isUS) {
+    const master = kiwoomApiService.getMasterStock(cleanSymbol);
+    const tracked = TRACKED_STOCKS.find(s => s.symbol === cleanSymbol);
     const isKosdaq =
-      cleanSymbol.startsWith('2') ||
-      cleanSymbol.startsWith('08') ||
-      cleanSymbol.startsWith('19') ||
-      cleanSymbol.startsWith('02') ||
-      cleanSymbol.startsWith('27') ||
-      cleanSymbol.startsWith('039') ||
-      cleanSymbol.startsWith('058');
+      master?.market === 'KOSDAQ' ||
+      tracked?.market === 'KOSDAQ' ||
+      (!master && !tracked && (
+        cleanSymbol.startsWith('2') ||
+        cleanSymbol.startsWith('08') ||
+        cleanSymbol.startsWith('19') ||
+        cleanSymbol.startsWith('02') ||
+        cleanSymbol.startsWith('27') ||
+        cleanSymbol.startsWith('039') ||
+        cleanSymbol.startsWith('058')
+      ));
     yahooTicker = `${cleanSymbol}.${isKosdaq ? 'KQ' : 'KS'}`;
   }
 
@@ -667,6 +1017,10 @@ export async function fetchUnifiedStockChart(
   let interval = '1d';
   let rangeParam = '1mo';
   let periodLabel = '1개월';
+  let resolvedCandleType: ChartCandleType = 'day';
+  let cutoffEpochSec: number | null = null;
+
+  const isExplicitMinutePeriod = ['1m', '5min', '5m', '15min', '15m', '30min', '30m', '60min', '1h'].includes(rawPeriod);
 
   switch (rawPeriod) {
     case '1d':
@@ -674,19 +1028,27 @@ export async function fetchUnifiedStockChart(
       interval = '5m';
       rangeParam = '1d';
       periodLabel = '1일';
+      resolvedCandleType = 'minute';
       break;
     case '1w':
     case '1week':
       interval = '15m';
       rangeParam = '5d';
       periodLabel = '1주';
+      resolvedCandleType = 'minute';
       break;
     case '1m':
+      interval = '1m';
+      rangeParam = '1d';
+      periodLabel = '1분';
+      resolvedCandleType = 'minute';
+      break;
     case '1mo':
     case '1month':
       interval = '1d';
       rangeParam = '1mo';
       periodLabel = '1개월';
+      resolvedCandleType = 'day';
       break;
     case '3m':
     case '3mo':
@@ -694,6 +1056,7 @@ export async function fetchUnifiedStockChart(
       interval = '1d';
       rangeParam = '3mo';
       periodLabel = '3개월';
+      resolvedCandleType = 'day';
       break;
     case '6m':
     case '6mo':
@@ -701,58 +1064,127 @@ export async function fetchUnifiedStockChart(
       interval = '1d';
       rangeParam = '6mo';
       periodLabel = '6개월';
+      resolvedCandleType = 'day';
       break;
     case 'ytd':
       interval = '1d';
       rangeParam = 'ytd';
       periodLabel = '연간(YTD)';
+      resolvedCandleType = 'day';
       break;
     case '1y':
     case '1year':
       interval = '1d';
       rangeParam = '1y';
       periodLabel = '1년';
+      resolvedCandleType = 'day';
+      break;
+    case '3y':
+    case '3years':
+      interval = '1wk';
+      rangeParam = '5y';
+      periodLabel = '3년';
+      resolvedCandleType = 'week';
+      cutoffEpochSec = Math.floor(Date.now() / 1000) - 3 * 365 * 24 * 3600;
       break;
     case '5y':
     case '5years':
       interval = '1wk';
       rangeParam = '5y';
       periodLabel = '5년';
+      resolvedCandleType = 'week';
+      break;
+    case 'week':
+      interval = '1wk';
+      rangeParam = '2y';
+      periodLabel = '주봉';
+      resolvedCandleType = 'week';
+      break;
+    case 'month':
+      interval = '1mo';
+      rangeParam = '5y';
+      periodLabel = '월봉';
+      resolvedCandleType = 'month';
       break;
     case 'all':
     case 'max':
       interval = '1mo';
       rangeParam = 'max';
       periodLabel = '전체';
+      resolvedCandleType = 'month';
       break;
     case '5min':
     case '5m':
       interval = '5m';
       rangeParam = '1d';
       periodLabel = '5분';
+      resolvedCandleType = 'minute';
       break;
     case '15min':
     case '15m':
       interval = '15m';
       rangeParam = '5d';
       periodLabel = '15분';
+      resolvedCandleType = 'minute';
       break;
     case '30min':
     case '30m':
       interval = '30m';
       rangeParam = '5d';
       periodLabel = '30분';
+      resolvedCandleType = 'minute';
       break;
     case '60min':
     case '1h':
       interval = '60m';
       rangeParam = '1mo';
       periodLabel = '60분';
+      resolvedCandleType = 'minute';
       break;
     default:
       interval = '1d';
       rangeParam = '1mo';
       periodLabel = '1개월';
+      resolvedCandleType = 'day';
+  }
+
+  // Apply explicit candleType override (when user selects 일봉 / 주봉 / 월봉 / 분봉 alongside a range)
+  if (!isExplicitMinutePeriod && requestedCandleType) {
+    resolvedCandleType = requestedCandleType;
+    if (requestedCandleType === 'minute') {
+      if (rawPeriod === '1d') {
+        interval = '5m';
+        rangeParam = '1d';
+      } else if (rawPeriod === '1w' || rawPeriod === '1week') {
+        interval = '15m';
+        rangeParam = '5d';
+      } else {
+        interval = '60m';
+        rangeParam = rawPeriod === '1mo' || rawPeriod === '1month' ? '1mo' : '3mo';
+      }
+      cutoffEpochSec = null;
+    } else if (requestedCandleType === 'day') {
+      interval = '1d';
+      if (rawPeriod === '1d' || rawPeriod === '1w' || rawPeriod === '1week') rangeParam = '1mo';
+      else if (rawPeriod === '3y' || rawPeriod === '3years') {
+        rangeParam = '5y';
+        cutoffEpochSec = Math.floor(Date.now() / 1000) - 3 * 365 * 24 * 3600;
+      } else if (rawPeriod === 'all' || rawPeriod === 'max') {
+        rangeParam = '5y';
+      }
+    } else if (requestedCandleType === 'week') {
+      interval = '1wk';
+      if (['1d', '1w', '1week', '1mo', '1month', '3m', '3mo', '3months', '6m', '6mo', '6months'].includes(rawPeriod)) {
+        rangeParam = '1y';
+        cutoffEpochSec = null;
+      }
+    } else if (requestedCandleType === 'month') {
+      interval = '1mo';
+      if (['1d', '1w', '1week', '1mo', '1month', '3m', '3mo', '3months', '6m', '6mo', '6months', '1y', '1year'].includes(rawPeriod)) {
+        rangeParam = '2y';
+        cutoffEpochSec = null;
+      }
+    }
   }
 
   // Handle custom date navigation (과거 날짜 이동)
@@ -765,20 +1197,24 @@ export async function fetchUnifiedStockChart(
     const targetDt = new Date(targetDate);
     if (!isNaN(targetDt.getTime())) {
       isHistoricalView = true;
+      cutoffEpochSec = null;
       const now = new Date();
       const diffDays = Math.floor((now.getTime() - targetDt.getTime()) / (1000 * 3600 * 24));
 
       // Yahoo Finance only retains minute intervals (<1d) for the last 55 days
-      if (diffDays > 50 && (interval.includes('m') || interval === '1h')) {
+      if (diffDays > 50 && (interval.includes('m') || interval === '1h') && interval !== '1mo') {
         interval = '1d';
+        resolvedCandleType = 'day';
       }
 
       // Query around target date: span depends on period
       let spanDays = 30;
-      if (rawPeriod === '1d') spanDays = 5;
+      if (rawPeriod === '1d' || isExplicitMinutePeriod) spanDays = 5;
       else if (rawPeriod === '1w') spanDays = 14;
-      else if (rawPeriod === '3m' || rawPeriod === '6m') spanDays = 180;
-      else if (rawPeriod === '1y' || rawPeriod === '5y' || rawPeriod === 'all') spanDays = 365;
+      else if (rawPeriod === '3m' || rawPeriod === '3mo' || rawPeriod === '6m' || rawPeriod === '6mo') spanDays = 180;
+      else if (rawPeriod === '1y') spanDays = 365;
+      else if (rawPeriod === '3y') spanDays = 1095;
+      else if (rawPeriod === '5y' || rawPeriod === 'all') spanDays = 1825;
 
       const p1 = Math.floor((targetDt.getTime() - spanDays * 24 * 3600 * 1000) / 1000);
       const p2 = Math.floor((targetDt.getTime() + 2 * 24 * 3600 * 1000) / 1000);
@@ -799,7 +1235,7 @@ export async function fetchUnifiedStockChart(
       {
         maxRetries: 2,
         baseDelayMs: 250,
-        timeoutMs: 4000,
+        timeoutMs: 4500,
         serviceName: `Chart(${cleanSymbol})`,
       }
     );
@@ -809,34 +1245,45 @@ export async function fetchUnifiedStockChart(
       const result = json.chart?.result?.[0];
       if (result) {
         const meta = result.meta || {};
-        const timestamps = result.timestamp || [];
+        const timestamps: number[] = result.timestamp || [];
         const quotes = result.indicators?.quote?.[0] || {};
         const opens = quotes.open || [];
         const highs = quotes.high || [];
         const lows = quotes.low || [];
         const closes = quotes.close || [];
         const volumes = quotes.volume || [];
+        const includeTime = interval.endsWith('m') || interval === '1h' || interval === '60m';
 
-        const candles: CandleData[] = [];
+        const rawCandles: CandleData[] = [];
         for (let i = 0; i < timestamps.length; i++) {
-          const c = closes[i];
-          if (c !== null && typeof c === 'number' && !isNaN(c)) {
-            const dt = new Date(timestamps[i] * 1000);
-            const timeStr =
-              interval.includes('m') || interval === '1h'
-                ? `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
-                : `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+          const tsSec = timestamps[i];
+          if (cutoffEpochSec && tsSec < cutoffEpochSec) continue;
 
-            candles.push({
-              time: timeStr,
-              open: Number((opens[i] ?? c).toFixed(2)),
-              high: Number((highs[i] ?? c).toFixed(2)),
-              low: Number((lows[i] ?? c).toFixed(2)),
-              close: Number(c.toFixed(2)),
-              volume: Math.round(volumes[i] ?? 0),
+          const c = closes[i];
+          if (c !== null && typeof c === 'number' && Number.isFinite(c) && c > 0) {
+            const o = opens[i] !== null && typeof opens[i] === 'number' && Number.isFinite(opens[i]) && opens[i] > 0 ? opens[i] : c;
+            const h = highs[i] !== null && typeof highs[i] === 'number' && Number.isFinite(highs[i]) && highs[i] > 0 ? highs[i] : Math.max(o, c);
+            const l = lows[i] !== null && typeof lows[i] === 'number' && Number.isFinite(lows[i]) && lows[i] > 0 ? lows[i] : Math.min(o, c);
+            const v = volumes[i] !== null && typeof volumes[i] === 'number' && Number.isFinite(volumes[i]) && volumes[i] >= 0 ? volumes[i] : 0;
+
+            const roundCandle = (val: number) => (isUS ? Number(val.toFixed(2)) : Math.round(val));
+            const roundedO = roundCandle(o);
+            const roundedC = roundCandle(c);
+            const roundedH = Math.max(roundCandle(h), roundedO, roundedC);
+            const roundedL = Math.min(roundCandle(l), roundedO, roundedC);
+
+            rawCandles.push({
+              time: formatExchangeTimestamp(tsSec * 1000, isUS, includeTime),
+              open: roundedO,
+              high: roundedH,
+              low: roundedL,
+              close: roundedC,
+              volume: Math.round(v),
             });
           }
         }
+
+        const candles = sanitizeAndValidateCandles(rawCandles);
 
         // If targetDate specified, locate closest candle
         if (targetDate && candles.length > 0) {
@@ -860,14 +1307,15 @@ export async function fetchUnifiedStockChart(
         const kstDay = (now.getUTCDay() + (now.getUTCHours() + 9 >= 24 ? 1 : 0)) % 7;
         const isKrOpen = kstDay >= 1 && kstDay <= 5 && kstTime >= 900 && kstTime <= 1530;
 
-        const currentPrice = Number(
-          (meta.regularMarketPrice || (candles.length > 0 ? candles[candles.length - 1].close : 0)).toFixed(2)
-        );
+        const rawCur = meta.regularMarketPrice || (candles.length > 0 ? candles[candles.length - 1].close : 0);
+        const currentPrice = isUS ? Number(rawCur.toFixed(2)) : Math.round(rawCur);
 
         const chartResponse: KiwoomChartResponse = {
           symbol: cleanSymbol,
           period: rawPeriod,
           periodLabel,
+          candleType: resolvedCandleType,
+          interval,
           trId: isUS ? 'GLOBAL_US' : 'YAHOO_KR',
           supported: true,
           candles,
@@ -876,6 +1324,7 @@ export async function fetchUnifiedStockChart(
           selectedDateClose: targetDateClose,
           selectedDate: targetDate || undefined,
           isHistoricalView,
+          isStale: false,
           source: 'yahoo',
           cached: false,
           timestamp: Date.now(),
@@ -898,6 +1347,8 @@ export async function fetchUnifiedStockChart(
     symbol: cleanSymbol,
     period: rawPeriod,
     periodLabel,
+    candleType: resolvedCandleType,
+    interval,
     trId: 'ERROR',
     supported: false,
     candles: [],
@@ -905,6 +1356,145 @@ export async function fetchUnifiedStockChart(
     cached: false,
     timestamp: Date.now(),
     currency: isUS ? 'USD' : 'KRW',
+    isStale: true,
     error: `${cleanSymbol}의 해당 기간(${periodLabel}) 실제 캔들 데이터를 불러올 수 없습니다.`,
   };
+}
+
+export interface StockInvestorFlowResponse {
+  symbol: string;
+  trId: 'ka10059';
+  available: boolean;
+  investorDataAvailable: boolean;
+  investorDataSource: string;
+  investorUnit: '억원';
+  investorQtyUnit: '주';
+  baseDate: string | null;
+  updateTime: string | null;
+  tradeType: '0' | '1' | '2';
+  foreignNetBuy: number | null;
+  instNetBuy: number | null;
+  individualNetBuy: number | null;
+  foreignNetBuyAmountMillion: number | null;
+  instNetBuyAmountMillion: number | null;
+  individualNetBuyAmountMillion: number | null;
+  foreignNetBuyQty: number | null;
+  instNetBuyQty: number | null;
+  individualNetBuyQty: number | null;
+  isDirectInvestorIndividual: boolean;
+  rows: KiwoomInvestorFlowResult['rows'];
+  reason?: string;
+}
+
+export async function fetchStockInvestorFlow(
+  symbol: string,
+  options: { unit?: 'amount' | 'quantity' | 'both'; date?: string; tradeType?: '0' | '1' | '2' } = {}
+): Promise<StockInvestorFlowResponse> {
+  const cleanSym = symbol.toUpperCase().trim();
+  const tradeType: '0' | '1' | '2' = options.tradeType === '1' || options.tradeType === '2' ? options.tradeType : '0';
+  const unitMode = options.unit === 'amount' || options.unit === 'quantity' ? options.unit : 'both';
+
+  const makeUnavailable = (sourceLabel: string, reason: string): StockInvestorFlowResponse => ({
+    symbol: cleanSym,
+    trId: 'ka10059',
+    available: false,
+    investorDataAvailable: false,
+    investorDataSource: sourceLabel,
+    investorUnit: '억원',
+    investorQtyUnit: '주',
+    baseDate: null,
+    updateTime: null,
+    tradeType,
+    foreignNetBuy: null,
+    instNetBuy: null,
+    individualNetBuy: null,
+    foreignNetBuyAmountMillion: null,
+    instNetBuyAmountMillion: null,
+    individualNetBuyAmountMillion: null,
+    foreignNetBuyQty: null,
+    instNetBuyQty: null,
+    individualNetBuyQty: null,
+    isDirectInvestorIndividual: false,
+    rows: [],
+    reason,
+  });
+
+  if (cryptoMasterService.isCryptoSymbol(cleanSym)) {
+    return makeUnavailable('가상자산 미지원', '가상자산 마켓은 국내 투자자별 매매동향(ka10059) 지원 대상이 아닙니다.');
+  }
+
+  const masterItem = kiwoomApiService.getMasterStock(cleanSym);
+  const trackedItem = TRACKED_STOCKS.find(s => s.symbol.toUpperCase() === cleanSym);
+  const usMaster = usStockSearchService.getBySymbol(cleanSym) || usStockSearchService.getBySymbol(cleanSym.replace('-', '.'));
+  const isUS = trackedItem?.market === 'US' || !!usMaster || (!masterItem && isUSStockSymbol(cleanSym));
+
+  if (isUS) {
+    return makeUnavailable('미국 시장 미지원', '미국 주식 시장은 국내 기관·외국인 수급(ka10059) 집계 대상이 아닙니다.');
+  }
+
+  if (!kiwoomApiService.isConfigured()) {
+    return makeUnavailable('수급 데이터 미수신', '키움 Open API 인증 정보가 설정되지 않아 공식 수급 데이터를 조회할 수 없습니다.');
+  }
+
+  const cacheKey = `stock_investor_flow_${cleanSym}_${unitMode}_${tradeType}_${options.date || 'latest'}`;
+  const cached = getFromCache<StockInvestorFlowResponse>(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const [amountRes, qtyRes] = await Promise.all([
+      unitMode !== 'quantity'
+        ? kiwoomApiService.fetchInvestorFlow(cleanSym, { date: options.date, amtQtyType: '1', tradeType, unitType: '1' })
+        : Promise.resolve(null),
+      unitMode !== 'amount'
+        ? kiwoomApiService.fetchInvestorFlow(cleanSym, { date: options.date, amtQtyType: '2', tradeType, unitType: '1' })
+        : Promise.resolve(null),
+    ]);
+
+    const amtAvailable = Boolean(amountRes?.available);
+    const qtyAvailable = Boolean(qtyRes?.available);
+
+    if (!amtAvailable && !qtyAvailable) {
+      const reason = amountRes?.reason || qtyRes?.reason || '키움 ka10059 수급 데이터가 수신되지 않았습니다.';
+      const unavail = makeUnavailable('수급 데이터 미수신', reason);
+      setInCache(cacheKey, unavail, 15000);
+      return unavail;
+    }
+
+    const primary = amtAvailable ? amountRes! : qtyRes!;
+    const hasDirectIndividual =
+      (amtAvailable && amountRes!.individualNetBuy !== null) ||
+      (qtyAvailable && qtyRes!.individualQty !== null);
+
+    const payload: StockInvestorFlowResponse = {
+      symbol: cleanSym,
+      trId: 'ka10059',
+      available: true,
+      investorDataAvailable: true,
+      investorDataSource: primary.investorDataSource,
+      investorUnit: '억원',
+      investorQtyUnit: '주',
+      baseDate: primary.baseDate,
+      updateTime: primary.updateTime,
+      tradeType,
+      foreignNetBuy: amtAvailable ? amountRes!.foreignNetBuy : null,
+      instNetBuy: amtAvailable ? amountRes!.instNetBuy : null,
+      individualNetBuy: amtAvailable ? amountRes!.individualNetBuy : null,
+      foreignNetBuyAmountMillion: amtAvailable ? amountRes!.foreignAmountMillion : null,
+      instNetBuyAmountMillion: amtAvailable ? amountRes!.instAmountMillion : null,
+      individualNetBuyAmountMillion: amtAvailable ? amountRes!.individualAmountMillion : null,
+      foreignNetBuyQty: qtyAvailable ? qtyRes!.foreignQty : null,
+      instNetBuyQty: qtyAvailable ? qtyRes!.instQty : null,
+      individualNetBuyQty: qtyAvailable ? qtyRes!.individualQty : null,
+      isDirectInvestorIndividual: hasDirectIndividual,
+      rows: primary.rows,
+    };
+
+    setInCache(cacheKey, payload, 60000);
+    return payload;
+  } catch (err: any) {
+    const errMsg = err?.message || '키움 ka10059 수급 조회 오류';
+    const unavail = makeUnavailable('수급 데이터 미수신', errMsg);
+    setInCache(cacheKey, unavail, 15000);
+    return unavail;
+  }
 }

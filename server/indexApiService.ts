@@ -246,6 +246,10 @@ class IndexApiService {
         // Cache TTL: 15 seconds for 1d, 60 seconds for daily/monthly
         const ttl = period === '1d' ? 15000 : 60000;
         this.chartCache.set(cacheKey, { data: chartResponse, expiresAt: now + ttl });
+        if (this.chartCache.size > 100) {
+          const oldestKey = this.chartCache.keys().next().value;
+          if (oldestKey) this.chartCache.delete(oldestKey);
+        }
         this.lastGoodCharts.set(cacheKey, chartResponse);
 
         return chartResponse;

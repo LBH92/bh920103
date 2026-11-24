@@ -11,6 +11,7 @@ interface StockVolumeSectionProps {
 export const StockVolumeSection: React.FC<StockVolumeSectionProps> = ({ stock }) => {
   const [data, setData] = useState<VolumeAnalysisData | null>(null);
   const [error, setError] = useState<boolean>(false);
+  const [displayMode, setDisplayMode] = useState<'amount' | 'quantity'>('amount');
 
   useEffect(() => {
     let isSubscribed = true;
@@ -38,8 +39,39 @@ export const StockVolumeSection: React.FC<StockVolumeSectionProps> = ({ stock })
   }
 
   const isSurge = isVolumeSurge(data.volumeRatio);
-  const isForeignBuyer = data.foreignNetBuy >= 0;
-  const isInstBuyer = data.instNetBuy >= 0;
+  const hasAmountData = data.foreignNetBuy !== null && data.instNetBuy !== null;
+  const hasQtyData = (data.foreignNetBuyQty ?? null) !== null && (data.instNetBuyQty ?? null) !== null;
+  const canShowInvestor = Boolean(data.investorDataAvailable && (hasAmountData || hasQtyData));
+  const activeMode: 'amount' | 'quantity' =
+    displayMode === 'quantity' && hasQtyData
+      ? 'quantity'
+      : hasAmountData
+      ? 'amount'
+      : 'quantity';
+
+  const foreignValue = activeMode === 'quantity' ? (data.foreignNetBuyQty ?? null) : data.foreignNetBuy;
+  const instValue = activeMode === 'quantity' ? (data.instNetBuyQty ?? null) : data.instNetBuy;
+  const individualValue = activeMode === 'quantity' ? (data.individualNetBuyQty ?? null) : data.individualNetBuy;
+  const activeUnitLabel = activeMode === 'quantity' ? (data.investorQtyUnit || '주') : '억 원';
+  const activeShortUnit = activeMode === 'quantity' ? (data.investorQtyUnit || '주') : '억';
+
+  const formatSignedInvestorValue = (val: number | null | undefined) => {
+    if (val === null || val === undefined || !Number.isFinite(val)) {
+      return { text: '데이터 없음', colorClass: 'text-slate-400' };
+    }
+    if (val === 0) {
+      return { text: `0${activeShortUnit}`, colorClass: 'text-slate-500 dark:text-slate-300' };
+    }
+    return {
+      text: `${val > 0 ? '+' : ''}${val.toLocaleString()}${activeShortUnit}`,
+      colorClass: val > 0 ? 'text-rose-500' : 'text-blue-500',
+    };
+  };
+
+  const foreignFormatted = formatSignedInvestorValue(foreignValue);
+  const instFormatted = formatSignedInvestorValue(instValue);
+  const individualFormatted = formatSignedInvestorValue(individualValue);
+  const individualLabel = data.isDirectInvestorIndividual === false ? '개인 (역산)' : '개인';
 
   return (
     <div className="p-6 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm space-y-5">
@@ -120,39 +152,77 @@ export const StockVolumeSection: React.FC<StockVolumeSectionProps> = ({ stock })
 
       {/* Investor Trading Trends (외인/기관/개인 수급) */}
       <div className="p-4 rounded-xl bg-slate-50/70 dark:bg-slate-800/30 border border-slate-100 dark:border-slate-800 space-y-3">
-        <div className="flex items-center justify-between text-xs font-semibold">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-semibold">
           <span className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
             <Users className="w-3.5 h-3.5 text-indigo-500" />
-            투자자별 당일 순매수 추정치 <span className="text-[10px] text-slate-400 font-normal">(실시간 집계 데이터 기준)</span>
+            투자자별 당일 순매수 현황 <span className="text-[10px] text-slate-400 font-normal">({data.investorDataSource || '수급 데이터 미수신'})</span>
           </span>
-          <span className="text-slate-400 text-[11px] font-mono">단위: 억 원</span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 font-mono text-xs">
-          <div className="p-3 rounded-lg bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700/80 flex items-center justify-between">
-            <span className="font-sans font-medium text-slate-500">외국인</span>
-            <span className={`font-bold ${isForeignBuyer ? 'text-rose-500' : 'text-blue-500'}`}>
-              {isForeignBuyer ? '+' : ''}{data.foreignNetBuy.toLocaleString()}억
-            </span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700/80 flex items-center justify-between">
-            <span className="font-sans font-medium text-slate-500">기관계</span>
-            <span className={`font-bold ${isInstBuyer ? 'text-rose-500' : 'text-blue-500'}`}>
-              {isInstBuyer ? '+' : ''}{data.instNetBuy.toLocaleString()}억
-            </span>
-          </div>
-
-          <div className="p-3 rounded-lg bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700/80 flex items-center justify-between">
-            <span className="font-sans font-medium text-slate-500">개인 (추정)</span>
-            <span className={`font-bold ${data.individualNetBuy >= 0 ? 'text-rose-500' : 'text-blue-500'}`}>
-              {data.individualNetBuy >= 0 ? '+' : ''}{data.individualNetBuy.toLocaleString()}억
-            </span>
+          <div className="flex items-center gap-2">
+            {canShowInvestor && hasAmountData && hasQtyData && (
+              <div className="inline-flex rounded-lg bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700 p-0.5 text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setDisplayMode('amount')}
+                  className={`px-2 py-0.5 rounded-md font-semibold transition-colors ${activeMode === 'amount' ? 'bg-indigo-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+                >
+                  금액(억 원)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDisplayMode('quantity')}
+                  className={`px-2 py-0.5 rounded-md font-semibold transition-colors ${activeMode === 'quantity' ? 'bg-indigo-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+                >
+                  수량(주)
+                </button>
+              </div>
+            )}
+            <span className="text-slate-400 text-[11px] font-mono">단위: {activeUnitLabel}</span>
           </div>
         </div>
-        <p className="text-[10px] text-slate-400 text-right">
-          갱신시각: {new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
-        </p>
+
+        {canShowInvestor ? (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 font-mono text-xs">
+              <div className="p-3 rounded-lg bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700/80 flex items-center justify-between">
+                <span className="font-sans font-medium text-slate-500">외국인</span>
+                <span className={`font-bold ${foreignFormatted.colorClass}`}>
+                  {foreignFormatted.text}
+                </span>
+              </div>
+
+              <div className="p-3 rounded-lg bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700/80 flex items-center justify-between">
+                <span className="font-sans font-medium text-slate-500">기관계</span>
+                <span className={`font-bold ${instFormatted.colorClass}`}>
+                  {instFormatted.text}
+                </span>
+              </div>
+
+              <div className="p-3 rounded-lg bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700/80 flex items-center justify-between">
+                <span className="font-sans font-medium text-slate-500">{individualLabel}</span>
+                <span className={`font-bold ${individualFormatted.colorClass}`}>
+                  {individualFormatted.text}
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+              <span>출처: {data.investorDataSource || '공식 API'} {data.investorBaseDate ? `(기준일: ${data.investorBaseDate})` : ''}</span>
+              <span>갱신: {data.investorUpdateTime || '미확인'}</span>
+            </div>
+          </>
+        ) : (
+          <div className="p-4 rounded-lg bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700/80 text-center space-y-1">
+            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+              데이터 없음 <span className="text-[10px] font-normal text-slate-400">({data.investorDataSource || '수급 데이터 미수신'})</span>
+            </p>
+            <p className="text-[10px] text-slate-400">
+              {stock.market === 'US'
+                ? '미국 주식 시장은 국내 기관·외국인 수급 집계 대상이 아닙니다.'
+                : stock.market === 'COIN'
+                ? '가상자산 마켓은 국내 기관·외국인 수급 집계 대상이 아닙니다.'
+                : '거래소 공식 수급 데이터가 수신되지 않았거나 장외/미연결 상태입니다. (임의 추정치는 표시되지 않습니다)'}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

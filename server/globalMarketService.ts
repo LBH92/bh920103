@@ -22,6 +22,8 @@ interface CacheEntry<T> {
 }
 
 const globalMarketCache = new Map<string, CacheEntry<any>>();
+const MAX_GLOBAL_CACHE_ENTRIES = 50;
+let inFlightGlobalSummary: Promise<GlobalMarketSummaryResponse> | null = null;
 
 function getCache<T>(key: string): T | null {
   const entry = globalMarketCache.get(key);
@@ -38,6 +40,10 @@ function setCache<T>(key: string, data: T, ttlMs: number): void {
     timestamp: Date.now(),
     ttlMs,
   });
+  if (globalMarketCache.size > MAX_GLOBAL_CACHE_ENTRIES) {
+    const oldestKey = globalMarketCache.keys().next().value;
+    if (oldestKey) globalMarketCache.delete(oldestKey);
+  }
 }
 
 // Global Ticker Definitions
@@ -319,6 +325,30 @@ const GLOBAL_TICKERS: TickerConfig[] = [
     delayStatus: 'delayed_15m',
     delayLabel: '15분 지연',
   },
+  {
+    id: 'eurusd',
+    category: 'forex',
+    name: '유로/달러 (EUR/USD)',
+    symbol: 'EUR/USD',
+    ticker: 'EURUSD=X',
+    currency: 'USD',
+    unit: '$',
+    provider: 'FX Open Data / Yahoo Finance',
+    delayStatus: 'delayed_15m',
+    delayLabel: '15분 지연',
+  },
+  {
+    id: 'usdjpy',
+    category: 'forex',
+    name: '달러/엔 (USD/JPY)',
+    symbol: 'USD/JPY',
+    ticker: 'JPY=X',
+    currency: 'JPY',
+    unit: '엔',
+    provider: 'FX Open Data / Yahoo Finance',
+    delayStatus: 'delayed_15m',
+    delayLabel: '15분 지연',
+  },
 
   // 5. 금리 (Rates & Yields)
   {
@@ -567,18 +597,19 @@ async function fetchSingleTicker(config: TickerConfig): Promise<GlobalMarketItem
       multiplier = 100;
     }
 
-    const price = Number((rawPrice * multiplier).toFixed(config.category === 'rates' ? 3 : 2));
-    const prevClose = Number((rawPrevClose * multiplier).toFixed(config.category === 'rates' ? 3 : 2));
-    const change = Number((price - prevClose).toFixed(config.category === 'rates' ? 3 : 2));
+    const decimals = config.category === 'rates' ? 3 : (config.currency === 'USD' ? 4 : 2);
+    const price = Number((rawPrice * multiplier).toFixed(decimals));
+    const prevClose = Number((rawPrevClose * multiplier).toFixed(decimals));
+    const change = Number((price - prevClose).toFixed(decimals));
     const changePercent = prevClose !== 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
 
-    const high = meta.regularMarketDayHigh ? Number((meta.regularMarketDayHigh * multiplier).toFixed(2)) : undefined;
-    const low = meta.regularMarketDayLow ? Number((meta.regularMarketDayLow * multiplier).toFixed(2)) : undefined;
+    const high = meta.regularMarketDayHigh ? Number((meta.regularMarketDayHigh * multiplier).toFixed(decimals)) : undefined;
+    const low = meta.regularMarketDayLow ? Number((meta.regularMarketDayLow * multiplier).toFixed(decimals)) : undefined;
 
     // Build sparkline from available closes
     const closeArray = (result.indicators?.quote?.[0]?.close || [])
       .filter((v: any) => v !== null && v !== undefined)
-      .map((v: number) => Number((v * multiplier).toFixed(2)));
+      .map((v: number) => Number((v * multiplier).toFixed(decimals)));
     const sparkline = closeArray.length >= 2 ? closeArray.slice(-8) : [prevClose, price];
 
     // Exchange Trade Session & Timestamp
@@ -594,7 +625,13 @@ async function fetchSingleTicker(config: TickerConfig): Promise<GlobalMarketItem
       name: config.name,
       symbol: config.symbol,
       value: price,
-      displayValue: config.is100Yen ? `${price.toLocaleString(undefined, { minimumFractionDigits: 2 })}원 / 100엔` : undefined,
+      displayValue: config.is100Yen
+        ? `${price.toLocaleString(undefined, { minimumFractionDigits: 2 })}원 / 100엔`
+        : config.currency === 'USD'
+        ? `$${price.toFixed(4)}`
+        : config.currency === 'JPY'
+        ? `¥${price.toFixed(2)}`
+        : undefined,
       change,
       changePercent,
       currency: config.currency,
@@ -641,12 +678,22 @@ async function fetchSingleTicker(config: TickerConfig): Promise<GlobalMarketItem
  * Fetch All Global Market Summaries grouped by category
  * Server-side cache TTL: 25 seconds
  */
-export async function getExchangeRate(): Promise<{ rate: number; lastUpdated: string }> {
+export async function getExchangeRate(): Promise<{
+  rate: number;
+  lastUpdated: string;
+  status: string;
+  isStale: boolean;
+  errorMessage?: string;
+}> {
   const summary = await getGlobalMarketSummary();
   const usdkrw = summary.groups.forex.find(item => item.id === 'usdkrw');
+  const hasValid = Boolean(usdkrw && usdkrw.value > 0 && usdkrw.status !== 'error' && usdkrw.status !== 'unavailable');
   return {
-    rate: usdkrw?.value || 1380,
-    lastUpdated: usdkrw?.lastUpdated || new Date().toISOString()
+    rate: hasValid ? usdkrw!.value : 0,
+    lastUpdated: usdkrw?.lastUpdated || formatKST(new Date()),
+    status: usdkrw?.status || 'error',
+    isStale: !hasValid,
+    errorMessage: usdkrw?.errorMessage || (!hasValid ? 'USD/KRW 환율을 수신하지 못했습니다.' : undefined),
   };
 }
 
@@ -657,41 +704,53 @@ export async function getGlobalMarketSummary(): Promise<GlobalMarketSummaryRespo
     return { ...cached, cached: true };
   }
 
-  const fetchedAt = formatKST(new Date());
+  if (inFlightGlobalSummary) {
+    return inFlightGlobalSummary;
+  }
 
-  // Fetch in parallel with individual error resilience across all public providers
-  const [items, cryptoItems, commodityItems, macroItems] = await Promise.all([
-    Promise.all(GLOBAL_TICKERS.map(cfg => fetchSingleTicker(cfg))),
-    cryptoDataProvider.getCryptoItems().catch(() => []),
-    commodityDataProvider.getCommodityItems().catch(() => []),
-    macroEconomicProvider.getMacroItems().catch(() => []),
-  ]);
+  inFlightGlobalSummary = (async () => {
+    try {
+      const fetchedAt = formatKST(new Date());
 
-  const groups: GlobalMarketSummaryResponse['groups'] = {
-    us: items.filter(it => it.category === 'us'),
-    asia: items.filter(it => it.category === 'asia'),
-    europe: items.filter(it => it.category === 'europe'),
-    forex: items.filter(it => it.category === 'forex'),
-    rates: items.filter(it => it.category === 'rates'),
-    crypto: (cryptoItems || []) as any,
-    commodity: (commodityItems || []) as any,
-    macro: (macroItems || []) as any,
-  };
+      // Fetch in parallel with individual error resilience across all public providers
+      const [items, cryptoItems, commodityItems, macroItems] = await Promise.all([
+        Promise.all(GLOBAL_TICKERS.map(cfg => fetchSingleTicker(cfg))),
+        cryptoDataProvider.getCryptoItems().catch(() => []),
+        commodityDataProvider.getCommodityItems().catch(() => []),
+        macroEconomicProvider.getMacroItems().catch(() => []),
+      ]);
 
-  const response: GlobalMarketSummaryResponse = {
-    groups,
-    fetchedAt,
-    cached: false,
-    providerInfo: {
-      primary: 'World Bank / U.S. Treasury / ECB / Upbit / Binance / Yahoo Global',
-      description: '글로벌 주요 거래소, 세계은행, 미국 재무부, 중앙은행 공식 공공 데이터',
-      disclaimer: '해외 증시 및 원자재는 15~20분 지연, 가상자산은 실시간 공개 호가, 거시경제는 정부/기관 공식 공시치입니다.',
-    },
-    providers: unifiedFinancialHubService.getProvidersInfo(),
-  };
+      const groups: GlobalMarketSummaryResponse['groups'] = {
+        us: items.filter(it => it.category === 'us'),
+        asia: items.filter(it => it.category === 'asia'),
+        europe: items.filter(it => it.category === 'europe'),
+        forex: items.filter(it => it.category === 'forex'),
+        rates: items.filter(it => it.category === 'rates'),
+        crypto: (cryptoItems || []) as any,
+        commodity: (commodityItems || []) as any,
+        macro: (macroItems || []) as any,
+      };
 
-  // Cache for 25 seconds (prevents excessive calls while keeping fresh)
-  setCache(cacheKey, response, 25000);
+      const response: GlobalMarketSummaryResponse = {
+        groups,
+        fetchedAt,
+        cached: false,
+        providerInfo: {
+          primary: 'World Bank / U.S. Treasury / ECB / Upbit / Binance / Yahoo Global',
+          description: '글로벌 주요 거래소, 세계은행, 미국 재무부, 중앙은행 공식 공공 데이터',
+          disclaimer: '해외 증시 및 원자재는 15~20분 지연, 가상자산은 실시간 공개 호가, 거시경제는 정부/기관 공식 공시치입니다.',
+        },
+        providers: unifiedFinancialHubService.getProvidersInfo(),
+      };
 
-  return response;
+      // Cache for 25 seconds (prevents excessive calls while keeping fresh)
+      setCache(cacheKey, response, 25000);
+
+      return response;
+    } finally {
+      inFlightGlobalSummary = null;
+    }
+  })();
+
+  return inFlightGlobalSummary;
 }

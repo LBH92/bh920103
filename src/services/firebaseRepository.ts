@@ -11,6 +11,7 @@ import {
   where, 
   orderBy, 
   limit, 
+  startAfter,
   onSnapshot,
   Timestamp,
   serverTimestamp,
@@ -19,6 +20,26 @@ import {
 import { db, auth, OperationType, handleFirestoreError } from './firebase';
 import { UserProfile, UserRole, CommunityPost, CommentItem, ChatMessage, PriceAlert, AdminReport, ReportItem, ChatRoomInfo, WatchlistBuyEntry, Stock } from '../types';
 import { formatChatTime, parseToDate } from '../utils/dateUtils';
+import { inferStockCurrency, inferStockExchange } from '../utils/currency';
+import { dedupeById } from '../utils/dedupe';
+
+async function notifyVerifyActivity(uid: string, activityType: 'post' | 'comment'): Promise<void> {
+  if (!uid) return;
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const token = await auth.currentUser?.getIdToken().catch(() => null);
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    await fetch('/api/user/verify-activity', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ uid, activityType }),
+    });
+  } catch (err) {
+    console.warn('[firebaseRepository] verify-activity notice:', err);
+  }
+}
 
 function extractTimestampIso(raw: any, fallbackServerRaw?: any): string {
   // Try fallback first, then raw. If both fail, try to parse raw as string as last resort.
@@ -298,7 +319,7 @@ export const firebaseRepository = {
   async getUserWatchlists(uid: string): Promise<string[]> {
     const path = 'watchlists';
     try {
-      const q = query(collection(db, path), where('uid', '==', uid));
+      const q = query(collection(db, path), where('uid', '==', uid), limit(200));
       const snap = await getDocs(q);
       const items: { symbol: string; orderIndex: number; createdAt: string }[] = [];
       snap.forEach(docSnap => {
@@ -324,8 +345,7 @@ export const firebaseRepository = {
   subscribeUserWatchlists(uid: string, callback: (symbols: string[]) => void): () => void {
     const path = 'watchlists';
     try {
-      const q = query(collection(db, path), where('uid', '==', uid));
-      console.log(`[Firebase] Creating watchlist listener for user: ${uid}`);
+      const q = query(collection(db, path), where('uid', '==', uid), limit(200));
       const unsubscribe = onSnapshot(q, snap => {
         const items: { symbol: string; orderIndex: number; createdAt: string }[] = [];
         snap.forEach(docSnap => {
@@ -349,7 +369,6 @@ export const firebaseRepository = {
         }
       });
       return () => {
-        console.log(`[Firebase] Cleaning up watchlist listener for user: ${uid}`);
         unsubscribe();
       };
     } catch (err) {
@@ -373,8 +392,9 @@ export const firebaseRepository = {
         uid,
         symbol,
         market,
+        currency: inferStockCurrency(symbol, market, stockData?.currency),
         name: stockData?.name || symbol,
-        exchange: stockData?.exchange || '',
+        exchange: inferStockExchange(symbol, market, stockData?.exchange),
         productType: stockData?.productType || '',
         orderIndex: typeof orderIndex === 'number' ? orderIndex : Date.now(),
         createdAt: new Date().toISOString(),
@@ -465,7 +485,7 @@ export const firebaseRepository = {
           })) : [],
         });
       });
-      return list;
+      return dedupeById(list);
     } catch (err) {
       console.warn('Firebase get posts failed:', err);
       return [];
@@ -518,7 +538,7 @@ export const firebaseRepository = {
               })) : [],
             });
           });
-          callback(list);
+          callback(dedupeById(list));
         },
         err => {
           if (err.code === 'cancelled') {
@@ -616,11 +636,7 @@ export const firebaseRepository = {
         tags: post.tags || [],
       });
       // Server-side verification
-      fetch('/api/user/verify-activity', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: post.author.id, activityType: 'post' }),
-      }).catch(console.error);
+      void notifyVerifyActivity(post.author.id, 'post');
       return docRef.id;
     } catch (err) {
       console.warn('Firebase create post failed:', err);
@@ -729,11 +745,7 @@ export const firebaseRepository = {
           commentCount: curComments.length,
         });
         // Server-side verification
-        fetch('/api/user/verify-activity', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uid: comment.author.id, activityType: 'comment' }),
-        }).catch(console.error);
+        void notifyVerifyActivity(comment.author.id, 'comment');
       }
     } catch (err) {
       console.warn('Firebase addComment failed:', err);
@@ -859,7 +871,7 @@ export const firebaseRepository = {
   // 4. Chat Rooms & Messages Real-time Subscription
   async getChatRooms(): Promise<ChatRoomInfo[]> {
     try {
-      const snap = await getDocs(collection(db, 'chatRooms'));
+      const snap = await getDocs(query(collection(db, 'chatRooms'), limit(50)));
       const rooms: ChatRoomInfo[] = [];
       snap.forEach(d => {
         const data = d.data();
@@ -876,7 +888,7 @@ export const firebaseRepository = {
           createdAt: data.createdAt,
         });
       });
-      return rooms;
+      return dedupeById(rooms);
     } catch (err) {
       console.warn('Firebase getChatRooms error:', err);
       return [];
@@ -903,7 +915,7 @@ export const firebaseRepository = {
             createdAt: data.createdAt,
           });
         });
-        callback(rooms);
+        callback(dedupeById(rooms));
       }, err => {
         if (err.code === 'cancelled') {
           console.debug('[Firebase] Chat rooms listener cancelled:', err.message);
@@ -960,7 +972,6 @@ export const firebaseRepository = {
         limit(messageLimit)
       );
       
-      console.log(`[Firebase] Creating chat listener for room: ${roomId}`);
       const unsubscribe = onSnapshot(q, snap => {
         if (!active) return;
 
@@ -996,7 +1007,7 @@ export const firebaseRepository = {
         
         // Chronological: Oldest first (ascending sortTime)
         list.sort((a: any, b: any) => (a._sortTime || 0) - (b._sortTime || 0));
-        callback(list);
+        callback(dedupeById(list));
       }, err => {
         if (!active) return;
         if (err.code === 'cancelled') {
@@ -1010,7 +1021,6 @@ export const firebaseRepository = {
 
       return () => {
         active = false;
-        console.log(`[Firebase] Cleaning up chat listener for room: ${roomId}`);
         unsubscribe();
       };
     } catch (err) {
@@ -1083,7 +1093,7 @@ export const firebaseRepository = {
         });
         // Sort newest first for admin monitoring
         list.sort((a: any, b: any) => (b._sortTime || 0) - (a._sortTime || 0));
-        callback(list);
+        callback(dedupeById(list));
       }, err => {
         if (err.code === 'cancelled') {
           console.debug('[Firebase] AllChat listener cancelled');
@@ -1178,9 +1188,25 @@ export const firebaseRepository = {
 
   subscribeChatRestrictions(callback: (restrictedUids: string[]) => void): () => void {
     try {
-      const col = collection(db, 'chatRestrictions');
-      const colLegacy = collection(db, 'chat_restrictions');
-      
+      const col = query(collection(db, 'chatRestrictions'), limit(200));
+      const colLegacy = query(collection(db, 'chat_restrictions'), limit(100));
+      let legacyUidsCache: string[] | null = null;
+      let latestPrimaryUids: string[] = [];
+
+      // Fetch legacy collection once per subscription instead of re-reading on every snapshot
+      getDocs(colLegacy).then(snapLegacy => {
+        const legacy: string[] = [];
+        snapLegacy.forEach(d => {
+          if (d.id !== 'lr018vf8CcW5fAv707vsl77qJy53') legacy.push(d.id);
+        });
+        legacyUidsCache = legacy;
+        if (legacy.length > 0) {
+          callback(Array.from(new Set([...latestPrimaryUids, ...legacy])));
+        }
+      }).catch(() => {
+        legacyUidsCache = [];
+      });
+
       const unsub = onSnapshot(col, snap => {
         const uids: string[] = [];
         snap.forEach(d => {
@@ -1188,20 +1214,8 @@ export const firebaseRepository = {
             uids.push(d.id);
           }
         });
-        
-        // Check legacy
-        getDocs(colLegacy).then(snapLegacy => {
-          if (!snapLegacy.empty) {
-            snapLegacy.forEach(d => {
-              if (d.id !== 'lr018vf8CcW5fAv707vsl77qJy53' && !uids.includes(d.id)) {
-                uids.push(d.id);
-              }
-            });
-          }
-          callback(uids);
-        }).catch(() => {
-          callback(uids);
-        });
+        latestPrimaryUids = uids;
+        callback(legacyUidsCache ? Array.from(new Set([...uids, ...legacyUidsCache])) : uids);
       }, err => {
         if (err.code === 'cancelled') {
           console.debug('[Firebase] Restrictions listener cancelled');
@@ -1222,8 +1236,7 @@ export const firebaseRepository = {
   subscribeUserPriceAlerts(uid: string, onUpdate: (alerts: PriceAlert[]) => void): () => void {
     if (!uid) return () => {};
     try {
-      const q = query(collection(db, 'alerts'), where('uid', '==', uid));
-      console.log(`[Firebase] Creating price alert listener for user: ${uid}`);
+      const q = query(collection(db, 'alerts'), where('uid', '==', uid), limit(200));
       const unsubscribe = onSnapshot(q, (snap) => {
         const list: PriceAlert[] = [];
         snap.forEach(docSnap => {
@@ -1248,7 +1261,7 @@ export const firebaseRepository = {
           if (a.isTriggered !== b.isTriggered) return a.isTriggered ? 1 : -1;
           return (b.createdAt || '').localeCompare(a.createdAt || '');
         });
-        onUpdate(list);
+        onUpdate(dedupeById(list));
       }, (err) => {
         if (err.code === 'cancelled') {
           console.debug('[Firebase] Price alerts listener cancelled (likely idle/reconnecting):', err.message);
@@ -1258,7 +1271,6 @@ export const firebaseRepository = {
         }
       });
       return () => {
-        console.log(`[Firebase] Cleaning up price alert listener for user: ${uid}`);
         unsubscribe();
       };
     } catch (err) {
@@ -1270,7 +1282,7 @@ export const firebaseRepository = {
 
   async getUserAlerts(uid: string): Promise<PriceAlert[]> {
     try {
-      const q = query(collection(db, 'alerts'), where('uid', '==', uid));
+      const q = query(collection(db, 'alerts'), where('uid', '==', uid), limit(200));
       const snap = await getDocs(q);
       const list: PriceAlert[] = [];
       snap.forEach(docSnap => {
@@ -1290,7 +1302,7 @@ export const firebaseRepository = {
           note: d.note || '',
         });
       });
-      return list;
+      return dedupeById(list);
     } catch (err) {
       console.warn('Firebase get alerts failed:', err);
       return [];
@@ -1350,12 +1362,17 @@ export const firebaseRepository = {
     }
   },
 
-  // 6. Admin Data Cleansing Operations
+  // 6. Admin Data Cleansing Operations (multi-batch <= 400 ops/batch for >400 docs)
   async clearAllReports(): Promise<void> {
     try {
-      const snap = await getDocs(collection(db, 'reports'));
-      const batchPromises = snap.docs.map(d => deleteDoc(d.ref));
-      await Promise.all(batchPromises);
+      for (let i = 0; i < 1000; i++) {
+        const snap = await getDocs(query(collection(db, 'reports'), limit(400)));
+        if (snap.empty) break;
+        const batch = writeBatch(db);
+        snap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+        if (snap.size < 400) break;
+      }
     } catch (err) {
       console.warn('[firebaseRepository] clearAllReports failed:', err);
     }
@@ -1363,9 +1380,14 @@ export const firebaseRepository = {
 
   async clearAllSanctions(): Promise<void> {
     try {
-      const snap = await getDocs(collection(db, 'chatRestrictions'));
-      const batchPromises = snap.docs.map(d => deleteDoc(d.ref));
-      await Promise.all(batchPromises);
+      for (let i = 0; i < 1000; i++) {
+        const snap = await getDocs(query(collection(db, 'chatRestrictions'), limit(400)));
+        if (snap.empty) break;
+        const batch = writeBatch(db);
+        snap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+        if (snap.size < 400) break;
+      }
     } catch (err) {
       console.warn('[firebaseRepository] clearAllSanctions failed:', err);
     }
@@ -1373,9 +1395,14 @@ export const firebaseRepository = {
 
   async clearAllAdminLogs(): Promise<void> {
     try {
-      const snap = await getDocs(collection(db, 'adminAuditLogs'));
-      const batchPromises = snap.docs.map(d => deleteDoc(d.ref));
-      await Promise.all(batchPromises);
+      for (let i = 0; i < 1000; i++) {
+        const snap = await getDocs(query(collection(db, 'adminAuditLogs'), limit(400)));
+        if (snap.empty) break;
+        const batch = writeBatch(db);
+        snap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+        if (snap.size < 400) break;
+      }
     } catch (err) {
       console.warn('[firebaseRepository] clearAllAdminLogs failed:', err);
     }
@@ -1420,14 +1447,24 @@ export const firebaseRepository = {
       if (!(await this.isAdmin(adminUid))) {
         throw new Error('Unauthorized: Admin access required.');
       }
-      const q = query(collection(db, 'chatMessages'), where('roomId', '==', roomId));
-      const snap = await getDocs(q);
-      
-      const batch = writeBatch(db);
-      snap.docs.forEach(d => {
-        batch.update(d.ref, { isDeleted: true, deletedAt: new Date().toISOString() });
-      });
-      await batch.commit();
+      let lastDoc: any = null;
+      for (let i = 0; i < 1000; i++) {
+        const q = lastDoc
+          ? query(collection(db, 'chatMessages'), where('roomId', '==', roomId), startAfter(lastDoc), limit(400))
+          : query(collection(db, 'chatMessages'), where('roomId', '==', roomId), limit(400));
+        const snap = await getDocs(q);
+        if (snap.empty) break;
+
+        const batch = writeBatch(db);
+        const nowIso = new Date().toISOString();
+        snap.docs.forEach(d => {
+          batch.update(d.ref, { isDeleted: true, deletedAt: nowIso });
+        });
+        await batch.commit();
+
+        if (snap.size < 400) break;
+        lastDoc = snap.docs[snap.docs.length - 1];
+      }
     } catch (err) {
       console.warn('[firebaseRepository] clearRoomChatHistory failed:', err);
       throw err;
@@ -1468,7 +1505,7 @@ export const firebaseRepository = {
   async getUserStockPurchases(uid: string): Promise<Record<string, WatchlistBuyEntry[]>> {
     const path = 'userStockPurchases';
     try {
-      const q = query(collection(db, path), where('uid', '==', uid));
+      const q = query(collection(db, path), where('uid', '==', uid), limit(200));
       const snap = await getDocs(q);
       const purchases: Record<string, WatchlistBuyEntry[]> = {};
       snap.forEach(docSnap => {
@@ -1535,9 +1572,9 @@ export const firebaseRepository = {
 
   async getUserGameHistory(uid: string, gameType?: 'ladder' | 'lunch' | 'office'): Promise<any[]> {
     try {
-      let q = query(collection(db, 'gameHistory'), where('uid', '==', uid), orderBy('createdAt', 'desc'));
+      let q = query(collection(db, 'gameHistory'), where('uid', '==', uid), orderBy('createdAt', 'desc'), limit(100));
       if (gameType) {
-        q = query(q, where('gameType', '==', gameType));
+        q = query(q, where('gameType', '==', gameType), limit(100));
       }
       const snap = await getDocs(q);
       const list: any[] = [];

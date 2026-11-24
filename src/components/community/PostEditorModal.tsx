@@ -4,6 +4,7 @@ import { useApp } from '../../context/AppContext';
 import { CommunityPost, PostCategory } from '../../types';
 import { storageService } from '../../services/storageService';
 import { firebaseRepository } from '../../services/firebaseRepository';
+import { inferStockCurrency, formatMoney } from '../../utils/currency';
 
 interface PostEditorModalProps {
   isOpen: boolean;
@@ -111,11 +112,10 @@ export const PostEditorModal: React.FC<PostEditorModalProps> = ({
         // 1. Firebase Firestore create
         const firebaseDocId = await firebaseRepository.createPost(postData);
 
-        // 2. Storage service create
+        // 2. Storage service create with aligned Firestore ID
         const created = storageService.createPost({
           ...postData,
-        });
-        created.id = firebaseDocId; // align ID with Firestore
+        }, firebaseDocId);
 
         showToast('게시글이 성공적으로 등록되었습니다!', 'success');
         onSuccess(created);
@@ -198,7 +198,7 @@ export const PostEditorModal: React.FC<PostEditorModalProps> = ({
                 <option value="">종목 없음 (일반 토론)</option>
                 {stocks.map(s => (
                   <option key={s.symbol} value={s.symbol}>
-                    {s.name} ({s.symbol}) - {s.market} · {s.price.toLocaleString()}원
+                    {s.name} ({s.symbol}) - {s.exchange || s.market} · {formatMoney(s.price, inferStockCurrency(s.symbol, s.market, s.currency))}
                   </option>
                 ))}
               </select>

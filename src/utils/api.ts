@@ -8,20 +8,15 @@ export const PROD_API_BASE_URL = 'https://ais-dev-kocqdv6eyo4m676x7o5jyl-6746827
  * prepends the HTTPS backend base URL.
  */
 export const getApiUrl = (path: string): string => {
-  const envUrl = import.meta.env.VITE_API_BASE_URL;
-  if (envUrl && envUrl.trim()) {
+  // Inside Capacitor native container (Android / iOS)
+  if (typeof window !== 'undefined' && Capacitor?.isNativePlatform?.()) {
+    const envUrl = import.meta.env.VITE_API_BASE_URL || PROD_API_BASE_URL;
     const base = envUrl.replace(/\/+$/, '');
     const cleanPath = path.startsWith('/') ? path : `/${path}`;
     return `${base}${cleanPath}`;
   }
 
-  // Inside Capacitor native container (Android / iOS)
-  if (typeof window !== 'undefined' && Capacitor?.isNativePlatform?.()) {
-    const cleanPath = path.startsWith('/') ? path : `/${path}`;
-    return `${PROD_API_BASE_URL}${cleanPath}`;
-  }
-
-  // Web environment: relative path works with Vite dev proxy and Cloud Run web server
+  // Web environment: always use relative path to prevent CORS issues
   return path;
 };
 

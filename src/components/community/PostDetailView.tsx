@@ -28,6 +28,8 @@ import { getErrorMessage } from '../../utils/firestoreError';
 import { PostEditorModal } from './PostEditorModal';
 import { ReportModal } from './ReportModal';
 import { PriceBadge } from '../common/PriceBadge';
+import { inferStockCurrency, formatMoney } from '../../utils/currency';
+import { dedupeById } from '../../utils/dedupe';
 
 interface PostDetailViewProps {
   postId: string;
@@ -68,8 +70,9 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
 
   // Comment pagination limit
   const [commentLimit, setCommentLimit] = useState(15);
-  const visibleComments = (post?.comments || []).slice(0, commentLimit);
-  const hasMoreComments = (post?.comments || []).length > commentLimit;
+  const uniqueComments = dedupeById(post?.comments || []);
+  const visibleComments = uniqueComments.slice(0, commentLimit);
+  const hasMoreComments = uniqueComments.length > commentLimit;
 
   // Load from Firestore & increment view count on mount
   useEffect(() => {
@@ -78,7 +81,10 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
     firebaseRepository.getPostById(postId).then(remotePost => {
       if (isSubscribed) {
         if (remotePost) {
-          setPost(remotePost);
+          setPost({
+            ...remotePost,
+            comments: dedupeById(remotePost.comments || []),
+          });
         }
         setIsLoading(false);
       }
@@ -207,7 +213,7 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
     // 1. Storage update
     storageService.addComment(post.id, user, commentText.trim());
     // Optimistic UI update
-    setPost(prev => prev ? ({ ...prev, comments: [...(prev.comments || []), newCommentItem] }) : prev);
+    setPost(prev => prev ? ({ ...prev, comments: dedupeById([...(prev.comments || []), newCommentItem]) }) : prev);
 
     // 2. Firestore update
     try {
@@ -236,7 +242,7 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
     await firebaseRepository.updateComment(post.id, commentId, editingCommentText.trim());
 
     const refreshed = storageService.getPostById(post.id);
-    if (refreshed) setPost({ ...refreshed });
+    if (refreshed) setPost({ ...refreshed, comments: dedupeById(refreshed.comments || []) });
     setEditingCommentId(null);
     setEditingCommentText('');
     showToast('댓글이 수정되었습니다.', 'success');
@@ -372,9 +378,14 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
           <div className="flex items-center justify-between sm:justify-end gap-6 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 dark:border-slate-800">
             <div className="text-right">
               <div className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white">
-                {matchedStock.price.toLocaleString()}원
+                {formatMoney(matchedStock.price, inferStockCurrency(matchedStock.symbol, matchedStock.market, matchedStock.currency))}
               </div>
-              <PriceBadge change={matchedStock.change} changePercent={matchedStock.changePercent} size="sm" />
+              <PriceBadge
+                change={matchedStock.change}
+                changePercent={matchedStock.changePercent}
+                currency={inferStockCurrency(matchedStock.symbol, matchedStock.market, matchedStock.currency)}
+                size="sm"
+              />
             </div>
 
             <div className="flex items-center gap-1 text-xs font-bold text-rose-600 dark:text-rose-400 group-hover:translate-x-1 transition-transform">
@@ -457,9 +468,9 @@ export const PostDetailView: React.FC<PostDetailViewProps> = ({ postId }) => {
         {/* Tags */}
         {post.tags && post.tags.length > 0 && (
           <div className="flex items-center gap-2 flex-wrap pt-1">
-            {post.tags.map(t => (
+            {post.tags.map((t, tagIdx) => (
               <span
-                key={t}
+                key={`${t}-${tagIdx}`}
                 className="text-xs text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg font-medium"
               >
                 #{t}

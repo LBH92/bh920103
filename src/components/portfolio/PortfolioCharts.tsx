@@ -12,13 +12,14 @@ import {
   CartesianGrid,
   Legend
 } from 'recharts';
-import { PieChart as PieIcon, BarChart2 } from 'lucide-react';
-import { VirtualHolding } from '../../types';
+import { PieChart as PieIcon, BarChart2, AlertTriangle } from 'lucide-react';
+import { ExchangeRate, VirtualHolding } from '../../types';
+import { formatMoney, inferFiatCurrency, validateExchangeRate } from '../../utils/currency';
 
 interface PortfolioChartsProps {
   holdings: VirtualHolding[];
   quotesMap: Map<string, { price: number; change?: number; changePercent?: number }>;
-  exchangeRate?: { rate: number };
+  exchangeRate?: Partial<ExchangeRate> | null;
   onSelectStock?: (symbol: string) => void;
 }
 
@@ -39,27 +40,52 @@ export const PortfolioCharts: React.FC<PortfolioChartsProps> = ({
   exchangeRate,
   onSelectStock
 }) => {
-  const currentRate = exchangeRate?.rate || 1400;
+  const fxCheck = validateExchangeRate(exchangeRate);
+  const hasUsdHoldings = holdings.some(h => inferFiatCurrency(h.symbol, h.market, h.currency) === 'USD');
+
+  if (hasUsdHoldings && !fxCheck.valid) {
+    return (
+      <div className="p-6 rounded-2xl bg-rose-500/10 border border-rose-500/30 shadow-sm text-center space-y-2">
+        <div className="w-10 h-10 rounded-xl bg-rose-500/15 text-rose-500 mx-auto flex items-center justify-center">
+          <AlertTriangle className="w-5 h-5" />
+        </div>
+        <h4 className="font-bold text-sm text-rose-700 dark:text-rose-300">
+          환율 정보 지연/오류로 통화 혼합 포트폴리오 차트 환산을 일시 중단했습니다
+        </h4>
+        <p className="text-xs text-rose-600/90 dark:text-rose-400">
+          {fxCheck.reason || '실시간 USD/KRW 환율이 정상 수신되면 KRW 및 USD 자산을 기준통화로 환산해 차트를 표시합니다.'}
+        </p>
+      </div>
+    );
+  }
+
+  const rate = fxCheck.rate ?? 1;
 
   const chartData = holdings.map(h => {
     const quote = quotesMap.get(h.symbol);
-    const isUSD = h.currency === 'USD';
+    const cur = inferFiatCurrency(h.symbol, h.market, h.currency);
+    const isUSD = cur === 'USD';
     const price = quote?.price || 0;
-    const valuation = price * h.quantity;
-    const valuationKRW = isUSD ? valuation * currentRate : valuation;
-    const cost = h.totalBuyAmount * (isUSD ? currentRate : 1);
-    const profit = valuationKRW - cost;
-    const profitRate = cost > 0 ? (profit / cost) * 100 : 0;
+    const nativeValuation = price * h.quantity;
+    const nativeCost = h.totalBuyAmount;
+    const nativeProfit = nativeValuation - nativeCost;
+    const valuationKRW = isUSD ? nativeValuation * rate : nativeValuation;
+    const costKRW = isUSD ? nativeCost * rate : nativeCost;
+    const profitKRW = valuationKRW - costKRW;
+    const profitRate = nativeCost > 0 ? (nativeProfit / nativeCost) * 100 : 0;
 
     return {
       symbol: h.symbol,
       name: h.name || h.symbol,
       valuation: Math.max(0, Math.round(valuationKRW)),
-      profit: Math.round(profit),
+      profit: Math.round(profitKRW),
+      cost: Math.round(costKRW),
+      nativeValuation,
+      nativeCost,
+      nativeProfit,
       profitRate: Number(profitRate.toFixed(2)),
-      cost: Math.round(cost),
       quantity: h.quantity,
-      currency: h.currency,
+      currency: cur,
     };
   }).filter(d => d.valuation > 0 || Math.abs(d.profit) > 0);
 
@@ -96,11 +122,11 @@ export const PortfolioCharts: React.FC<PortfolioChartsProps> = ({
           <div className="flex items-center gap-2">
             <PieIcon className="w-4 h-4 text-rose-500" />
             <h3 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white">
-              자산 비중 (파이 차트)
+              자산 비중 (KRW 환산 기준)
             </h3>
           </div>
           <span className="text-[11px] text-slate-400 font-mono">
-            총 평가액 {totalValuation.toLocaleString()}원
+            총 평가액 {formatMoney(totalValuation, 'KRW')}
           </span>
         </div>
 
@@ -141,12 +167,13 @@ export const PortfolioCharts: React.FC<PortfolioChartsProps> = ({
                       <div className="p-3 bg-white dark:bg-[#1c2333] border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl text-xs space-y-1">
                         <div className="flex items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-1.5 font-bold">
                           <span className="text-slate-900 dark:text-white">{data.name}</span>
-                          <span className="text-[10px] text-slate-400 font-mono">{data.symbol}</span>
+                          <span className="text-[10px] text-slate-400 font-mono">{data.symbol} · {data.currency}</span>
                         </div>
                         <div className="flex items-center justify-between gap-4 pt-1 text-slate-600 dark:text-slate-300">
                           <span>평가금액:</span>
                           <span className="font-mono font-bold text-slate-900 dark:text-white">
-                            {data.valuation.toLocaleString()}원
+                            {formatMoney(data.nativeValuation, data.currency)}
+                            {data.currency === 'USD' && ` (≈ ${formatMoney(data.valuation, 'KRW')})`}
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-4 text-slate-600 dark:text-slate-300">
@@ -180,11 +207,11 @@ export const PortfolioCharts: React.FC<PortfolioChartsProps> = ({
           <div className="flex items-center gap-2">
             <BarChart2 className="w-4 h-4 text-blue-500" />
             <h3 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white">
-              종목별 평가손익 (바 차트)
+              종목별 평가손익 (KRW 환산 기준)
             </h3>
           </div>
           <span className="text-[11px] text-slate-400 font-sans">
-            손익(원) / 클릭 시 종목 이동
+            손익(₩) / 클릭 시 종목 이동
           </span>
         </div>
 
@@ -221,26 +248,34 @@ export const PortfolioCharts: React.FC<PortfolioChartsProps> = ({
                 content={({ active, payload }) => {
                   if (active && payload && payload.length) {
                     const data = payload[0].payload;
-                    const isProfit = data.profit >= 0;
+                    const isProfit = data.nativeProfit >= 0;
                     return (
                       <div className="p-3 bg-white dark:bg-[#1c2333] border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl text-xs space-y-1">
                         <div className="flex items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-1.5 font-bold">
                           <span className="text-slate-900 dark:text-white">{data.name}</span>
-                          <span className="text-[10px] text-slate-400 font-mono">{data.symbol}</span>
+                          <span className="text-[10px] text-slate-400 font-mono">{data.symbol} · {data.currency}</span>
                         </div>
                         <div className="flex items-center justify-between gap-4 pt-1">
-                          <span className="text-slate-600 dark:text-slate-300">평가손익:</span>
-                          <span className={`font-mono font-bold ${isProfit ? 'text-rose-500' : 'text-blue-500'}`}>
-                            {isProfit ? '+' : ''}{data.profit.toLocaleString()}원 ({isProfit ? '+' : ''}{data.profitRate}%)
+                          <span className="text-slate-600 dark:text-slate-300">원화환산 손익:</span>
+                          <span className={`font-mono font-bold ${data.profit >= 0 ? 'text-rose-500' : 'text-blue-500'}`}>
+                            {formatMoney(data.profit, 'KRW', { showSign: true })} ({isProfit ? '+' : ''}{data.profitRate}%)
                           </span>
                         </div>
+                        {data.currency === 'USD' && (
+                          <div className="flex items-center justify-between gap-4 text-slate-600 dark:text-slate-300">
+                            <span>원화 외 종목손익:</span>
+                            <span className={`font-mono font-bold ${isProfit ? 'text-rose-500' : 'text-blue-500'}`}>
+                              {formatMoney(data.nativeProfit, 'USD', { showSign: true })}
+                            </span>
+                          </div>
+                        )}
                         <div className="flex items-center justify-between gap-4 text-slate-600 dark:text-slate-300">
                           <span>투자원금:</span>
-                          <span className="font-mono">{data.cost.toLocaleString()}원</span>
+                          <span className="font-mono">{formatMoney(data.nativeCost, data.currency)}</span>
                         </div>
                         <div className="flex items-center justify-between gap-4 text-slate-600 dark:text-slate-300">
                           <span>현재평가액:</span>
-                          <span className="font-mono">{data.valuation.toLocaleString()}원</span>
+                          <span className="font-mono">{formatMoney(data.nativeValuation, data.currency)}</span>
                         </div>
                         <p className="text-[10px] text-slate-400 pt-1 text-center">클릭 시 종목 상세 이동</p>
                       </div>

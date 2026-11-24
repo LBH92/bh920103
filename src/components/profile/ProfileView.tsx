@@ -25,6 +25,7 @@ import { UserAiSettingsModal } from './UserAiSettingsModal';
 import { InquiryForm } from '../user/InquiryForm';
 import { MyInquiries } from '../user/MyInquiries';
 import { AppInfoView } from './AppInfoView';
+import { dedupeById } from '../../utils/dedupe';
 
 export const ProfileView: React.FC = () => {
   const { user, updateUser, watchlist, navigateToPost, setActiveTab, setIsAuthModalOpen, showToast, logout } = useApp();
@@ -61,7 +62,7 @@ export const ProfileView: React.FC = () => {
     );
   }
 
-  const allPosts = storageService.getPosts();
+  const allPosts = dedupeById(storageService.getPosts());
   const myPosts = allPosts.filter(p => p.author.id === user.id || p.author.name === user.name);
 
   // My comments

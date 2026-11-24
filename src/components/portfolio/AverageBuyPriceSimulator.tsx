@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Calculator, ArrowDownRight, ArrowUpRight, CheckCircle2, AlertCircle, RefreshCw, Layers } from 'lucide-react';
 import { portfolioService } from '../../services/portfolioService';
 import { useApp } from '../../context/AppContext';
+import { formatMoney as formatCurrencyMoney, validateExchangeRate } from '../../utils/currency';
 
 interface Props {
   uid?: string;
@@ -32,7 +33,9 @@ export const AverageBuyPriceSimulator: React.FC<Props> = ({
   onBuySuccess,
   onClose,
 }) => {
-  const { showToast } = useApp();
+  const { showToast, exchangeRate } = useApp();
+  const fxCheck = validateExchangeRate(exchangeRate);
+  const validFxRate = fxCheck.valid && fxCheck.rate ? fxCheck.rate : undefined;
 
   const isUSD = currency === 'USD';
   const defaultPrice = currentPrice && currentPrice > 0 ? currentPrice : currentAvgPrice;
@@ -107,6 +110,7 @@ export const AverageBuyPriceSimulator: React.FC<Props> = ({
             quantity: numAddQty,
             avgBuyPrice: numAddPrice,
             buyDate: new Date().toISOString().slice(0, 10),
+            entryExchangeRate: isUSD ? validFxRate : undefined,
             memo: memo || '최초 매수',
           });
           targetHoldingId = created.id;
@@ -121,7 +125,8 @@ export const AverageBuyPriceSimulator: React.FC<Props> = ({
           numAddQty,
           numAddPrice,
           new Date().toISOString().slice(0, 10),
-          memo || `물타기 추가매수 (${numAddQty}주 @ ${numAddPrice.toLocaleString()}${isUSD ? '$' : '원'})`
+          memo || `물타기 추가매수 (${numAddQty}주 @ ${formatCurrencyMoney(numAddPrice, currency)})`,
+          isUSD ? validFxRate : undefined
         );
       }
 
@@ -137,12 +142,7 @@ export const AverageBuyPriceSimulator: React.FC<Props> = ({
     }
   };
 
-  const formatMoney = (val: number) => {
-    if (isUSD) {
-      return `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    }
-    return `${Math.round(val).toLocaleString()}원`;
-  };
+  const formatMoney = (val: number) => formatCurrencyMoney(val, currency);
 
   return (
     <div className="p-5 bg-white dark:bg-[#131722] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-md space-y-5 animate-in fade-in duration-200">

@@ -20,6 +20,7 @@ import { storageService } from '../../services/storageService';
 import { firebaseRepository } from '../../services/firebaseRepository';
 import { sentimentService, SentimentAnalysisResult } from '../../services/sentimentService';
 import { PriceBadge } from '../common/PriceBadge';
+import { inferStockCurrency, formatMoney } from '../../utils/currency';
 
 interface MarketSentimentCardProps {
   onNavigateToStock?: (symbol: string) => void;
@@ -32,7 +33,7 @@ export const MarketSentimentCard: React.FC<MarketSentimentCardProps> = ({
   onNavigateToChat,
   onNavigateToCommunity,
 }) => {
-  const { stocks, navigateToStock, setActiveTab, showToast } = useApp();
+  const { stocks, navigateToStock, setActiveTab, showToast, isAuthenticated } = useApp();
 
   const [filterMode, setFilterMode] = useState<'all' | 'chat' | 'posts'>('all');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
@@ -55,8 +56,9 @@ export const MarketSentimentCard: React.FC<MarketSentimentCardProps> = ({
   const [hasVotedToday, setHasVotedToday] = useState<boolean>(() => Boolean(sentimentService.getUserVote()));
   const [showMethodologyModal, setShowMethodologyModal] = useState(false);
 
-  // Real-time Chat Subscription
+  // Real-time Chat Subscription (only when authenticated)
   useEffect(() => {
+    if (!isAuthenticated) return;
     let unsubscribeChat: (() => void) | null = null;
     try {
       unsubscribeChat = firebaseRepository.subscribeAllChat(
@@ -65,7 +67,7 @@ export const MarketSentimentCard: React.FC<MarketSentimentCardProps> = ({
             setChatMessages(msgs);
           }
         },
-        100,
+        50,
         err => {
           console.warn('[MarketSentimentCard] chat stream fallback:', err);
         }
@@ -77,10 +79,11 @@ export const MarketSentimentCard: React.FC<MarketSentimentCardProps> = ({
     return () => {
       if (unsubscribeChat) unsubscribeChat();
     };
-  }, []);
+  }, [isAuthenticated]);
 
-  // Real-time Posts Subscription
+  // Real-time Posts Subscription (only when authenticated)
   useEffect(() => {
+    if (!isAuthenticated) return;
     let unsubscribePosts: (() => void) | null = null;
     try {
       unsubscribePosts = firebaseRepository.subscribePosts(
@@ -98,7 +101,7 @@ export const MarketSentimentCard: React.FC<MarketSentimentCardProps> = ({
     return () => {
       if (unsubscribePosts) unsubscribePosts();
     };
-  }, []);
+  }, [isAuthenticated]);
 
   // Compute sentiment analysis based on active filter
   const sentimentData: SentimentAnalysisResult = useMemo(() => {
@@ -523,13 +526,18 @@ export const MarketSentimentCard: React.FC<MarketSentimentCardProps> = ({
                   <div className="text-right shrink-0 flex sm:flex-col items-center sm:items-end justify-between sm:justify-center">
                     {stock.price ? (
                       <div className="font-mono font-bold text-xs text-slate-900 dark:text-white">
-                        {stock.price.toLocaleString()}원
+                        {formatMoney(stock.price, inferStockCurrency(stock.symbol, undefined, (stock as any).currency))}
                       </div>
                     ) : (
                       <span className="text-[11px] text-slate-400 font-normal">시세 연동</span>
                     )}
                     {stock.changePercent !== undefined ? (
-                      <PriceBadge change={stock.changePercent} changePercent={stock.changePercent} size="sm" />
+                      <PriceBadge
+                        change={stock.changePercent}
+                        changePercent={stock.changePercent}
+                        currency={inferStockCurrency(stock.symbol, undefined, (stock as any).currency)}
+                        size="sm"
+                      />
                     ) : (
                       <span className={`text-[11px] font-bold ${stock.dominantSentiment === 'bull' ? 'text-emerald-500' : 'text-rose-500'}`}>
                         {stock.dominantSentiment === 'bull' ? '강세 우세' : '조정 경계'}

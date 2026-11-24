@@ -21,6 +21,7 @@ import {
 import { MarketFilterType, RankingSortType, StockRankingItem, StockRankingResponse } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { getKRXMarketStatus } from '../../utils/marketHours';
+import { inferStockCurrency, formatMoney, formatTradingValueByCurrency } from '../../utils/currency';
 
 export const StockRankingView: React.FC = () => {
   const { navigateToStock } = useApp();
@@ -407,7 +408,7 @@ export const StockRankingView: React.FC = () => {
 
                       {/* Current Price */}
                       <td className="py-3.5 px-4 text-right font-mono font-bold text-sm text-slate-900 dark:text-white">
-                        {item.price.toLocaleString()}원
+                        {formatMoney(item.price, inferStockCurrency(item.symbol, item.market))}
                       </td>
 
                       {/* Change Percent (Red: Up, Blue: Down) */}
@@ -426,7 +427,11 @@ export const StockRankingView: React.FC = () => {
 
                       {/* Change Amount */}
                       <td className={`py-3.5 px-4 text-right font-mono font-semibold text-xs ${changeColor}`}>
-                        {item.change > 0 ? `▲ +${item.change.toLocaleString()}원` : item.change < 0 ? `▼ ${item.change.toLocaleString()}원` : '0원'}
+                        {item.change > 0
+                          ? `▲ ${formatMoney(item.change, inferStockCurrency(item.symbol, item.market), { showSign: true })}`
+                          : item.change < 0
+                          ? `▼ ${formatMoney(item.change, inferStockCurrency(item.symbol, item.market))}`
+                          : formatMoney(0, inferStockCurrency(item.symbol, item.market))}
                       </td>
 
                       {/* Volume */}
@@ -436,7 +441,7 @@ export const StockRankingView: React.FC = () => {
 
                       {/* Trading Value */}
                       <td className="py-3.5 px-4 text-right font-mono text-slate-900 dark:text-white font-bold">
-                        {item.tradingValue ? `${item.tradingValue.toLocaleString()}억` : '-'}
+                        {item.tradingValue ? formatTradingValueByCurrency(item.tradingValue, inferStockCurrency(item.symbol, item.market)) : '-'}
                       </td>
 
                       {/* Detail Link Arrow */}
@@ -500,7 +505,7 @@ export const StockRankingView: React.FC = () => {
                     {/* Price & Change */}
                     <div className="text-right">
                       <div className="font-mono font-black text-sm text-slate-900 dark:text-white">
-                        {item.price.toLocaleString()}원
+                        {formatMoney(item.price, inferStockCurrency(item.symbol, item.market))}
                       </div>
                       <div className="mt-1">
                         <span className={`inline-flex items-center gap-0.5 font-bold font-mono text-xs px-1.5 py-0.5 rounded-md ${
@@ -522,12 +527,16 @@ export const StockRankingView: React.FC = () => {
                     <div>
                       <span>전일대비: </span>
                       <span className={`font-semibold ${changeColor}`}>
-                        {item.change > 0 ? `▲+${item.change.toLocaleString()}원` : item.change < 0 ? `▼${item.change.toLocaleString()}원` : '0원'}
+                        {item.change > 0
+                          ? `▲${formatMoney(item.change, inferStockCurrency(item.symbol, item.market), { showSign: true })}`
+                          : item.change < 0
+                          ? `▼${formatMoney(item.change, inferStockCurrency(item.symbol, item.market))}`
+                          : formatMoney(0, inferStockCurrency(item.symbol, item.market))}
                       </span>
                     </div>
                     <div className="flex items-center gap-3">
                       <span>거래량: <strong className="text-slate-700 dark:text-slate-300">{item.volume.toLocaleString()}</strong>주</span>
-                      <span>거래대금: <strong className="text-slate-700 dark:text-slate-300">{item.tradingValue ? `${item.tradingValue}억` : '-'}</strong></span>
+                      <span>거래대금: <strong className="text-slate-700 dark:text-slate-300">{item.tradingValue ? formatTradingValueByCurrency(item.tradingValue, inferStockCurrency(item.symbol, item.market)) : '-'}</strong></span>
                       <ChevronRight className="w-3.5 h-3.5 text-slate-400 ml-1" />
                     </div>
                   </div>

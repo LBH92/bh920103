@@ -16,6 +16,7 @@ import {
   Shield 
 } from 'lucide-react';
 import { ViewTab } from '../../types';
+import { validateExchangeRate } from '../../utils/currency';
 
 export const LeftSidebar: React.FC = () => {
   const { 
@@ -89,19 +90,34 @@ export const LeftSidebar: React.FC = () => {
           )}
         </div>
 
-        {exchangeRate && (
-          <div className="px-2.5 py-1.5 rounded-xl bg-finance-card border border-finance-border flex items-center justify-between text-xs">
-            <span className="font-semibold text-finance-sub-text text-[11px]">원/달러 환율</span>
-            <div className="flex items-center gap-1.5">
-              <span className="font-mono font-bold text-finance-text text-xs">
-                {exchangeRate.rate.toLocaleString()}원
-              </span>
-              <span className={`text-[10px] font-mono font-bold ${exchangeRate.changePercent >= 0 ? 'text-finance-up' : 'text-finance-down'}`}>
-                {exchangeRate.changePercent >= 0 ? '+' : ''}{exchangeRate.changePercent.toFixed(2)}%
-              </span>
+        {(() => {
+          const fxCheck = validateExchangeRate(exchangeRate);
+          return (
+            <div className="px-2.5 py-2 rounded-xl bg-finance-card border border-finance-border space-y-1 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-finance-sub-text text-[11px]">원/달러 환율</span>
+                {fxCheck.valid && fxCheck.rate ? (
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono font-bold text-finance-text text-xs">
+                      {fxCheck.rate.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}원
+                    </span>
+                    <span className={`text-[10px] font-mono font-bold ${(exchangeRate?.changePercent || 0) >= 0 ? 'text-finance-up' : 'text-finance-down'}`}>
+                      {(exchangeRate?.changePercent || 0) >= 0 ? '+' : ''}{(exchangeRate?.changePercent || 0).toFixed(2)}%
+                    </span>
+                  </div>
+                ) : (
+                  <span className="text-[10px] font-bold text-amber-500">
+                    {fxCheck.status === 'stale' ? '지연/만료' : '조회 오류'}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center justify-between text-[10px] text-finance-sub-text font-mono">
+                <span>USD/KRW</span>
+                <span>{fxCheck.lastUpdated}</span>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* 2. Navigation Menu */}

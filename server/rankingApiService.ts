@@ -313,6 +313,10 @@ class RankingApiService {
 
         // Cache the successful result
         this.cache.set(cacheKey, { response, timestamp: now });
+        if (this.cache.size > 50) {
+          const oldestKey = this.cache.keys().next().value;
+          if (oldestKey) this.cache.delete(oldestKey);
+        }
         this.lastGoodData.set(cacheKey, response);
 
         return response;

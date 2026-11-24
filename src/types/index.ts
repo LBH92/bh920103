@@ -20,8 +20,21 @@ export interface Stock {
   highPrice: number;
   lowPrice: number;
   prevClose: number;
-  foreignNetBuy: number; // 외인 순매수 (억 원)
-  instNetBuy: number; // 기관 순매수 (억 원)
+  foreignNetBuy?: number | null; // 외인 순매수 (억 원)
+  instNetBuy?: number | null; // 기관 순매수 (억 원)
+  individualNetBuy?: number | null; // 개인 순매수 (억 원)
+  foreignNetBuyAmountMillion?: number | null; // 외인 순매수 원시 금액 (백만원)
+  instNetBuyAmountMillion?: number | null; // 기관 순매수 원시 금액 (백만원)
+  individualNetBuyAmountMillion?: number | null; // 개인 순매수 원시 금액 (백만원)
+  foreignNetBuyQty?: number | null; // 외인 순매수 수량 (주)
+  instNetBuyQty?: number | null; // 기관 순매수 수량 (주)
+  individualNetBuyQty?: number | null; // 개인 순매수 수량 (주)
+  investorUnit?: '억원' | '백만원' | '주' | '천주';
+  investorQtyUnit?: '주' | '천주';
+  investorDataSource?: string;
+  investorBaseDate?: string;
+  investorUpdateTime?: string;
+  investorDataAvailable?: boolean;
   candles: CandleData[];
   sparkline: number[];
   currency?: 'KRW' | 'USD' | 'USDT' | 'BTC';
@@ -50,14 +63,18 @@ export interface CandleData {
   volume: number;
 }
 
+export type ChartCandleType = 'minute' | 'day' | 'week' | 'month';
+
 export type KiwoomChartPeriod =
-  | '1m' | '5m' | '15m' | '30m' | '1h' | 'day'
-  | '1d' | '1w' | '1mo' | '3mo' | '6mo' | 'ytd' | '1y' | '5y' | 'all';
+  | '1m' | '5m' | '15m' | '30m' | '1h' | 'day' | 'week' | 'month'
+  | '1d' | '1w' | '1mo' | '3mo' | '6mo' | 'ytd' | '1y' | '3y' | '5y' | 'all';
 
 export interface KiwoomChartResponse {
   symbol: string;
   period: KiwoomChartPeriod | string;
   periodLabel: string;
+  candleType?: ChartCandleType;
+  interval?: string;
   trId: string;
   ticScope?: string;
   supported: boolean;
@@ -67,6 +84,7 @@ export interface KiwoomChartResponse {
   selectedDateClose?: number;
   selectedDate?: string;
   isHistoricalView?: boolean;
+  isStale?: boolean;
   marketStatus?: 'OPEN' | 'CLOSED' | 'DELAYED';
   source: 'kiwoom' | 'yahoo' | 'upbit' | 'binance' | 'mock';
   cached: boolean;
@@ -122,6 +140,9 @@ export interface IndexChartResponse {
 
 export interface ExchangeRate {
   currency: string;
+  baseCurrency?: 'USD' | string;
+  quoteCurrency?: 'KRW' | string;
+  pair?: string;
   name: string;
   rate: number;
   change: number;
@@ -129,6 +150,12 @@ export interface ExchangeRate {
   high: number;
   low: number;
   sparkline: number[];
+  lastUpdated?: string;
+  timestamp?: number;
+  status?: 'ok' | 'delayed' | 'stale' | 'error' | 'unavailable';
+  isStale?: boolean;
+  provider?: string;
+  errorMessage?: string;
 }
 
 export interface MarketEvent {
@@ -168,6 +195,9 @@ export interface OrderBook {
   bestAskPrice?: number; // 최우선 매도호가 (Ask 1: 매수 체결 기준가)
   bestBidPrice?: number; // 최우선 매수호가 (Bid 1: 매도 체결 기준가)
   timestamp?: string;
+  status?: string;
+  dataSource?: string;
+  message?: string;
 }
 
 export interface StockNews {
@@ -224,6 +254,9 @@ export interface WatchlistBuyEntry {
 export interface WatchlistItem {
   symbol: string;
   name: string;
+  market?: string;
+  exchange?: string;
+  currency?: 'KRW' | 'USD' | 'USDT' | 'BTC';
   addedAt: string;
   memo?: string;
   targetPrice?: number;
@@ -502,7 +535,8 @@ export type AdminSubTab =
   | 'settings'
   | 'ads'
   | 'ads_stats'
-  | 'inquiries';
+  | 'inquiries'
+  | 'insights';
 
 export interface AdminLogItem {
   id: string;
@@ -660,11 +694,13 @@ export interface VirtualHolding {
   symbol: string; // e.g. "005930" or "AAPL"
   name: string; // 종목명
   market: string; // "KOSPI" | "KOSDAQ" | "US" | "GLOBAL"
+  exchange?: string;
   currency: 'KRW' | 'USD';
   quantity: number; // 총 보유 수량
   avgBuyPrice: number; // 평균 매입가
   totalBuyAmount: number; // 총 매입금액 (quantity * avgBuyPrice)
   buyDate: string; // 최초 매수일 (YYYY-MM-DD)
+  entryExchangeRate?: number; // USD 매수 시 기준 환율 (환차익/종목손익 분리용)
   memo?: string; // 투자 메모
   createdAt: string;
   updatedAt: string;
@@ -676,6 +712,8 @@ export interface VirtualHoldingTrade {
   holdingId?: string;
   symbol: string;
   name: string;
+  currency?: 'KRW' | 'USD';
+  exchangeRate?: number;
   tradeType: 'BUY' | 'ADD_BUY' | 'SELL';
   price: number;
   quantity: number;
@@ -710,10 +748,12 @@ export interface MockPosition {
   symbol: string;
   name: string;
   market: string;
+  exchange?: string;
   currency: 'KRW' | 'USD';
   quantity: number;
   avgBuyPrice: number;
   totalInvested: number;
+  entryExchangeRate?: number;
   updatedAt: string;
 }
 
@@ -990,8 +1030,21 @@ export interface Advertisement {
 
 
 
+export interface CurrencyPortfolioBreakdown {
+  currency: 'KRW' | 'USD';
+  totalAssets: number;
+  totalCash: number;
+  totalInvested: number;
+  evaluationAmount: number;
+  unrealizedPnL: number;
+  realizedPnL: number;
+  totalPnL: number;
+  roi: number;
+  holdingsCount: number;
+}
+
 export interface PortfolioSummary {
-  totalAssets: number; // 평가금액 + 현금
+  totalAssets: number; // 평가금액 + 현금 (KRW 환산 기준; 환율 미확인 시 KRW만 합산)
   totalCash: number;
   totalInvested: number;
   evaluationAmount: number; // 보유 종목 평가 합계
@@ -1000,6 +1053,15 @@ export interface PortfolioSummary {
   totalPnL: number;
   roi: number;
   currency: 'KRW' | 'USD';
+  krw?: CurrencyPortfolioBreakdown;
+  usd?: CurrencyPortfolioBreakdown;
+  fxRate?: number | null;
+  fxTimestamp?: string;
+  fxValid?: boolean;
+  fxStatus?: string;
+  stockPnLKRW?: number | null;
+  fxPnLKRW?: number | null;
+  hasEntryFxData?: boolean;
   holdings: PortfolioHolding[];
   sectorAllocations: { sector: string; amount: number; weight: number }[];
   marketAllocations: { market: string; amount: number; weight: number }[];
@@ -1019,6 +1081,7 @@ export interface PortfolioHolding {
   weight: number; // 포트폴리오 내 비중 (%)
   sector: string;
   market: 'KOSPI' | 'KOSDAQ' | 'US';
+  exchange?: string;
   currency: 'KRW' | 'USD';
 }
 
@@ -1041,6 +1104,7 @@ export interface QuoteResult {
   changePercent: number;
   currency: 'KRW' | 'USD';
   market: string;
+  exchange?: string;
   delayLabel: string;
   isRealtime: boolean;
   provider: string;
@@ -1050,3 +1114,5 @@ export interface QuoteResult {
   bestAskPrice: number;
   bestBidPrice: number;
 }
+
+export * from './insights';

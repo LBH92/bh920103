@@ -18,16 +18,22 @@ export const RollingAdBanner: React.FC<{ location: string }> = ({ location }) =>
   const [currentIndex, setCurrentIndex] = useState(0);
 
   useEffect(() => {
+    let active = true;
     const fetchAds = async () => {
-      const q = query(collection(db, 'advertisements'), where('isActive', '==', true), where('location', '==', location));
-      const snapshot = await getDocs(q);
-      const today = new Date().toISOString().split('T')[0];
-      const data = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() } as Advertisement))
-        .filter(ad => ad.startDate <= today && ad.endDate >= today);
-      setAds(data);
+      try {
+        const q = query(collection(db, 'advertisements'), where('isActive', '==', true), where('location', '==', location));
+        const snapshot = await getDocs(q);
+        const today = new Date().toISOString().split('T')[0];
+        const data = snapshot.docs
+          .map(doc => ({ id: doc.id, ...doc.data() } as Advertisement))
+          .filter(ad => ad.startDate <= today && ad.endDate >= today);
+        if (active) setAds(data);
+      } catch {
+        if (active) setAds([]);
+      }
     };
     fetchAds();
+    return () => { active = false; };
   }, [location]);
 
   useEffect(() => {

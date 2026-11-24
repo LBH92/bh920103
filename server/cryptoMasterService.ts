@@ -12,6 +12,7 @@
 
 import { Stock, CandleData, KiwoomChartResponse, OrderBook } from '../src/types';
 import { matchHangulSearch } from '../src/utils/hangul';
+import { sanitizeAndValidateCandles } from '../src/utils/chartSanitizer';
 import { forexDataProvider } from './providers/forexDataProvider';
 
 export interface CryptoMasterItem {
@@ -72,6 +73,17 @@ class CryptoMasterService {
   private lastSyncTime = 0;
   private readonly SYNC_TTL_MS = 60 * 60 * 1000; // 1 hour sync TTL
   private isSyncing = false;
+  private lightQuoteCache = new Map<string, { data: { price: number; change: number; changePercent: number } | null; timestamp: number }>();
+  private inFlightLightQuotes = new Map<string, Promise<{ price: number; change: number; changePercent: number } | null>>();
+  private readonly LIGHT_QUOTE_TTL_MS = 5000;
+
+  private quoteCache = new Map<string, { data: Stock; timestamp: number }>();
+  private inFlightQuotes = new Map<string, Promise<Stock | null>>();
+  private readonly QUOTE_TTL_MS = 5000;
+
+  private candleCache = new Map<string, { data: CandleData[]; timestamp: number; ttlMs: number }>();
+  private inFlightCandles = new Map<string, Promise<CandleData[]>>();
+  private readonly MAX_CACHE_ENTRIES = 400;
 
   // Curated initial list for immediate zero-latency startup
   private initialCoins: CryptoMasterItem[] = [
@@ -360,24 +372,57 @@ class CryptoMasterService {
 
   /**
    * Fetch Live Quote for single crypto pair and convert to standard Stock interface
+   * Cached for 5s with in-flight deduplication.
    */
-  async getCryptoStockQuote(symbol: string): Promise<Stock | null> {
+  async getCryptoStockQuote(symbol: string, options: { includeCandles?: boolean } = {}): Promise<Stock | null> {
     const clean = symbol.replace(/^(UPBIT|BINANCE):/i, '').toUpperCase().trim();
-    const meta = this.getBySymbol(clean) || this.getBySymbol(symbol);
+    const includeCandles = options.includeCandles !== false;
+    const cacheKey = `${clean}:${includeCandles ? 'full' : 'compact'}`;
 
+    const cached = this.quoteCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.QUOTE_TTL_MS) {
+      return cached.data;
+    }
+
+    // If compact requested and full cache is warm, return compact projection with zero network calls
+    if (!includeCandles) {
+      const fullCached = this.quoteCache.get(`${clean}:full`);
+      if (fullCached && Date.now() - fullCached.timestamp < this.QUOTE_TTL_MS) {
+        return { ...fullCached.data, candles: [] };
+      }
+    }
+
+    const inFlight = this.inFlightQuotes.get(cacheKey);
+    if (inFlight) return inFlight;
+
+    const meta = this.getBySymbol(clean) || this.getBySymbol(symbol);
     const isUpbit = clean.includes('-') || (meta && meta.exchange === 'UPBIT');
 
-    if (isUpbit) {
-      return this.fetchUpbitLiveQuote(clean, meta);
-    } else {
-      return this.fetchBinanceLiveQuote(clean, meta);
-    }
+    const promise = (async () => {
+      const result = isUpbit
+        ? await this.fetchUpbitLiveQuote(clean, meta, includeCandles)
+        : await this.fetchBinanceLiveQuote(clean, meta, 2, includeCandles);
+
+      if (result) {
+        this.quoteCache.set(cacheKey, { data: result, timestamp: Date.now() });
+        if (this.quoteCache.size > this.MAX_CACHE_ENTRIES) {
+          const oldestKey = this.quoteCache.keys().next().value;
+          if (oldestKey) this.quoteCache.delete(oldestKey);
+        }
+      }
+      return result;
+    })().finally(() => {
+      this.inFlightQuotes.delete(cacheKey);
+    });
+
+    this.inFlightQuotes.set(cacheKey, promise);
+    return promise;
   }
 
   /**
    * Fetch live quote from Upbit
    */
-  private async fetchUpbitLiveQuote(market: string, meta?: CryptoMasterItem): Promise<Stock | null> {
+  private async fetchUpbitLiveQuote(market: string, meta?: CryptoMasterItem, includeCandles: boolean = true): Promise<Stock | null> {
     try {
       const url = `https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(market)}`;
       const controller = new AbortController();
@@ -400,18 +445,31 @@ class CryptoMasterService {
       const volume = t.acc_trade_volume_24h || 0;
       const tradingValue = Math.round((t.acc_trade_price_24h || 0) / 100000000); // 억 원 단위
 
-      // Fetch 30-day candles for sparkline & chart
-      const candles = await this.getCryptoCandles(market, '1d').catch(() => []);
+      // Fetch 30-day candles only when full quote is requested; otherwise reuse cached candles for sparkline
+      let candles: CandleData[] = [];
+      if (includeCandles) {
+        candles = await this.getCryptoCandles(market, '1d').catch(() => []);
+      } else {
+        const cachedDaily = this.candleCache.get(`${market}|1d|auto|`);
+        if (cachedDaily) candles = cachedDaily.data;
+      }
       const sparkline = candles.length >= 2 ? candles.slice(-7).map(c => c.close) : [prevClose, low, high, price];
 
-      const cur = market.startsWith('KRW-') ? 'KRW' : (market.startsWith('BTC-') ? 'USD' : 'USD');
+      const parts = market.split('-');
+      const inferredQuote = parts.length === 2 ? parts[0] : (meta?.quoteAsset || 'KRW');
+      const inferredBase = parts.length === 2 ? parts[1] : (meta?.baseAsset || market);
+      const cur: 'KRW' | 'USDT' | 'BTC' | 'USD' =
+        market.startsWith('KRW-') ? 'KRW' :
+        market.startsWith('BTC-') ? 'BTC' :
+        market.startsWith('USDT-') ? 'USDT' :
+        (meta?.currency || 'USDT');
 
       return {
         symbol: market,
         name,
         nameEn: meta?.nameEn || market,
         market: 'COIN',
-        sector: `가상자산 / 업비트 ${meta?.quoteAsset || 'KRW'} 마켓 (현물)`,
+        sector: `가상자산 / 업비트 ${inferredQuote} 마켓 (현물)`,
         price,
         change,
         changePercent,
@@ -422,8 +480,8 @@ class CryptoMasterService {
         highPrice: high,
         lowPrice: low,
         prevClose,
-        high52w: Math.round(high * 1.2),
-        low52w: Math.round(low * 0.8),
+        high52w: high > 10 ? Math.round(high * 1.2) : Number((high * 1.2).toFixed(8)),
+        low52w: low > 10 ? Math.round(low * 0.8) : Number((low * 0.8).toFixed(8)),
         marketCap: tradingValue * 10,
         per: 0,
         pbr: 0,
@@ -433,9 +491,12 @@ class CryptoMasterService {
         instNetBuy: 0,
         candles,
         sparkline,
-        currency: cur as any,
+        currency: cur,
         exchange: 'UPBIT',
-        productType: 'EQUITY' as any,
+        productType: 'SPOT',
+        tradingPair: meta?.tradingPair || `${inferredBase}/${inferredQuote}`,
+        baseCurrency: inferredBase,
+        quoteCurrency: inferredQuote,
         delayStatus: 'realtime',
         delayLabel: '실시간 (업비트)',
         marketSession: 'REGULAR',
@@ -451,7 +512,7 @@ class CryptoMasterService {
   /**
    * Fetch live quote from Binance
    */
-  private async fetchBinanceLiveQuote(symbol: string, meta?: CryptoMasterItem, retries = 2): Promise<Stock | null> {
+  private async fetchBinanceLiveQuote(symbol: string, meta?: CryptoMasterItem, retries = 2, includeCandles: boolean = true): Promise<Stock | null> {
     try {
       const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`;
       const controller = new AbortController();
@@ -472,15 +533,27 @@ class CryptoMasterService {
       const volume = parseFloat(t.volume) || 0;
       const tradingValue = Math.round((parseFloat(t.quoteVolume) || 0) / 1000000); // 백만 달러/USDT
 
-      const candles = await this.getCryptoCandles(symbol, '1d').catch(() => []);
+      let candles: CandleData[] = [];
+      if (includeCandles) {
+        candles = await this.getCryptoCandles(symbol, '1d').catch(() => []);
+      } else {
+        const cachedDaily = this.candleCache.get(`${symbol}|1d|auto|`);
+        if (cachedDaily) candles = cachedDaily.data;
+      }
       const sparkline = candles.length >= 2 ? candles.slice(-7).map(c => c.close) : [prevClose, low, high, price];
+
+      const cur: 'KRW' | 'USD' | 'USDT' | 'BTC' =
+        meta?.currency ||
+        (t.symbol.endsWith('USDT') ? 'USDT' : t.symbol.endsWith('BTC') ? 'BTC' : 'USDT');
+      const quoteAsset = meta?.quoteAsset || (cur === 'BTC' ? 'BTC' : 'USDT');
+      const baseAsset = meta?.baseAsset || (t.symbol.endsWith(quoteAsset) ? t.symbol.slice(0, -quoteAsset.length) : t.symbol);
 
       return {
         symbol: t.symbol,
-        name: meta?.name || `${meta?.baseAsset || t.symbol} (바이낸스)`,
+        name: meta?.name || `${baseAsset} (바이낸스)`,
         nameEn: meta?.nameEn || t.symbol,
         market: 'COIN',
-        sector: `가상자산 / 바이낸스 USDT 마켓 (현물)`,
+        sector: `가상자산 / 바이낸스 ${quoteAsset} 마켓 (현물)`,
         price,
         change,
         changePercent,
@@ -491,8 +564,8 @@ class CryptoMasterService {
         highPrice: high,
         lowPrice: low,
         prevClose,
-        high52w: Number((high * 1.2).toFixed(2)),
-        low52w: Number((low * 0.8).toFixed(2)),
+        high52w: high < 1 ? Number((high * 1.2).toFixed(8)) : Number((high * 1.2).toFixed(2)),
+        low52w: low < 1 ? Number((low * 0.8).toFixed(8)) : Number((low * 0.8).toFixed(2)),
         marketCap: tradingValue * 10,
         per: 0,
         pbr: 0,
@@ -502,9 +575,12 @@ class CryptoMasterService {
         instNetBuy: 0,
         candles,
         sparkline,
-        currency: 'USD' as any,
+        currency: cur,
         exchange: 'BINANCE',
-        productType: 'EQUITY' as any,
+        productType: 'SPOT',
+        tradingPair: meta?.tradingPair || `${baseAsset}/${quoteAsset}`,
+        baseCurrency: baseAsset,
+        quoteCurrency: quoteAsset,
         delayStatus: 'realtime',
         delayLabel: '실시간 (바이낸스)',
         marketSession: 'REGULAR',
@@ -514,7 +590,7 @@ class CryptoMasterService {
     } catch (err: any) {
       if (retries > 0) {
         console.warn(`[CryptoMasterService] Binance quote error for ${symbol}, retrying... (${retries})`);
-        return this.fetchBinanceLiveQuote(symbol, meta, retries - 1);
+        return this.fetchBinanceLiveQuote(symbol, meta, retries - 1, includeCandles);
       }
       console.warn(`[CryptoMasterService] Binance quote error for ${symbol}:`, err.message);
       return null;
@@ -522,25 +598,152 @@ class CryptoMasterService {
   }
 
   /**
-   * Fetch Candles for Crypto (Upbit or Binance)
+   * Fetch Candles for Crypto (Upbit or Binance) with multi-period, candleType & historical date support
+   * Includes short-TTL server cache + in-flight deduplication
    */
-  async getCryptoCandles(symbol: string, period = '1d'): Promise<CandleData[]> {
+  async getCryptoCandles(
+    symbol: string,
+    period = '1d',
+    options?: { candleType?: string; date?: string; startDate?: string; endDate?: string }
+  ): Promise<CandleData[]> {
     const clean = symbol.replace(/^(UPBIT|BINANCE):/i, '').toUpperCase().trim();
-    const isUpbit = clean.includes('-');
+    const targetDate = (options?.endDate || options?.date || '').trim();
+    const cacheKey = `${clean}|${period.toLowerCase()}|${options?.candleType || 'auto'}|${targetDate}`;
 
-    if (isUpbit) {
-      return this.fetchUpbitCandles(clean, period);
-    } else {
-      return this.fetchBinanceCandles(clean, period);
+    const cached = this.candleCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < cached.ttlMs) {
+      return cached.data;
+    }
+
+    const inFlight = this.inFlightCandles.get(cacheKey);
+    if (inFlight) return inFlight;
+
+    const isUpbit = clean.includes('-');
+    const promise = (async () => {
+      const candles = isUpbit
+        ? await this.fetchUpbitCandles(clean, period, options)
+        : await this.fetchBinanceCandles(clean, period, options);
+
+      if (candles.length > 0) {
+        const isIntraday = ['1d', '1w', '1m', '5m', '15m', '30m', '1h', '5min', '15min', '30min', '60min'].includes(period.toLowerCase()) || options?.candleType === 'minute';
+        const ttlMs = targetDate ? 120000 : isIntraday ? 10000 : 30000;
+        this.candleCache.set(cacheKey, { data: candles, timestamp: Date.now(), ttlMs });
+        if (this.candleCache.size > this.MAX_CACHE_ENTRIES) {
+          const oldestKey = this.candleCache.keys().next().value;
+          if (oldestKey) this.candleCache.delete(oldestKey);
+        }
+      }
+      return candles;
+    })().finally(() => {
+      this.inFlightCandles.delete(cacheKey);
+    });
+
+    this.inFlightCandles.set(cacheKey, promise);
+    return promise;
+  }
+
+  private resolveCryptoEndpointConfig(
+    period: string,
+    candleType?: string
+  ): {
+    isIntraday: boolean;
+    upbitPath: string;
+    upbitCount: number;
+    binanceInterval: string;
+    binanceLimit: number;
+  } {
+    const p = (period || '1d').toLowerCase().trim();
+    const ct = (candleType || '').toLowerCase().trim();
+
+    // Explicit minute interval period strings always take precedence for exact minute resolution
+    if (p === '1m') {
+      return { isIntraday: true, upbitPath: 'minutes/1', upbitCount: 120, binanceInterval: '1m', binanceLimit: 120 };
+    }
+    if (p === '5m' || p === '5min') {
+      return { isIntraday: true, upbitPath: 'minutes/5', upbitCount: 120, binanceInterval: '5m', binanceLimit: 120 };
+    }
+    if (p === '15m' || p === '15min') {
+      return { isIntraday: true, upbitPath: 'minutes/15', upbitCount: 120, binanceInterval: '15m', binanceLimit: 120 };
+    }
+    if (p === '30m' || p === '30min') {
+      return { isIntraday: true, upbitPath: 'minutes/30', upbitCount: 120, binanceInterval: '30m', binanceLimit: 120 };
+    }
+    if (p === '1h' || p === '60m' || p === '60min') {
+      return { isIntraday: true, upbitPath: 'minutes/60', upbitCount: 120, binanceInterval: '1h', binanceLimit: 120 };
+    }
+
+    // Explicit candleType override for range periods
+    if (ct === 'minute') {
+      const unit = p === '1d' ? 15 : 60;
+      return {
+        isIntraday: true,
+        upbitPath: `minutes/${unit}`,
+        upbitCount: p === '1d' ? 96 : 168,
+        binanceInterval: p === '1d' ? '15m' : '1h',
+        binanceLimit: p === '1d' ? 96 : 168,
+      };
+    }
+    if (ct === 'week' || p === 'week') {
+      const count = p === 'all' || p === '5y' ? 200 : p === '3y' ? 156 : p === '1y' ? 52 : 104;
+      return { isIntraday: false, upbitPath: 'weeks', upbitCount: count, binanceInterval: '1w', binanceLimit: count };
+    }
+    if (ct === 'month' || p === 'month') {
+      const count = p === 'all' ? 120 : p === '5y' ? 60 : p === '3y' ? 36 : 48;
+      return { isIntraday: false, upbitPath: 'months', upbitCount: count, binanceInterval: '1M', binanceLimit: count };
+    }
+    if (ct === 'day' || p === 'day') {
+      const count = p === '1w' ? 14 : p === '1mo' ? 30 : p === '3mo' ? 90 : p === '6mo' ? 180 : 200;
+      const binLimit = p === '3y' ? 1000 : p === '1y' ? 365 : count;
+      return { isIntraday: false, upbitPath: 'days', upbitCount: Math.min(200, count), binanceInterval: '1d', binanceLimit: binLimit };
+    }
+
+    // Default period mappings when candleType is not overridden
+    switch (p) {
+      case '1d':
+        return { isIntraday: true, upbitPath: 'minutes/15', upbitCount: 96, binanceInterval: '15m', binanceLimit: 96 };
+      case '1w':
+      case '1week':
+        return { isIntraday: true, upbitPath: 'minutes/60', upbitCount: 168, binanceInterval: '1h', binanceLimit: 168 };
+      case '1mo':
+      case '1month':
+        return { isIntraday: false, upbitPath: 'days', upbitCount: 30, binanceInterval: '1d', binanceLimit: 30 };
+      case '3mo':
+      case '3months':
+        return { isIntraday: false, upbitPath: 'days', upbitCount: 90, binanceInterval: '1d', binanceLimit: 90 };
+      case '6mo':
+      case '6months':
+        return { isIntraday: false, upbitPath: 'days', upbitCount: 180, binanceInterval: '1d', binanceLimit: 180 };
+      case 'ytd':
+      case '1y':
+      case '1year':
+        return { isIntraday: false, upbitPath: 'days', upbitCount: 200, binanceInterval: '1d', binanceLimit: 365 };
+      case '3y':
+      case '3years':
+        return { isIntraday: false, upbitPath: 'weeks', upbitCount: 156, binanceInterval: '1w', binanceLimit: 156 };
+      case '5y':
+      case '5years':
+        return { isIntraday: false, upbitPath: 'weeks', upbitCount: 200, binanceInterval: '1w', binanceLimit: 260 };
+      case 'all':
+      case 'max':
+        return { isIntraday: false, upbitPath: 'months', upbitCount: 120, binanceInterval: '1M', binanceLimit: 120 };
+      default:
+        return { isIntraday: false, upbitPath: 'days', upbitCount: 60, binanceInterval: '1d', binanceLimit: 60 };
     }
   }
 
-  private async fetchUpbitCandles(market: string, period: string): Promise<CandleData[]> {
+  private async fetchUpbitCandles(
+    market: string,
+    period: string,
+    options?: { candleType?: string; date?: string; startDate?: string; endDate?: string }
+  ): Promise<CandleData[]> {
     try {
-      const isMinute = period === '1d' || period === 'day' || period === '1m';
-      const url = isMinute
-        ? `https://api.upbit.com/v1/candles/minutes/60?market=${encodeURIComponent(market)}&count=24`
-        : `https://api.upbit.com/v1/candles/days?market=${encodeURIComponent(market)}&count=60`;
+      const cfg = this.resolveCryptoEndpointConfig(period, options?.candleType);
+      const targetDate = (options?.endDate || options?.date || '').trim();
+      let url = `https://api.upbit.com/v1/candles/${cfg.upbitPath}?market=${encodeURIComponent(market)}&count=${cfg.upbitCount}`;
+      if (targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+        const endIsoUtc = new Date(`${targetDate}T23:59:59+09:00`).toISOString().replace(/\.\d{3}Z$/, 'Z');
+        url += `&to=${encodeURIComponent(endIsoUtc)}`;
+      }
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 6000);
@@ -552,33 +755,44 @@ class CryptoMasterService {
       if (!Array.isArray(list)) return [];
 
       // Upbit returns newest first, reverse to chronological order
-      return list.reverse().map(item => {
-        const time = item.candle_date_time_kst || item.candle_date_time_utc;
-        const d = new Date(time);
-        const timeStr = isMinute
-          ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-          : `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+      const mapped = list.reverse().map(item => {
+        const rawTime = String(item.candle_date_time_kst || item.candle_date_time_utc || '');
+        // candle_date_time_kst format is "YYYY-MM-DDTHH:mm:ss"
+        const datePart = rawTime.slice(0, 10);
+        const hmPart = rawTime.slice(11, 16);
+        const timeStr = cfg.isIntraday && hmPart ? `${datePart} ${hmPart}` : datePart;
 
         return {
           time: timeStr,
-          open: item.opening_price,
-          high: item.high_price,
-          low: item.low_price,
-          close: item.trade_price,
-          volume: item.candle_acc_trade_volume,
+          open: Number(item.opening_price),
+          high: Number(item.high_price),
+          low: Number(item.low_price),
+          close: Number(item.trade_price),
+          volume: Number(item.candle_acc_trade_volume) || 0,
         };
       });
+
+      return sanitizeAndValidateCandles(mapped);
     } catch {
       return [];
     }
   }
 
-  private async fetchBinanceCandles(symbol: string, period: string): Promise<CandleData[]> {
+  private async fetchBinanceCandles(
+    symbol: string,
+    period: string,
+    options?: { candleType?: string; date?: string; startDate?: string; endDate?: string }
+  ): Promise<CandleData[]> {
     try {
-      const isMinute = period === '1d' || period === 'day' || period === '1m';
-      const interval = isMinute ? '1h' : '1d';
-      const limit = isMinute ? 24 : 60;
-      const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`;
+      const cfg = this.resolveCryptoEndpointConfig(period, options?.candleType);
+      const targetDate = (options?.endDate || options?.date || '').trim();
+      let url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${cfg.binanceInterval}&limit=${cfg.binanceLimit}`;
+      if (targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+        const endTimeMs = new Date(`${targetDate}T23:59:59+09:00`).getTime();
+        if (Number.isFinite(endTimeMs)) {
+          url += `&endTime=${endTimeMs}`;
+        }
+      }
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 6000);
@@ -589,12 +803,17 @@ class CryptoMasterService {
       const list: any[] = await res.json();
       if (!Array.isArray(list)) return [];
 
-      return list.map(item => {
+      const mapped = list.map(item => {
         const openTime = item[0];
         const d = new Date(openTime);
-        const timeStr = isMinute
-          ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-          : `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+        // Convert to KST string consistently
+        const kst = new Date(d.getTime() + 9 * 3600 * 1000);
+        const yyyy = kst.getUTCFullYear();
+        const mm = String(kst.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(kst.getUTCDate()).padStart(2, '0');
+        const hh = String(kst.getUTCHours()).padStart(2, '0');
+        const mi = String(kst.getUTCMinutes()).padStart(2, '0');
+        const timeStr = cfg.isIntraday ? `${yyyy}-${mm}-${dd} ${hh}:${mi}` : `${yyyy}-${mm}-${dd}`;
 
         return {
           time: timeStr,
@@ -602,60 +821,89 @@ class CryptoMasterService {
           high: parseFloat(item[2]),
           low: parseFloat(item[3]),
           close: parseFloat(item[4]),
-          volume: parseFloat(item[5]),
+          volume: parseFloat(item[5]) || 0,
         };
       });
+
+      return sanitizeAndValidateCandles(mapped);
     } catch {
       return [];
     }
   }
 
   /**
-   * Fast light quote for search results (ticker only, no heavy candle retrieval)
+   * Fast light quote for search results (ticker only, 5s TTL + in-flight deduplication)
    */
   async getLightQuote(symbol: string): Promise<{ price: number; change: number; changePercent: number } | null> {
-    const meta = this.coinMap.get(symbol.toUpperCase());
-    const isUpbit = meta ? meta.exchange === 'UPBIT' : symbol.includes('-');
-
-    if (isUpbit) {
-      try {
-        const url = `https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(symbol)}`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const res = await fetch(url, { signal: controller.signal, headers: { 'Accept': 'application/json' } });
-        clearTimeout(timeoutId);
-        if (!res.ok) return null;
-        const list: any[] = await res.json();
-        if (Array.isArray(list) && list.length > 0) {
-          const t = list[0];
-          return {
-            price: t.trade_price || 0,
-            change: t.signed_change_price || 0,
-            changePercent: Number(((t.signed_change_rate || 0) * 100).toFixed(2)),
-          };
-        }
-      } catch {
-        return null;
-      }
-    } else {
-      try {
-        const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-        const res = await fetch(url, { signal: controller.signal, headers: { 'Accept': 'application/json' } });
-        clearTimeout(timeoutId);
-        if (!res.ok) return null;
-        const t: any = await res.json();
-        return {
-          price: parseFloat(t.lastPrice || '0'),
-          change: parseFloat(t.priceChange || '0'),
-          changePercent: parseFloat(t.priceChangePercent || '0'),
-        };
-      } catch {
-        return null;
-      }
+    const key = symbol.toUpperCase().trim();
+    const cached = this.lightQuoteCache.get(key);
+    if (cached && Date.now() - cached.timestamp < this.LIGHT_QUOTE_TTL_MS) {
+      return cached.data;
     }
-    return null;
+
+    const inFlight = this.inFlightLightQuotes.get(key);
+    if (inFlight) return inFlight;
+
+    const promise = (async () => {
+      const meta = this.coinMap.get(key);
+      const isUpbit = meta ? meta.exchange === 'UPBIT' : key.includes('-');
+      let result: { price: number; change: number; changePercent: number } | null = null;
+
+      if (isUpbit) {
+        try {
+          const url = `https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(key)}`;
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 4000);
+          const res = await fetch(url, { signal: controller.signal, headers: { 'Accept': 'application/json' } });
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            const list: any[] = await res.json();
+            if (Array.isArray(list) && list.length > 0) {
+              const t = list[0];
+              result = {
+                price: t.trade_price || 0,
+                change: t.signed_change_price || 0,
+                changePercent: Number(((t.signed_change_rate || 0) * 100).toFixed(2)),
+              };
+            }
+          }
+        } catch {
+          result = null;
+        }
+      } else {
+        try {
+          const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(key)}`;
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 4000);
+          const res = await fetch(url, { signal: controller.signal, headers: { 'Accept': 'application/json' } });
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            const t: any = await res.json();
+            result = {
+              price: parseFloat(t.lastPrice || '0'),
+              change: parseFloat(t.priceChange || '0'),
+              changePercent: parseFloat(t.priceChangePercent || '0'),
+            };
+          }
+        } catch {
+          result = null;
+        }
+      }
+
+      if (result) {
+        this.lightQuoteCache.set(key, { data: result, timestamp: Date.now() });
+        if (this.lightQuoteCache.size > this.MAX_CACHE_ENTRIES) {
+          const oldestKey = this.lightQuoteCache.keys().next().value;
+          if (oldestKey) this.lightQuoteCache.delete(oldestKey);
+        }
+      }
+      return result;
+    })().finally(() => {
+      this.inFlightLightQuotes.delete(key);
+    });
+
+    this.inFlightLightQuotes.set(key, promise);
+    return promise;
   }
 
   /**

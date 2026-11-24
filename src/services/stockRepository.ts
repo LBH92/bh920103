@@ -11,7 +11,7 @@
  * - Runtime toggle (setSource)
  */
 
-import { Stock, StockIndex, ExchangeRate, CandleData, StockNews, OrderBook, KiwoomChartPeriod, KiwoomChartResponse } from '../types';
+import { Stock, StockIndex, ExchangeRate, CandleData, StockNews, OrderBook, KiwoomChartPeriod, KiwoomChartResponse, ChartCandleType } from '../types';
 import { 
   IStockRepository, 
   ChartPeriod, 
@@ -71,7 +71,7 @@ class StockRepositoryDelegator implements IStockRepository {
     return this.activeRepo.getStock(symbol);
   }
 
-  searchStocks(options: { query: string; limit?: number; market?: string }): Promise<Stock[]> {
+  searchStocks(options: { query: string; limit?: number; market?: string; signal?: AbortSignal }): Promise<Stock[]> {
     return this.activeRepo.searchStocks(options);
   }
 
@@ -86,14 +86,19 @@ class StockRepositoryDelegator implements IStockRepository {
     return this.activeRepo.getChartCandles(symbol, period);
   }
 
-  getKiwoomChart(symbol: string, period: KiwoomChartPeriod): Promise<KiwoomChartResponse> {
+  getKiwoomChart(
+    symbol: string,
+    period: KiwoomChartPeriod,
+    options?: { candleType?: ChartCandleType; date?: string; signal?: AbortSignal }
+  ): Promise<KiwoomChartResponse> {
     if (this.activeRepo.getKiwoomChart) {
-      return this.activeRepo.getKiwoomChart(symbol, period);
+      return this.activeRepo.getKiwoomChart(symbol, period, options);
     }
     return Promise.resolve({
       symbol,
       period,
       periodLabel: period,
+      candleType: options?.candleType,
       trId: period === 'day' ? 'ka10081' : 'ka10080',
       supported: true,
       candles: [],

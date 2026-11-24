@@ -48,8 +48,9 @@ export interface CalculatedDividendResult {
   monthlyAveragePostTax: number;
   taxRate: number; // 0.154 (15.4%)
   taxAmount: number;
-  annualPreTaxKRW: number;
-  annualPostTaxKRW: number;
+  annualPreTaxKRW: number | null;
+  annualPostTaxKRW: number | null;
+  fxApplied: boolean;
   exDividendDate?: string;
   payDate?: string;
   fiscalYear: string;
@@ -735,7 +736,7 @@ export const dividendService = {
     quantity: number,
     name?: string,
     currency?: 'KRW' | 'USD',
-    exchangeRate: number = 1400
+    exchangeRate: number | null = null
   ): CalculatedDividendResult {
     const info = this.getDividendInfo(symbol, name, currency);
     const safeQty = Math.max(0, quantity);
@@ -750,10 +751,16 @@ export const dividendService = {
     const monthlyAveragePreTax = annualPreTax / 12;
     const monthlyAveragePostTax = annualPostTax / 12;
 
-    // KRW conversion for USD stocks
+    // KRW conversion ONLY when valid exchange rate exists
     const isUSD = info.currency === 'USD';
-    const annualPreTaxKRW = isUSD ? annualPreTax * exchangeRate : annualPreTax;
-    const annualPostTaxKRW = isUSD ? annualPostTax * exchangeRate : annualPostTax;
+    const hasValidFx = typeof exchangeRate === 'number' && Number.isFinite(exchangeRate) && exchangeRate > 0;
+    const fxApplied = !isUSD || hasValidFx;
+    const annualPreTaxKRW = isUSD
+      ? (hasValidFx ? Math.round(annualPreTax * exchangeRate!) : null)
+      : Math.round(annualPreTax);
+    const annualPostTaxKRW = isUSD
+      ? (hasValidFx ? Math.round(annualPostTax * exchangeRate!) : null)
+      : Math.round(annualPostTax);
 
     return {
       symbol: info.symbol,
@@ -771,8 +778,9 @@ export const dividendService = {
       monthlyAveragePostTax,
       taxRate,
       taxAmount,
-      annualPreTaxKRW: Math.round(annualPreTaxKRW),
-      annualPostTaxKRW: Math.round(annualPostTaxKRW),
+      annualPreTaxKRW,
+      annualPostTaxKRW,
+      fxApplied,
       exDividendDate: info.exDividendDate,
       payDate: info.payDate,
       fiscalYear: info.fiscalYear,

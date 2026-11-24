@@ -1,10 +1,12 @@
 import React from 'react';
 import { ArrowUpRight, ArrowDownRight, Minus } from 'lucide-react';
+import { formatMoney, SupportedCurrency } from '../../utils/currency';
 
 interface PriceBadgeProps {
   change: number;
   changePercent: number;
   price?: number;
+  currency?: SupportedCurrency;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   showPrice?: boolean;
   showIcon?: boolean;
@@ -16,6 +18,7 @@ export const PriceBadge: React.FC<PriceBadgeProps> = ({
   change,
   changePercent,
   price,
+  currency,
   size = 'md',
   showPrice = false,
   showIcon = true,
@@ -24,7 +27,6 @@ export const PriceBadge: React.FC<PriceBadgeProps> = ({
 }) => {
   const isUp = change > 0;
   const isDown = change < 0;
-  const isFlat = change === 0;
 
   // Financial design tokens: Rising = text-finance-up, Falling = text-finance-down
   const textColor = isUp
@@ -47,6 +49,12 @@ export const PriceBadge: React.FC<PriceBadgeProps> = ({
   }[size];
 
   const sign = isUp ? '+' : '';
+  const formattedPrice = price !== undefined
+    ? (currency ? formatMoney(price, currency) : `${price.toLocaleString()}원`)
+    : '';
+  const formattedChange = currency
+    ? formatMoney(change, currency, { showSign })
+    : `${showSign ? sign : ''}${change.toLocaleString()}`;
 
   const content = (
     <span className={`inline-flex items-center gap-1 font-mono tracking-tight tabular-nums whitespace-nowrap ${textColor} ${sizeClasses}`}>
@@ -61,7 +69,7 @@ export const PriceBadge: React.FC<PriceBadgeProps> = ({
       )}
       {showPrice && price !== undefined && (
         <span className="font-semibold text-finance-text mr-1.5 font-sans">
-          {price.toLocaleString()}원
+          {formattedPrice}
         </span>
       )}
       <span>
@@ -69,7 +77,7 @@ export const PriceBadge: React.FC<PriceBadgeProps> = ({
       </span>
       {change !== 0 && (
         <span className="text-[0.8em] opacity-80 ml-0.5 tabular-nums">
-          ({showSign ? sign : ''}{change.toLocaleString()})
+          ({formattedChange})
         </span>
       )}
     </span>

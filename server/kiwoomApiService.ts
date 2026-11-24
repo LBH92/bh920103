@@ -120,8 +120,76 @@ export interface KiwoomDiagnosticResult {
       success: boolean;
     }>;
   };
+  investorParseValidationTest?: {
+    attempted: boolean;
+    success: boolean;
+    testCasesPassed: number;
+    totalTestCases: number;
+    results: Array<{
+      scenario: string;
+      available: boolean;
+      foreign: number | null;
+      inst: number | null;
+      individual: number | null;
+      unit: string;
+      baseDate: string | null;
+      success: boolean;
+    }>;
+  };
   connectionStatus: 'NOT_CONFIGURED' | 'TOKEN_FAILED' | 'TOKEN_OK_QUOTE_FAILED' | 'DOMESTIC_CONNECTED' | 'FULL_CONNECTED';
   connectionStatusMessage: string;
+}
+
+export interface KiwoomInvestorFlowOptions {
+  date?: string; // YYYYMMDD or YYYY-MM-DD (defaults to today KST)
+  amtQtyType?: '1' | '2'; // '1': 금액(백만원), '2': 수량
+  tradeType?: '0' | '1' | '2'; // '0': 순매수, '1': 매수, '2': 매도
+  unitType?: '1' | '1000'; // '1': 단주/기본, '1000': 천주
+}
+
+export interface KiwoomInvestorFlowRow {
+  baseDate: string; // YYYY-MM-DD
+  rawDate: string; // YYYYMMDD
+  amtQtyType: '1' | '2';
+  tradeType: '0' | '1' | '2';
+  unitType: '1' | '1000';
+  amountUnit: '억원' | null;
+  quantityUnit: '주' | null;
+  foreignNetBuy: number | null; // 억 원 (금액 모드일 때)
+  instNetBuy: number | null; // 억 원 (금액 모드일 때)
+  individualNetBuy: number | null; // 억 원 (금액 모드일 때)
+  foreignAmountMillion: number | null; // 백만원 (금액 모드일 때 원시값)
+  instAmountMillion: number | null; // 백만원 (금액 모드일 때 원시값)
+  individualAmountMillion: number | null; // 백만원 (금액 모드일 때 원시값)
+  foreignQty: number | null; // 주 (수량 모드일 때)
+  instQty: number | null; // 주 (수량 모드일 때)
+  individualQty: number | null; // 주 (수량 모드일 때)
+  curPrice: number | null;
+  accVolume: number | null;
+  accTradingValueMillion: number | null;
+}
+
+export interface KiwoomInvestorFlowResult {
+  symbol: string;
+  trId: 'ka10059';
+  available: boolean;
+  investorDataSource: string;
+  baseDate: string | null;
+  updateTime: string | null;
+  amtQtyType: '1' | '2';
+  tradeType: '0' | '1' | '2';
+  unitType: '1' | '1000';
+  foreignNetBuy: number | null;
+  instNetBuy: number | null;
+  individualNetBuy: number | null;
+  foreignAmountMillion: number | null;
+  instAmountMillion: number | null;
+  individualAmountMillion: number | null;
+  foreignQty: number | null;
+  instQty: number | null;
+  individualQty: number | null;
+  rows: KiwoomInvestorFlowRow[];
+  reason?: string;
 }
 
 export interface KiwoomMasterStock {
@@ -172,7 +240,22 @@ export function parseCleanFloat(val: any, fallback: number = 0): number {
   return isNaN(n) ? fallback : n;
 }
 
-export type KiwoomTrCategory = 'CHART' | 'QUOTE' | 'RANKING' | 'SECTOR' | 'MASTER' | 'DEFAULT';
+/**
+ * Strict signed integer parser that distinguishes actual `0` from missing/blank/dash (`null`).
+ * Strips commas and leading `+` signs; returns `null` for `undefined`, `null`, `""`, `"--"`, `"-"`, or `NaN`.
+ */
+export function parseStrictSignedInt(val: any): number | null {
+  if (val === undefined || val === null) return null;
+  if (typeof val === 'number') return Number.isFinite(val) ? Math.round(val) : null;
+  const raw = String(val).replace(/,/g, '').trim();
+  if (!raw || raw === '-' || raw === '--' || raw === '+') return null;
+  const normalized = raw.startsWith('--') ? raw.slice(1) : raw;
+  if (!/^[+-]?\d+(\.\d+)?$/.test(normalized)) return null;
+  const n = Number(normalized);
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+export type KiwoomTrCategory = 'CHART' | 'QUOTE' | 'RANKING' | 'SECTOR' | 'MASTER' | 'INVESTOR' | 'DEFAULT';
 
 class KiwoomApiService {
   private config: KiwoomConfig;
@@ -217,6 +300,7 @@ class KiwoomApiService {
     RANKING: 350,  // ka10027, ka10030, ka10032 (순위 TR: 초당 ~2.8건 보수적 350ms 간격)
     SECTOR: 350,   // ka20001 (업종/지수 TR: 초당 ~2.8건 보수적 350ms 간격)
     MASTER: 500,   // ka10099 (종목 마스터 TR: 초당 ~2건 보수적 500ms 간격)
+    INVESTOR: 400, // ka10059 (종목별투자자기관별 TR: 보수적 400ms 간격)
     DEFAULT: 300,  // 기타 REST 요청 보수적 기본 간격
   };
 
@@ -227,6 +311,7 @@ class KiwoomApiService {
     RANKING: 0,
     SECTOR: 0,
     MASTER: 0,
+    INVESTOR: 0,
     DEFAULT: 0,
   };
   private lastGlobalStartTime: number = 0;
@@ -1696,6 +1781,269 @@ class KiwoomApiService {
     });
   }
 
+  private investorFlowCache = new Map<string, { data: KiwoomInvestorFlowResult; expiresAt: number }>();
+
+  private getKstDateYmd(dateInput?: string): string {
+    if (dateInput && /^\d{4}-?\d{2}-?\d{2}$/.test(dateInput.trim())) {
+      return dateInput.trim().replace(/-/g, '');
+    }
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find(p => p.type === 'year')?.value || '2026';
+    const m = parts.find(p => p.type === 'month')?.value || '01';
+    const d = parts.find(p => p.type === 'day')?.value || '01';
+    return `${y}${m}${d}`;
+  }
+
+  /**
+   * 4-2. Parse Kiwoom Investor Trading Flow Response (TR: ka10059 / 종목별투자자기관별요청)
+   *
+   * Official Kiwoom REST Response Shape:
+   * - `stk_invsr_orgn`: Array of daily investor trading records
+   *   - `dt`: YYYYMMDD
+   *   - `frgnr_invsr`: 외국인투자자 순매수/매매
+   *   - `orgn`: 기관계 합계 순매수/매매
+   *   - `ind_invsr`: 개인투자자 순매수/매매
+   * - Unit rules:
+   *   - `amtQtyType === '1'` (금액): Kiwoom returns 백만원 (Million KRW). Converted to 억 원 (`Number((val / 100).toFixed(1))`) while preserving raw 백만원.
+   *   - `amtQtyType === '2'` (수량): Kiwoom returns 단주 (`unitType === '1'`) or 천주 (`unitType === '1000'`). Normalized to 주 (shares).
+   * - Strict zero vs missing distinction: `"0"` => `0`, `""` / `"--"` / `null` / missing array => `null` (`available: false`). Never fabricates estimates.
+   */
+  public parseKiwoomInvestorFlow(
+    symbol: string,
+    rawData: any,
+    options: KiwoomInvestorFlowOptions = {}
+  ): KiwoomInvestorFlowResult {
+    const amtQtyType: '1' | '2' = options.amtQtyType === '2' ? '2' : '1';
+    const tradeType: '0' | '1' | '2' = options.tradeType === '1' || options.tradeType === '2' ? options.tradeType : '0';
+    const unitType: '1' | '1000' = options.unitType === '1000' ? '1000' : '1';
+
+    const emptyResult = (reason: string): KiwoomInvestorFlowResult => ({
+      symbol,
+      trId: 'ka10059',
+      available: false,
+      investorDataSource: '수급 데이터 미수신',
+      baseDate: null,
+      updateTime: null,
+      amtQtyType,
+      tradeType,
+      unitType,
+      foreignNetBuy: null,
+      instNetBuy: null,
+      individualNetBuy: null,
+      foreignAmountMillion: null,
+      instAmountMillion: null,
+      individualAmountMillion: null,
+      foreignQty: null,
+      instQty: null,
+      individualQty: null,
+      rows: [],
+      reason,
+    });
+
+    if (!rawData || typeof rawData !== 'object') {
+      return emptyResult('유효하지 않은 ka10059 응답 형식');
+    }
+
+    if (rawData.return_code !== undefined && rawData.return_code !== 0 && rawData.return_code !== '0') {
+      return emptyResult(`ka10059 오류 응답 [code: ${rawData.return_code}]: ${rawData.return_msg || '미수신'}`);
+    }
+
+    const rawList =
+      rawData.stk_invsr_orgn ??
+      rawData.output ??
+      rawData.output1 ??
+      rawData.data;
+
+    if (!Array.isArray(rawList) || rawList.length === 0) {
+      return emptyResult('수신된 투자자별 매매동향 내역 없음 (휴장 또는 미제공)');
+    }
+
+    const rows: KiwoomInvestorFlowRow[] = [];
+
+    for (const item of rawList) {
+      if (!item || typeof item !== 'object') continue;
+      const rawDate = String(item.dt ?? item.stck_bsop_date ?? '').replace(/[^0-9]/g, '').slice(0, 8);
+      if (rawDate.length !== 8) continue;
+      const baseDate = `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}`;
+
+      const rawForeign = parseStrictSignedInt(item.frgnr_invsr ?? item.frgn_ntby_qty ?? item.frgn_ntby_tr_pbmn);
+      const rawInst = parseStrictSignedInt(item.orgn ?? item.orgn_ntby_qty ?? item.orgn_ntby_tr_pbmn);
+      const rawIndividual = parseStrictSignedInt(item.ind_invsr ?? item.prsn_ntby_qty ?? item.prsn_ntby_tr_pbmn);
+
+      if (rawForeign === null && rawInst === null && rawIndividual === null) {
+        continue;
+      }
+
+      const toEok = (million: number | null): number | null => {
+        if (million === null) return null;
+        if (million === 0) return 0;
+        return Number((million / 100).toFixed(1));
+      };
+
+      const multiplier = unitType === '1000' ? 1000 : 1;
+      const toShares = (qty: number | null): number | null => {
+        if (qty === null) return null;
+        if (qty === 0) return 0;
+        return Math.round(qty * multiplier);
+      };
+
+      const curPrice = parseStrictSignedInt(item.cur_prc);
+      const accVolume = parseStrictSignedInt(item.acc_trde_qty);
+      const accTradingValueMillion = parseStrictSignedInt(item.acc_trde_prica);
+
+      rows.push({
+        baseDate,
+        rawDate,
+        amtQtyType,
+        tradeType,
+        unitType,
+        amountUnit: amtQtyType === '1' ? '억원' : null,
+        quantityUnit: amtQtyType === '2' ? '주' : null,
+        foreignNetBuy: amtQtyType === '1' ? toEok(rawForeign) : null,
+        instNetBuy: amtQtyType === '1' ? toEok(rawInst) : null,
+        individualNetBuy: amtQtyType === '1' ? toEok(rawIndividual) : null,
+        foreignAmountMillion: amtQtyType === '1' ? rawForeign : null,
+        instAmountMillion: amtQtyType === '1' ? rawInst : null,
+        individualAmountMillion: amtQtyType === '1' ? rawIndividual : null,
+        foreignQty: amtQtyType === '2' ? toShares(rawForeign) : null,
+        instQty: amtQtyType === '2' ? toShares(rawInst) : null,
+        individualQty: amtQtyType === '2' ? toShares(rawIndividual) : null,
+        curPrice: curPrice !== null ? Math.abs(curPrice) : null,
+        accVolume: accVolume !== null ? Math.abs(accVolume) : null,
+        accTradingValueMillion: accTradingValueMillion !== null ? Math.abs(accTradingValueMillion) : null,
+      });
+    }
+
+    if (rows.length === 0) {
+      return emptyResult('투자자별 순매수 수치 없음 (데이터 미수신)');
+    }
+
+    // Sort descending by date to ensure latest trading day is rows[0]
+    rows.sort((a, b) => b.rawDate.localeCompare(a.rawDate));
+    const latest = rows[0];
+
+    const hasAnyValue =
+      amtQtyType === '1'
+        ? (latest.foreignNetBuy !== null && latest.instNetBuy !== null)
+        : (latest.foreignQty !== null && latest.instQty !== null);
+
+    if (!hasAnyValue) {
+      return emptyResult('외국인·기관 순매수 수치 누락');
+    }
+
+    return {
+      symbol,
+      trId: 'ka10059',
+      available: true,
+      investorDataSource: '키움 Open API (ka10059)',
+      baseDate: latest.baseDate,
+      updateTime: new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit' }),
+      amtQtyType,
+      tradeType,
+      unitType,
+      foreignNetBuy: latest.foreignNetBuy,
+      instNetBuy: latest.instNetBuy,
+      individualNetBuy: latest.individualNetBuy,
+      foreignAmountMillion: latest.foreignAmountMillion,
+      instAmountMillion: latest.instAmountMillion,
+      individualAmountMillion: latest.individualAmountMillion,
+      foreignQty: latest.foreignQty,
+      instQty: latest.instQty,
+      individualQty: latest.individualQty,
+      rows: rows.slice(0, 20),
+    };
+  }
+
+  /**
+   * 4-3. Inquire Investor Trading Flow via Kiwoom REST API
+   * Endpoint: POST /api/dostk/stkinfo (TR: ka10059 - 종목별투자자기관별요청)
+   */
+  public async fetchInvestorFlow(
+    symbol: string,
+    options: KiwoomInvestorFlowOptions = {}
+  ): Promise<KiwoomInvestorFlowResult> {
+    const dt = this.getKstDateYmd(options.date);
+    const amtQtyType: '1' | '2' = options.amtQtyType === '2' ? '2' : '1';
+    const tradeType: '0' | '1' | '2' = options.tradeType === '1' || options.tradeType === '2' ? options.tradeType : '0';
+    const unitType: '1' | '1000' = options.unitType === '1000' ? '1000' : '1';
+
+    const cacheKey = `ka10059:${symbol}:${dt}:${amtQtyType}:${tradeType}:${unitType}`;
+    const cached = this.investorFlowCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+
+    const dedupKey = `investor:ka10059:${symbol}:${dt}:${amtQtyType}:${tradeType}:${unitType}`;
+    return this.executeWithRateLimit({
+      category: 'INVESTOR',
+      dedupKey,
+      fn: async () => {
+        const innerCached = this.investorFlowCache.get(cacheKey);
+        if (innerCached && innerCached.expiresAt > Date.now()) {
+          return innerCached.data;
+        }
+
+        const token = await this.getAccessToken();
+        const url = `${this.config.baseUrl}/api/dostk/stkinfo`;
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json;charset=UTF-8',
+            'authorization': `Bearer ${token}`,
+            'appkey': this.config.appKey,
+            'appsecret': this.config.appSecret,
+            'secretkey': this.config.appSecret,
+            'api-id': 'ka10059',
+            'cont-yn': 'N',
+          },
+          body: JSON.stringify({
+            dt,
+            stk_cd: symbol,
+            amt_qty_tp: amtQtyType,
+            trde_tp: tradeType,
+            unit_tp: unitType,
+          }),
+          signal: AbortSignal.timeout(7000),
+        });
+
+        let data: any;
+        try {
+          data = await res.json();
+        } catch {
+          throw new Error(`Kiwoom 수급 조회(ka10059) 응답 파싱 실패: HTTP ${res.status}`);
+        }
+
+        if (!res.ok || (data.return_code !== undefined && data.return_code !== 0 && data.return_code !== '0')) {
+          const err: any = new Error(`Kiwoom 수급 조회(ka10059) 실패 [code: ${data.return_code ?? res.status}]: ${data.return_msg || res.status}`);
+          err.return_code = data.return_code;
+          err.return_msg = data.return_msg;
+          err.status = res.status;
+          throw err;
+        }
+
+        const parsed = this.parseKiwoomInvestorFlow(symbol, data, {
+          date: dt,
+          amtQtyType,
+          tradeType,
+          unitType,
+        });
+
+        this.investorFlowCache.set(cacheKey, {
+          data: parsed,
+          expiresAt: Date.now() + (parsed.available ? 60000 : 15000),
+        });
+
+        return parsed;
+      },
+    });
+  }
+
   /**
    * 5. Complete Diagnostic Runner
    * - Verifies real-time outbound public IP and checks if fixed or dynamic
@@ -1965,9 +2313,113 @@ class KiwoomApiService {
       results: parseResults,
     };
 
+    // 3-C. Self-Validation: ka10059 Investor Flow Parsing (금액/수량/단위/기준일/0 vs null 구분/오류)
+    const investorCases = [
+      {
+        scenario: '1. ka10059 금액 모드(amt_qty_tp=1, 백만원->억원 변환 및 YYYY-MM-DD 기준일)',
+        options: { amtQtyType: '1' as const, tradeType: '0' as const, unitType: '1' as const },
+        raw: {
+          return_code: 0,
+          stk_invsr_orgn: [
+            { dt: '20261117', cur_prc: '+190300', acc_trde_qty: '15000000', acc_trde_prica: '2854500', ind_invsr: '1584', frgnr_invsr: '-61779', orgn: '60195' },
+          ],
+        },
+        check: (p: KiwoomInvestorFlowResult) =>
+          p.available === true &&
+          p.baseDate === '2026-11-17' &&
+          p.foreignNetBuy === -617.8 &&
+          p.instNetBuy === 602 &&
+          p.individualNetBuy === 15.8 &&
+          p.foreignAmountMillion === -61779 &&
+          p.foreignQty === null,
+        unitLabel: '억원 (백만원 원시값)',
+      },
+      {
+        scenario: '2. ka10059 수량 모드(amt_qty_tp=2, unit_tp=1000 천주 -> 주 환산)',
+        options: { amtQtyType: '2' as const, tradeType: '0' as const, unitType: '1000' as const },
+        raw: {
+          return_code: 0,
+          stk_invsr_orgn: [
+            { dt: '20261117', ind_invsr: '-120', frgnr_invsr: '350', orgn: '-230' },
+          ],
+        },
+        check: (p: KiwoomInvestorFlowResult) =>
+          p.available === true &&
+          p.baseDate === '2026-11-17' &&
+          p.foreignQty === 350000 &&
+          p.instQty === -230000 &&
+          p.individualQty === -120000 &&
+          p.foreignNetBuy === null,
+        unitLabel: '주 (천주 환산)',
+      },
+      {
+        scenario: '3. ka10059 실제 0("0") 보존 vs 빈 문자열/누락 null 구분',
+        options: { amtQtyType: '1' as const, tradeType: '0' as const, unitType: '1' as const },
+        raw: {
+          return_code: 0,
+          stk_invsr_orgn: [
+            { dt: '20261117', ind_invsr: '', frgnr_invsr: '0', orgn: '0' },
+          ],
+        },
+        check: (p: KiwoomInvestorFlowResult) =>
+          p.available === true &&
+          p.foreignNetBuy === 0 &&
+          p.instNetBuy === 0 &&
+          p.individualNetBuy === null,
+        unitLabel: '0 vs null 구분',
+      },
+      {
+        scenario: '4. ka10059 빈 배열(휴장/미수신) -> available=false & null 반환',
+        options: { amtQtyType: '1' as const, tradeType: '0' as const, unitType: '1' as const },
+        raw: { return_code: 0, stk_invsr_orgn: [] },
+        check: (p: KiwoomInvestorFlowResult) =>
+          p.available === false &&
+          p.foreignNetBuy === null &&
+          p.instNetBuy === null &&
+          p.individualNetBuy === null &&
+          p.baseDate === null,
+        unitLabel: '미수신',
+      },
+      {
+        scenario: '5. ka10059 오류 응답(return_code != 0) -> available=false & null 반환',
+        options: { amtQtyType: '1' as const, tradeType: '0' as const, unitType: '1' as const },
+        raw: { return_code: 8050, return_msg: 'IP가 등록되지 않았습니다' },
+        check: (p: KiwoomInvestorFlowResult) =>
+          p.available === false &&
+          p.foreignNetBuy === null &&
+          p.instNetBuy === null &&
+          Boolean(p.reason && p.reason.includes('8050')),
+        unitLabel: '오류 방어',
+      },
+    ];
+
+    const investorResults = investorCases.map(ic => {
+      const parsed = this.parseKiwoomInvestorFlow('005930', ic.raw, ic.options);
+      const ok = ic.check(parsed);
+      return {
+        scenario: ic.scenario,
+        available: parsed.available,
+        foreign: ic.options.amtQtyType === '2' ? parsed.foreignQty : parsed.foreignNetBuy,
+        inst: ic.options.amtQtyType === '2' ? parsed.instQty : parsed.instNetBuy,
+        individual: ic.options.amtQtyType === '2' ? parsed.individualQty : parsed.individualNetBuy,
+        unit: ic.unitLabel,
+        baseDate: parsed.baseDate,
+        success: ok,
+      };
+    });
+
+    const invPassed = investorResults.filter(r => r.success).length;
+    result.investorParseValidationTest = {
+      attempted: true,
+      success: invPassed === investorCases.length,
+      testCasesPassed: invPassed,
+      totalTestCases: investorCases.length,
+      results: investorResults,
+    };
+
     // 4. Test US Stock AAPL (애플) - Verify delayed status, timestamp, source, currency
     try {
-      const usUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=2d';
+      const usUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=5d';
       const usRes = await fetch(usUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)',
@@ -1978,10 +2430,24 @@ class KiwoomApiService {
 
       if (usRes.ok) {
         const usJson = await usRes.json() as any;
-        const meta = usJson.chart?.result?.[0]?.meta;
+        const usChartRes = usJson.chart?.result?.[0];
+        const meta = usChartRes?.meta;
         if (meta) {
           const rawPrice = meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0;
-          const rawPrevClose = meta.chartPreviousClose ?? rawPrice;
+          const rawCloses: any[] = usChartRes?.indicators?.quote?.[0]?.close || [];
+          const validCloses = rawCloses.filter((c: any): c is number => typeof c === 'number' && Number.isFinite(c) && c > 0);
+          let rawPrevClose =
+            (typeof meta.previousClose === 'number' && meta.previousClose > 0 ? meta.previousClose : undefined) ??
+            (typeof meta.regularMarketPreviousClose === 'number' && meta.regularMarketPreviousClose > 0 ? meta.regularMarketPreviousClose : undefined);
+          if (rawPrevClose === undefined) {
+            if (validCloses.length >= 2) {
+              const lastClose = validCloses[validCloses.length - 1];
+              const isSameAsLatest = rawPrice > 0 && Math.abs(lastClose - rawPrice) / rawPrice < 0.005;
+              rawPrevClose = isSameAsLatest ? validCloses[validCloses.length - 2] : lastClose;
+            } else {
+              rawPrevClose = meta.chartPreviousClose ?? rawPrice;
+            }
+          }
           const price = Number(rawPrice.toFixed(2));
           const prevClose = Number(rawPrevClose.toFixed(2));
           const change = Number((price - prevClose).toFixed(2));
@@ -2176,6 +2642,24 @@ class KiwoomApiService {
       this.reconnectTimer = null;
       this.connectWebSocket().catch(() => {});
     }, delayMs);
+  }
+
+  public cleanup() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      try {
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+    this.wsConnected = false;
+    this.wsLoggedIn = false;
+    this.stockPriceCache.clear();
+    this.chartServerCache.clear();
   }
 
   public subscribeStock(symbol: string) {

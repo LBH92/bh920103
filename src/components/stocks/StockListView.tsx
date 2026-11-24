@@ -22,10 +22,16 @@ import { PriceBadge } from '../common/PriceBadge';
 import { MarketBadge } from '../common/MarketBadge';
 import { matchHangulSearch } from '../../utils/hangul';
 import { isSurgeGain, isSurgeLoss, isVolumeSurge } from '../../utils/marketThresholds';
+import { getStockUniqueKey } from '../../utils/stocks/ticker';
 import { MarketHeatmap } from './MarketHeatmap';
-import { formatTradingValue } from '../../utils/format';
 import { TabletStockTradingView } from './TabletStockTradingView';
 import { stockRepository } from '../../services/stockRepository';
+import {
+  inferStockCurrency,
+  formatMoney,
+  formatMarketCapByCurrency,
+  formatTradingValueByCurrency,
+} from '../../utils/currency';
 
 export const StockListView: React.FC = () => {
   const { stocks, navigateToStock, watchlist, toggleWatchlist, isWatchlisted, setActiveTab } = useApp();
@@ -36,33 +42,50 @@ export const StockListView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<Stock[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
+    const q = searchTerm.trim();
+    if (!q) {
+      setSearchResults([]);
+      setIsSearching(false);
+      setSearchError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setIsSearching(true);
+    setSearchError(null);
+
     const handler = setTimeout(async () => {
-      const q = searchTerm.trim();
-      if (q.length >= 2) {
-        setIsSearching(true);
-        try {
-          // Use realStockRepository.searchStocks API
-          const results = await stockRepository.searchStocks({ 
-            query: q, 
-            limit: 20, 
-            market: currentMarketTab !== 'ALL' ? currentMarketTab : undefined 
-          });
+      try {
+        const results = await stockRepository.searchStocks({
+          query: q,
+          limit: 25,
+          market: currentMarketTab !== 'ALL' ? currentMarketTab : undefined,
+          signal: controller.signal,
+        });
+        if (!controller.signal.aborted) {
           setSearchResults(results);
-        } catch (err) {
-          console.error('[StockListView] Search API error:', err);
-          setSearchResults([]);
-        } finally {
+        }
+      } catch (err: any) {
+        if (err?.name === 'AbortError' || controller.signal.aborted) return;
+        console.error('[StockListView] Search API error:', err);
+        setSearchResults([]);
+        setSearchError(err?.message || '종목 검색 중 오류가 발생했습니다.');
+      } finally {
+        if (!controller.signal.aborted) {
           setIsSearching(false);
         }
-      } else {
-        setSearchResults([]);
       }
-    }, 200);
+    }, 180);
 
-    return () => clearTimeout(handler);
-  }, [searchTerm, currentMarketTab]);
+    return () => {
+      controller.abort();
+      clearTimeout(handler);
+    };
+  }, [searchTerm, currentMarketTab, retryNonce]);
 
   // Use API search results if available, otherwise filter local stocks list
   const [sectorFilter, setSectorFilter] = useState<string>('ALL');
@@ -73,7 +96,7 @@ export const StockListView: React.FC = () => {
   // Extract sectors
   const sectors = ['ALL', '반도체', '바이오', '2차전지', '방위산업', '자동차', 'IT인터넷'];
 
-  const displayStocks = searchTerm.trim().length >= 2 ? searchResults : stocks.filter(stock => {
+  const displayStocks = searchTerm.trim().length >= 1 ? searchResults : stocks.filter(stock => {
     const matchesMarketTab = currentMarketTab === 'ALL' ||
       (currentMarketTab === 'KOSPI' && stock.market === 'KOSPI') ||
       (currentMarketTab === 'KOSDAQ' && stock.market === 'KOSDAQ') ||
@@ -126,7 +149,7 @@ export const StockListView: React.FC = () => {
                 : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
             }`}
           >
-            {tab === 'ALL' ? '종합' : tab === 'KOSPI' ? '코스피' : tab === 'KOSDAQ' ? '코스닥' : tab === 'US' ? '미장' : '코인'}
+            {tab === 'ALL' ? '전체' : tab === 'KOSPI' ? '코스피' : tab === 'KOSDAQ' ? '코스닥' : tab === 'US' ? '미국' : '코인'}
           </button>
         ))}
       </div>
@@ -294,14 +317,36 @@ export const StockListView: React.FC = () => {
 
       {/* Stock Table & Mobile Responsive View */}
       <div className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
+        {searchError && searchTerm.trim().length >= 1 && (
+          <div className="p-4 bg-rose-500/5 border-b border-rose-500/20 flex items-center justify-between gap-3 text-xs">
+            <span className="text-rose-500 font-semibold">{searchError}</span>
+            <button
+              type="button"
+              onClick={() => setRetryNonce(n => n + 1)}
+              className="px-3 py-1 rounded-lg bg-rose-500 hover:bg-rose-600 text-white font-bold shrink-0 cursor-pointer"
+            >
+              다시 시도
+            </button>
+          </div>
+        )}
+        {isSearching && searchTerm.trim().length >= 1 && sorted.length === 0 && (
+          <div className="p-8 text-center text-xs text-slate-400">
+            종목 검색 중입니다...
+          </div>
+        )}
+        {!isSearching && !searchError && sorted.length === 0 && (
+          <div className="p-8 text-center text-xs text-slate-400">
+            일치하는 종목이 없습니다.
+          </div>
+        )}
         {/* Mobile View: High-Density List */}
         <div className="divide-y divide-slate-100 dark:divide-slate-800 md:hidden font-sans">
           {sorted.map(stock => {
             const isWatch = isWatchlisted(stock.symbol);
-            const isUp = stock.change >= 0;
+            const cur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
             return (
               <div
-                key={stock.symbol}
+                key={getStockUniqueKey(stock)}
                 onClick={() => navigateToStock(stock.symbol)}
                 className="p-3.5 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer transition-colors"
               >
@@ -311,7 +356,7 @@ export const StockListView: React.FC = () => {
                       {stock.name}
                     </span>
                     <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
-                      {stock.market}
+                      {stock.exchange || stock.market} · {cur}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 flex-wrap">
@@ -339,9 +384,9 @@ export const StockListView: React.FC = () => {
                 <div className="flex items-center gap-3 shrink-0">
                   <div className="text-right">
                     <div className="font-bold font-mono text-sm text-slate-900 dark:text-white">
-                      {stock.price.toLocaleString()}원
+                      {formatMoney(stock.price, cur)}
                     </div>
-                    <PriceBadge change={stock.change} changePercent={stock.changePercent} size="sm" />
+                    <PriceBadge change={stock.change} changePercent={stock.changePercent} currency={cur} size="sm" />
                   </div>
                   <button
                     onClick={e => {
@@ -418,9 +463,10 @@ export const StockListView: React.FC = () => {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-sans">
               {sorted.map(stock => {
                 const isWatch = isWatchlisted(stock.symbol);
+                const cur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
                 return (
                   <tr
-                    key={stock.symbol}
+                    key={getStockUniqueKey(stock)}
                     onClick={() => navigateToStock(stock.symbol)}
                     className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors cursor-pointer group"
                   >
@@ -435,6 +481,13 @@ export const StockListView: React.FC = () => {
                               {stock.symbol}
                             </span>
                             <MarketBadge market={stock.market} exchange={stock.exchange} />
+                            <span className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded ${
+                              cur === 'USD' || cur === 'USDT'
+                                ? 'bg-indigo-500/10 text-indigo-500'
+                                : 'bg-emerald-500/10 text-emerald-500'
+                            }`}>
+                              {cur}
+                            </span>
 
                             {isSurgeGain(stock.changePercent) && (
                               <span className="px-1.5 py-0.2 rounded text-[10px] tablet:text-[11px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 whitespace-nowrap">
@@ -458,12 +511,12 @@ export const StockListView: React.FC = () => {
                     </td>
                     <td className="py-3.5 px-4 text-right">
                       <div className="font-bold font-mono tablet:text-[14px] text-slate-900 dark:text-white tabular-nums whitespace-nowrap">
-                        {stock.price.toLocaleString()}원
+                        {formatMoney(stock.price, cur)}
                       </div>
-                      <PriceBadge change={stock.change} changePercent={stock.changePercent} size="sm" />
+                      <PriceBadge change={stock.change} changePercent={stock.changePercent} currency={cur} size="sm" />
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono text-xs tablet:text-[12px] tabular-nums whitespace-nowrap text-slate-700 dark:text-slate-300">
-                      {stock.volume.toLocaleString()}주
+                      {stock.volume.toLocaleString()}{stock.market === 'COIN' ? '' : '주'}
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono text-xs tablet:text-[12px] tabular-nums whitespace-nowrap">
                       <span className={`font-bold ${stock.volumeRatio >= 200 ? 'text-amber-500' : 'text-slate-400'}`}>
@@ -471,20 +524,24 @@ export const StockListView: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono text-xs tablet:text-[12px] tabular-nums whitespace-nowrap text-slate-700 dark:text-slate-300">
-                      {formatTradingValue(stock.tradingValue)}
+                      {formatTradingValueByCurrency(stock.tradingValue, cur)}
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono text-xs tablet:text-[12px] tabular-nums whitespace-nowrap text-slate-700 dark:text-slate-300">
-                      {stock.marketCap >= 10000
-                        ? `${(stock.marketCap / 10000).toFixed(1)}조 원`
-                        : `${stock.marketCap.toLocaleString()}억 원`}
+                      {formatMarketCapByCurrency(stock.marketCap, cur)}
                     </td>
                     <td className="py-3.5 px-4 text-right text-xs tablet:text-[11.5px] font-mono tabular-nums whitespace-nowrap">
-                      <div className={stock.foreignNetBuy >= 0 ? 'text-rose-500' : 'text-blue-500'}>
-                        외: {stock.foreignNetBuy >= 0 ? '+' : ''}{stock.foreignNetBuy}억
-                      </div>
-                      <div className={stock.instNetBuy >= 0 ? 'text-rose-500' : 'text-blue-500'}>
-                        기: {stock.instNetBuy >= 0 ? '+' : ''}{stock.instNetBuy}억
-                      </div>
+                      {cur === 'KRW' && stock.market !== 'COIN' && stock.foreignNetBuy != null && stock.instNetBuy != null && stock.investorDataAvailable ? (
+                        <>
+                          <div className={stock.foreignNetBuy >= 0 ? 'text-rose-500' : 'text-blue-500'}>
+                            외: {stock.foreignNetBuy > 0 ? '+' : ''}{stock.foreignNetBuy}억
+                          </div>
+                          <div className={stock.instNetBuy >= 0 ? 'text-rose-500' : 'text-blue-500'}>
+                            기: {stock.instNetBuy > 0 ? '+' : ''}{stock.instNetBuy}억
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-slate-400">-</span>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-center" onClick={e => e.stopPropagation()}>
                       <button

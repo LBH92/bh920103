@@ -107,9 +107,9 @@ class ServerResilienceService {
   public sanitizeSensitiveText(text: string): string {
     if (!text) return '';
     return text
-      .replace(/(?:api[_-]?key|appkey|secret|secretkey|token|authorization|password)=([a-zA-Z0-9_\-\.]{6,})/gi, '$1=••••••••')
+      .replace(/([a-zA-Z0-9_-]*(?:api[_-]?key|appkey|secret|secretkey|token|authorization|password))=([a-zA-Z0-9_\-\.]{6,})/gi, '$1=••••••••')
       .replace(/Bearer\s+[a-zA-Z0-9_\-\.]{15,}/gi, 'Bearer ••••••••')
-      .replace(/key=[a-zA-Z0-9_\-]{20,}/gi, 'key=••••••••');
+      .replace(/([a-zA-Z0-9_-]*key)=([a-zA-Z0-9_\-]{20,})/gi, '$1=••••••••');
   }
 
   /**

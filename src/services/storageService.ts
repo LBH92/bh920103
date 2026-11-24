@@ -1,5 +1,6 @@
 import { Stock, CommunityPost, CommentItem, ChatMessage, PriceAlert, UserProfile, AdminReport, MarketEvent, ReportItem, StockSmartAlert, ChatRoomInfo } from '../types';
 import { INITIAL_POSTS } from './mockData';
+import { dedupeById } from '../utils/dedupe';
 
 const STORAGE_KEYS = {
   WATCHLIST: 'bd_stock_watchlist',
@@ -64,7 +65,7 @@ export const storageService = {
 
   // Community Posts
   getPosts(): CommunityPost[] {
-    return loadFromStorage<CommunityPost[]>(STORAGE_KEYS.POSTS, INITIAL_POSTS);
+    return dedupeById(loadFromStorage<CommunityPost[]>(STORAGE_KEYS.POSTS, INITIAL_POSTS));
   },
 
   getPostById(id: string): CommunityPost | undefined {
@@ -72,12 +73,16 @@ export const storageService = {
     return posts.find(p => p.id === id);
   },
 
-  createPost(data: Omit<CommunityPost, 'id' | 'likes' | 'views' | 'commentsCount' | 'createdAt'>): CommunityPost {
+  createPost(
+    data: Omit<CommunityPost, 'id' | 'likes' | 'views' | 'commentsCount' | 'createdAt'>,
+    overrideId?: string
+  ): CommunityPost {
     const posts = this.getPosts();
     const nowIso = new Date().toISOString();
+    const finalId = overrideId || `post-${Date.now()}`;
     const newPost: CommunityPost = {
       ...data,
-      id: `post-${Date.now()}`,
+      id: finalId,
       likes: 0,
       likedBy: [],
       views: 1,
@@ -86,7 +91,7 @@ export const storageService = {
       updatedAt: nowIso,
       comments: [],
     };
-    const updated = [newPost, ...posts];
+    const updated = [newPost, ...posts.filter(p => p.id !== finalId)];
     saveToStorage(STORAGE_KEYS.POSTS, updated);
     return newPost;
   },
@@ -201,37 +206,38 @@ export const storageService = {
 
   // Live Chat
   getCustomChatRooms(): ChatRoomInfo[] {
-    return loadFromStorage<ChatRoomInfo[]>('bd_chat_rooms', []);
+    return dedupeById(loadFromStorage<ChatRoomInfo[]>('bd_chat_rooms', []));
   },
 
   createCustomChatRoom(room: ChatRoomInfo): ChatRoomInfo {
     const list = this.getCustomChatRooms();
-    const updated = [room, ...list];
+    const updated = dedupeById([room, ...list]);
     saveToStorage('bd_chat_rooms', updated);
     return room;
   },
 
   getChatMessages(roomId: string = 'all'): ChatMessage[] {
-    const allMessages = loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT, []);
+    const allMessages = dedupeById(loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT, []));
     return allMessages.filter(m => m.roomId === roomId);
   },
 
-  sendChatMessage(message: Omit<ChatMessage, 'id' | 'timestamp' | 'likes'>): ChatMessage {
-    const allMessages = loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT, []);
+  sendChatMessage(message: Omit<ChatMessage, 'id' | 'timestamp' | 'likes'> & { id?: string }): ChatMessage {
+    const allMessages = dedupeById(loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT, []));
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    
+    const finalId = message.id || `chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
     const newMsg: ChatMessage = {
       ...message,
-      id: `chat-${Date.now()}`,
+      id: finalId,
       timestamp: timeStr,
-      createdAt: now.toISOString(),
+      createdAt: message.createdAt || now.toISOString(),
       _sortTime: now.getTime(),
       likes: 0,
       status: 'sent',
     };
 
-    const updated = [...allMessages, newMsg];
+    const updated = [...allMessages.filter(m => m.id !== finalId), newMsg];
     // Keep max 200 messages in storage
     if (updated.length > 200) {
       updated.splice(0, updated.length - 200);

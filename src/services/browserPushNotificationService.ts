@@ -12,6 +12,7 @@
 
 import { UserNotificationSettings } from '../types';
 import { notificationService } from './notificationService';
+import { inferStockCurrency, formatMoney } from '../utils/currency';
 
 export interface WatchlistAlertPayload {
   symbol: string;
@@ -177,9 +178,10 @@ class BrowserPushNotificationService {
     // 4. Construct Notification Title & Body
     let title = '';
     let body = '';
-    const formattedPrice = payload.currency === 'USD' 
-      ? `$${payload.currentPrice.toFixed(2)}` 
-      : `${payload.currentPrice.toLocaleString()}원`;
+    const formattedPrice = formatMoney(
+      payload.currentPrice,
+      inferStockCurrency(payload.symbol, undefined, payload.currency)
+    );
 
     if (payload.type === 'surge_gain') {
       title = `🚀 [관심종목 급등] ${payload.stockName} +${payload.changePercent.toFixed(2)}%`;

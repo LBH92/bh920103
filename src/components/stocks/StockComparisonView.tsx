@@ -19,6 +19,14 @@ import {
 } from 'lucide-react';
 import { PriceBadge } from '../common/PriceBadge';
 import { MarketBadge } from '../common/MarketBadge';
+import {
+  inferStockCurrency,
+  inferStockExchange,
+  formatMoney,
+  formatMarketCapByCurrency,
+  validateExchangeRate,
+  convertToKRW,
+} from '../../utils/currency';
 
 interface ComparedStockData {
   stock: Stock;
@@ -465,12 +473,21 @@ export const StockComparisonView: React.FC = () => {
 
       {/* Side-by-Side Financial & Metric Comparison Matrix Table */}
       <div className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/40 flex items-center justify-between">
+        <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
             <span>핵심 재무 및 시세 비교 매트릭스</span>
           </h3>
           <span className="text-xs text-slate-400">클릭 시 해당 종목 상세 화면으로 이동</span>
         </div>
+
+        {new Set(comparedData.map(d => inferStockCurrency(d.stock.symbol, d.stock.market, d.stock.currency))).size > 1 && (
+          <div className="px-4 py-2.5 bg-indigo-500/5 border-b border-indigo-500/20 text-[11px] text-indigo-700 dark:text-indigo-300 flex items-center gap-2">
+            <Info className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              이종 통화(KRW·USD·USDT) 종목이 함께 비교되고 있습니다. 상단 차트는 원통화 수익률(%)로 정규화되며, 주가와 시가총액은 각 종목의 기준 통화 단위로 분리 표기됩니다.
+            </span>
+          </div>
+        )}
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs divide-y divide-slate-100 dark:divide-slate-800">
@@ -490,7 +507,7 @@ export const StockComparisonView: React.FC = () => {
                         <span className="text-slate-900 dark:text-white font-black truncate">{d.stock.name}</span>
                       </div>
                       <div className="text-[10px] font-mono text-slate-400 mt-0.5">
-                        {d.stock.symbol} · {d.stock.exchange || d.stock.market}
+                        {d.stock.symbol} · {inferStockExchange(d.stock.symbol, d.stock.market, d.stock.exchange)} · {inferStockCurrency(d.stock.symbol, d.stock.market, d.stock.currency)}
                       </div>
                     </th>
                   );
@@ -501,25 +518,35 @@ export const StockComparisonView: React.FC = () => {
               {/* 현재가 */}
               <tr>
                 <td className="py-3 px-4 text-slate-500 font-bold bg-slate-50/50 dark:bg-slate-900/30">현재가</td>
-                {comparedData.map(d => (
-                  <td key={d.stock.symbol} className="py-3 px-4 font-mono font-bold text-slate-900 dark:text-white">
-                    {d.stock.currency === 'USD'
-                      ? `$${d.stock.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                      : d.stock.currency === 'USDT'
-                      ? `${d.stock.price.toLocaleString()} USDT`
-                      : `${d.stock.price.toLocaleString()}원`}
-                  </td>
-                ))}
+                {comparedData.map(d => {
+                  const cur = inferStockCurrency(d.stock.symbol, d.stock.market, d.stock.currency);
+                  const conv = cur !== 'KRW' && validateExchangeRate(exchangeRate).valid
+                    ? convertToKRW(d.stock.price, cur, exchangeRate)
+                    : null;
+                  return (
+                    <td key={d.stock.symbol} className="py-3 px-4 font-mono font-bold text-slate-900 dark:text-white">
+                      <div>{formatMoney(d.stock.price, cur)}</div>
+                      {conv?.valid && conv.valueKRW !== null && (
+                        <div className="text-[10px] font-normal text-slate-400">
+                          ≈ {formatMoney(conv.valueKRW, 'KRW')}
+                        </div>
+                      )}
+                    </td>
+                  );
+                })}
               </tr>
 
               {/* 일간 등락률 */}
               <tr>
                 <td className="py-3 px-4 text-slate-500 font-bold bg-slate-50/50 dark:bg-slate-900/30">일간 등락률</td>
-                {comparedData.map(d => (
-                  <td key={d.stock.symbol} className="py-3 px-4">
-                    <PriceBadge change={d.stock.change} changePercent={d.stock.changePercent} size="sm" />
-                  </td>
-                ))}
+                {comparedData.map(d => {
+                  const cur = inferStockCurrency(d.stock.symbol, d.stock.market, d.stock.currency);
+                  return (
+                    <td key={d.stock.symbol} className="py-3 px-4">
+                      <PriceBadge change={d.stock.change} changePercent={d.stock.changePercent} currency={cur} size="sm" />
+                    </td>
+                  );
+                })}
               </tr>
 
               {/* 선택 기간 수익률 */}
@@ -538,11 +565,14 @@ export const StockComparisonView: React.FC = () => {
               {/* 시가총액 */}
               <tr>
                 <td className="py-3 px-4 text-slate-500 font-bold bg-slate-50/50 dark:bg-slate-900/30">시가총액</td>
-                {comparedData.map(d => (
-                  <td key={d.stock.symbol} className="py-3 px-4 font-mono text-slate-700 dark:text-slate-300">
-                    {d.stock.marketCap > 0 ? `${(d.stock.marketCap / 10000).toFixed(1)}조 원` : '-'}
-                  </td>
-                ))}
+                {comparedData.map(d => {
+                  const cur = inferStockCurrency(d.stock.symbol, d.stock.market, d.stock.currency);
+                  return (
+                    <td key={d.stock.symbol} className="py-3 px-4 font-mono text-slate-700 dark:text-slate-300">
+                      {formatMarketCapByCurrency(d.stock.marketCap, cur)}
+                    </td>
+                  );
+                })}
               </tr>
 
               {/* PER (주가수익비율) */}
@@ -568,21 +598,27 @@ export const StockComparisonView: React.FC = () => {
               {/* 52주 최고가 */}
               <tr>
                 <td className="py-3 px-4 text-slate-500 font-bold bg-slate-50/50 dark:bg-slate-900/30">52주 최고가</td>
-                {comparedData.map(d => (
-                  <td key={d.stock.symbol} className="py-3 px-4 font-mono text-rose-500">
-                    {d.stock.high52w ? d.stock.high52w.toLocaleString() : '-'}
-                  </td>
-                ))}
+                {comparedData.map(d => {
+                  const cur = inferStockCurrency(d.stock.symbol, d.stock.market, d.stock.currency);
+                  return (
+                    <td key={d.stock.symbol} className="py-3 px-4 font-mono text-rose-500">
+                      {d.stock.high52w ? formatMoney(d.stock.high52w, cur) : '-'}
+                    </td>
+                  );
+                })}
               </tr>
 
               {/* 52주 최저가 */}
               <tr>
                 <td className="py-3 px-4 text-slate-500 font-bold bg-slate-50/50 dark:bg-slate-900/30">52주 최저가</td>
-                {comparedData.map(d => (
-                  <td key={d.stock.symbol} className="py-3 px-4 font-mono text-blue-500">
-                    {d.stock.low52w ? d.stock.low52w.toLocaleString() : '-'}
-                  </td>
-                ))}
+                {comparedData.map(d => {
+                  const cur = inferStockCurrency(d.stock.symbol, d.stock.market, d.stock.currency);
+                  return (
+                    <td key={d.stock.symbol} className="py-3 px-4 font-mono text-blue-500">
+                      {d.stock.low52w ? formatMoney(d.stock.low52w, cur) : '-'}
+                    </td>
+                  );
+                })}
               </tr>
 
               {/* 거래량 */}

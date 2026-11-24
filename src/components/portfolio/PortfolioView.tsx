@@ -38,6 +38,14 @@ import { PortfolioCharts } from './PortfolioCharts';
 import { PortfolioAnalyzer } from './PortfolioAnalyzer';
 import { DividendCalculator } from './DividendCalculator';
 import { stockRepository } from '../../services/stockRepository';
+import {
+  aggregateMultiCurrencyPortfolio,
+  convertToKRW,
+  formatMoney,
+  inferFiatCurrency,
+  inferStockExchange,
+  validateExchangeRate,
+} from '../../utils/currency';
 
 
 export const PortfolioView: React.FC = () => {
@@ -127,104 +135,70 @@ export const PortfolioView: React.FC = () => {
     showToast('보유 종목 시세 및 자산 현황을 갱신했습니다.', 'info');
   };
 
-  // ==========================================
-  // Virtual Holdings Calculations
-  // ==========================================
-  const virtualMetrics = useMemo(() => {
-    let totalCostKRW = 0;
-    let totalValuationKRW = 0;
-    let totalRealizedProfitKRW = 0;
-    let missingQuoteCount = 0;
-    const currentRate = exchangeRate?.rate || 0; 
-
-    for (const h of virtualHoldings) {
-      const quote = quotesMap.get(h.symbol);
-      const isUSD = h.currency === 'USD';
-      
-      // Calculate cost accurately even if missing rate
-      const costKRW = (isUSD && currentRate > 0) ? h.totalBuyAmount * currentRate : (isUSD ? 0 : h.totalBuyAmount);
-      totalCostKRW += costKRW;
-
-      if (quote && quote.price > 0 && (isUSD ? currentRate > 0 : true)) {
-        const val = quote.price * h.quantity;
-        const valKRW = isUSD ? val * currentRate : val;
-        totalValuationKRW += valKRW;
-      } else {
-        missingQuoteCount++;
-      }
-    }
-
-    for (const t of virtualTrades) {
-      if (t.tradeType === 'SELL' && t.realizedProfit !== undefined) {
-        totalRealizedProfitKRW += t.realizedProfit;
-      }
-    }
-
-    const unrealizedProfitKRW = totalValuationKRW - totalCostKRW;
-    const returnRatePercent = totalCostKRW > 0 ? (unrealizedProfitKRW / totalCostKRW) * 100 : 0;
-
-    return {
-      totalCostKRW,
-      totalValuationKRW,
-      unrealizedProfitKRW,
-      returnRatePercent,
-      totalRealizedProfitKRW,
-      count: virtualHoldings.length,
-      missingQuoteCount,
-    };
-  }, [virtualHoldings, virtualTrades, quotesMap, exchangeRate?.rate]);
+  const fxCheck = useMemo(() => validateExchangeRate(exchangeRate), [exchangeRate]);
 
   // ==========================================
-  // Mock Trading Calculations
+  // Virtual Holdings Calculations (KRW / USD Separated + FX Conversion)
   // ==========================================
-  const mockMetrics = useMemo(() => {
-    const cash = mockAccount?.currentCash ?? 100000000;
-    const initial = mockAccount?.initialBalance ?? 100000000;
-    let totalInvestedKRW = 0;
-    let totalValuationKRW = 0;
-    const currentRate = exchangeRate?.rate || 1400;
+  const virtualAgg = useMemo(() => {
+    return aggregateMultiCurrencyPortfolio({
+      positions: virtualHoldings.map(h => ({
+        symbol: h.symbol,
+        currency: inferFiatCurrency(h.symbol, h.market, h.currency),
+        market: h.market,
+        quantity: h.quantity,
+        avgBuyPrice: h.avgBuyPrice,
+        totalCost: h.totalBuyAmount,
+        currentPrice: quotesMap.get(h.symbol)?.price ?? null,
+        entryExchangeRate: h.entryExchangeRate,
+      })),
+      realizedTrades: virtualTrades
+        .filter(t => t.tradeType === 'SELL' && t.realizedProfit !== undefined)
+        .map(t => ({
+          symbol: t.symbol,
+          currency: inferFiatCurrency(t.symbol, undefined, t.currency ?? quotesMap.get(t.symbol)?.currency),
+          realizedProfit: t.realizedProfit,
+          exchangeRate: t.exchangeRate,
+        })),
+      fx: exchangeRate,
+      fallbackValuationToCost: false,
+    });
+  }, [virtualHoldings, virtualTrades, quotesMap, exchangeRate]);
 
-    for (const p of mockPositions) {
-      const quote = quotesMap.get(p.symbol);
-      const isUSD = p.currency === 'USD';
-      const costKRW = isUSD ? p.totalInvested * currentRate : p.totalInvested;
-      totalInvestedKRW += costKRW;
-
-      if (quote && quote.price > 0) {
-        const val = quote.price * p.quantity;
-        const valKRW = quote.currency === 'USD' ? val * currentRate : val;
-        totalValuationKRW += valKRW;
-      } else {
-        totalValuationKRW += costKRW;
-      }
-    }
-
-    let totalRealizedProfitKRW = 0;
-    for (const o of mockOrders) {
-      if (o.orderType === 'SELL' && o.realizedProfit !== undefined) {
-        totalRealizedProfitKRW += o.realizedProfit;
-      }
-    }
-
-    const unrealizedProfitKRW = totalValuationKRW - totalInvestedKRW;
-    const totalAssetsKRW = cash + totalValuationKRW;
-    const totalReturnRatePercent = initial > 0 ? ((totalAssetsKRW - initial) / initial) * 100 : 0;
-
-    return {
-      cash,
-      initial,
-      totalInvestedKRW,
-      totalValuationKRW,
-      unrealizedProfitKRW,
-      totalRealizedProfitKRW,
-      totalAssetsKRW,
-      totalReturnRatePercent,
-      positionCount: mockPositions.length,
-    };
-  }, [mockAccount, mockPositions, mockOrders, quotesMap, exchangeRate?.rate]);
+  // ==========================================
+  // Mock Trading Calculations (KRW / USD Separated + FX Conversion)
+  // ==========================================
+  const mockAgg = useMemo(() => {
+    return aggregateMultiCurrencyPortfolio({
+      positions: mockPositions.map(p => ({
+        symbol: p.symbol,
+        currency: inferFiatCurrency(p.symbol, p.market, p.currency),
+        market: p.market,
+        quantity: p.quantity,
+        avgBuyPrice: p.avgBuyPrice,
+        totalCost: p.totalInvested,
+        currentPrice: quotesMap.get(p.symbol)?.price ?? null,
+        entryExchangeRate: p.entryExchangeRate,
+      })),
+      realizedTrades: mockOrders
+        .filter(o => o.orderType === 'SELL' && o.status !== 'PENDING' && o.status !== 'CANCELLED' && o.realizedProfit !== undefined)
+        .map(o => ({
+          symbol: o.symbol,
+          currency: inferFiatCurrency(o.symbol, undefined, o.currency ?? quotesMap.get(o.symbol)?.currency),
+          realizedProfit: o.realizedProfit,
+          exchangeRate: o.exchangeRate,
+        })),
+      cashKRW: mockAccount?.currentCash ?? 100000000,
+      initialCashKRW: mockAccount?.initialBalance ?? 100000000,
+      cashUSD: mockAccount?.currentCashUsd ?? 100000,
+      initialCashUSD: mockAccount?.initialBalanceUsd ?? 100000,
+      fx: exchangeRate,
+      fallbackValuationToCost: true,
+    });
+  }, [mockAccount, mockPositions, mockOrders, quotesMap, exchangeRate]);
 
   const handleResetMockAccount = async () => {
-    if (!window.confirm('가상 모의투자 계좌를 초기 자금(1억 원)으로 리셋하시겠습니까?\n모든 보유 종목과 주문 내역이 초기화됩니다.')) {
+    if (!window.confirm('가상 모의투자 계좌를 초기 자금(₩100,000,000 / $100,000.00)으로 리셋하시겠습니까?\n모든 보유 종목과 주문 내역이 초기화됩니다.')) {
       return;
     }
     try {
@@ -232,7 +206,7 @@ export const PortfolioView: React.FC = () => {
       setMockAccount(newAcc);
       setMockPositions([]);
       setMockOrders([]);
-      showToast('모의투자 계좌가 1억 원으로 초기화되었습니다.', 'info');
+      showToast('모의투자 계좌가 KRW ₩100,000,000 / USD $100,000.00으로 초기화되었습니다.', 'info');
     } catch (err: any) {
       showToast('계좌 초기화 중 오류가 발생했습니다.', 'error');
     }
@@ -356,58 +330,117 @@ export const PortfolioView: React.FC = () => {
             </div>
           </div>
 
-          {/* Virtual Metrics Summary Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] text-slate-400 font-sans block mb-1">총 평가금액</span>
-              <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white">
-                {virtualMetrics.totalValuationKRW.toLocaleString()}원
-              </span>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] text-slate-400 font-sans block mb-1">총 매입금액</span>
-              <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white">
-                {virtualMetrics.totalCostKRW.toLocaleString()}원
-              </span>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] text-slate-400 font-sans block mb-1">평가손익 (수익률)</span>
-              <div className="flex items-baseline gap-1.5 flex-wrap">
-                <span className={`text-base sm:text-lg font-black font-mono ${
-                  virtualMetrics.unrealizedProfitKRW >= 0 ? 'text-rose-500' : 'text-blue-500'
-                }`}>
-                  {virtualMetrics.unrealizedProfitKRW >= 0 ? '+' : ''}
-                  {virtualMetrics.unrealizedProfitKRW.toLocaleString()}원
-                </span>
-                <span className={`text-xs font-bold font-mono ${
-                  virtualMetrics.returnRatePercent >= 0 ? 'text-rose-500' : 'text-blue-500'
-                }`}>
-                  ({virtualMetrics.returnRatePercent >= 0 ? '+' : ''}{virtualMetrics.returnRatePercent.toFixed(2)}%)
+          {/* FX Status Alert when FX is missing / stale / error */}
+          {!fxCheck.valid && (
+            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
+              <ShieldAlert className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold block">실시간 USD/KRW 환율 검증 불가 — 원화 통합 환산 중단</span>
+                <span className="text-[11px] opacity-90">
+                  {fxCheck.reason || '환율 정보를 확인할 수 없어 임의 환산 없이 KRW와 USD 자산을 각각 분리 표기합니다.'}
                 </span>
               </div>
             </div>
+          )}
 
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] text-slate-400 font-sans block mb-1">누적 실현손익</span>
-              <span className={`text-base sm:text-lg font-black font-mono ${
-                virtualMetrics.totalRealizedProfitKRW >= 0 ? 'text-rose-500' : 'text-blue-500'
-              }`}>
-                {virtualMetrics.totalRealizedProfitKRW >= 0 ? '+' : ''}
-                {virtualMetrics.totalRealizedProfitKRW.toLocaleString()}원
-              </span>
+          {/* Virtual Metrics Summary Cards (KRW / USD Native Separation + FX Converted Total) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5">
+            {/* 1. KRW Native Assets */}
+            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">국내 주식 (KRW 기준)</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-mono font-bold">
+                  {virtualAgg.krw.holdingsCount}종목
+                </span>
+              </div>
+              <div>
+                <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white block">
+                  {formatMoney(virtualAgg.krw.evaluationAmount, 'KRW')}
+                </span>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  매입 {formatMoney(virtualAgg.krw.investedCost, 'KRW')}
+                </span>
+              </div>
+              <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] font-mono">
+                <span className={virtualAgg.krw.unrealizedPnL >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
+                  {formatMoney(virtualAgg.krw.unrealizedPnL, 'KRW', { showSign: true })} ({virtualAgg.krw.returnRatePercent >= 0 ? '+' : ''}{virtualAgg.krw.returnRatePercent.toFixed(2)}%)
+                </span>
+                <span className="text-slate-400">실현 {formatMoney(virtualAgg.krw.realizedPnL, 'KRW', { showSign: true })}</span>
+              </div>
             </div>
 
-            <div className="col-span-2 lg:col-span-1 p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between lg:flex-col lg:items-start lg:justify-center">
+            {/* 2. USD Native Assets */}
+            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">미국 주식 (USD 기준)</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-500 font-mono font-bold">
+                  {virtualAgg.usd.holdingsCount}종목
+                </span>
+              </div>
+              <div>
+                <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white block">
+                  {formatMoney(virtualAgg.usd.evaluationAmount, 'USD')}
+                </span>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  매입 {formatMoney(virtualAgg.usd.investedCost, 'USD')}
+                </span>
+              </div>
+              <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] font-mono">
+                <span className={virtualAgg.usd.unrealizedPnL >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
+                  {formatMoney(virtualAgg.usd.unrealizedPnL, 'USD', { showSign: true })} ({virtualAgg.usd.returnRatePercent >= 0 ? '+' : ''}{virtualAgg.usd.returnRatePercent.toFixed(2)}%)
+                </span>
+                <span className="text-slate-400">실현 {formatMoney(virtualAgg.usd.realizedPnL, 'USD', { showSign: true })}</span>
+              </div>
+            </div>
+
+            {/* 3. FX-Converted KRW Total (with Stock P&L vs FX P&L Distinction) */}
+            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">기준통화(KRW) 환산 통합</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                  fxCheck.valid ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-rose-500/10 text-rose-500'
+                }`}>
+                  {fxCheck.valid && fxCheck.rate ? `₩${fxCheck.rate.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}` : '환율 오류'}
+                </span>
+              </div>
+              {virtualAgg.convertedKRW ? (
+                <>
+                  <div>
+                    <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white block">
+                      {formatMoney(virtualAgg.convertedKRW.evaluationAmount, 'KRW')}
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      총손익 {formatMoney(virtualAgg.convertedKRW.totalPnL, 'KRW', { showSign: true })} ({virtualAgg.convertedKRW.returnRatePercent >= 0 ? '+' : ''}{virtualAgg.convertedKRW.returnRatePercent.toFixed(2)}%)
+                    </span>
+                  </div>
+                  <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-500">
+                    <span>종목손익 {formatMoney(virtualAgg.convertedKRW.stockPnLKRW, 'KRW', { showSign: true })}</span>
+                    <span>환차익 {formatMoney(virtualAgg.convertedKRW.fxPnLKRW, 'KRW', { showSign: true })}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="py-1">
+                  <span className="text-xs font-bold text-rose-500 block">환산 보류 (유효 환율 없음)</span>
+                  <span className="text-[11px] text-slate-400 block mt-0.5">
+                    KRW {formatMoney(virtualAgg.krw.evaluationAmount, 'KRW')} / USD {formatMoney(virtualAgg.usd.evaluationAmount, 'USD')}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* 4. Holdings Count & Add Stock CTA */}
+            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between lg:flex-col lg:items-start lg:justify-between">
               <div>
                 <span className="text-[11px] text-slate-400 font-sans block mb-1">보유 종목 수</span>
                 <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white">
-                  {virtualMetrics.count}개 종목
+                  {virtualHoldings.length}개 종목
                 </span>
-                {virtualMetrics.missingQuoteCount > 0 && (
+                <span className="text-[10px] text-slate-400 block mt-0.5 font-mono">
+                  환율 시각: {fxCheck.lastUpdated}
+                </span>
+                {virtualAgg.missingQuoteCount > 0 && (
                   <span className="text-[10px] text-amber-500 font-bold block mt-0.5">
-                    ({virtualMetrics.missingQuoteCount}개 시세 미확인)
+                    ({virtualAgg.missingQuoteCount}개 시세 미확인)
                   </span>
                 )}
               </div>
@@ -417,7 +450,7 @@ export const PortfolioView: React.FC = () => {
                   setHoldingModalMode('create');
                   setHoldingModalOpen(true);
                 }}
-                className="flex items-center gap-1.5 px-3 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-rose-600/20 active:scale-95"
+                className="flex items-center gap-1.5 px-3 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-rose-600/20 active:scale-95 lg:w-full lg:justify-center"
               >
                 <Plus className="w-4 h-4" />
                 <span>종목 추가 등록</span>
@@ -429,7 +462,7 @@ export const PortfolioView: React.FC = () => {
           <PortfolioCharts
             holdings={virtualHoldings}
             quotesMap={quotesMap}
-            exchangeRate={exchangeRate}
+            exchangeRate={exchangeRate ?? undefined}
             onSelectStock={navigateToStock}
           />
           {user?.id && (
@@ -445,15 +478,17 @@ export const PortfolioView: React.FC = () => {
 
           {/* Virtual Holdings Table / Card List */}
           <div className="rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-            <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+            <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Briefcase className="w-4 h-4 text-rose-500" />
                 <h3 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white">
                   가상 보유 종목 목록
                 </h3>
               </div>
-              <span className="text-xs text-slate-400 font-mono">
-                기준 환율: {exchangeRate?.rate ? `${exchangeRate.rate.toFixed(2)}원/달러` : '1,400원'}
+              <span className={`text-xs font-mono ${fxCheck.valid ? 'text-slate-400' : 'text-rose-500 font-semibold'}`}>
+                {fxCheck.valid && fxCheck.rate
+                  ? `적용 환율: $1 = ₩${fxCheck.rate.toLocaleString('ko-KR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${fxCheck.lastUpdated})`
+                  : '적용 환율: 수신 오류/지연 — 원화 환산 보류'}
               </span>
             </div>
 
@@ -497,20 +532,23 @@ export const PortfolioView: React.FC = () => {
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
                     {virtualHoldings.map(h => {
                       const quote = quotesMap.get(h.symbol);
-                      const isUSD = h.currency === 'USD';
-                      const currentRate = exchangeRate?.rate || 1400;
+                      const cur = inferFiatCurrency(h.symbol, h.market, h.currency);
+                      const isUSD = cur === 'USD';
+                      const exchangeLabel = inferStockExchange(h.symbol, h.market, h.exchange);
 
-                      // Price & P&L calculations
+                      // Price & P&L calculations strictly in native currency
                       const curPrice = quote?.price ?? 0;
                       const hasQuote = curPrice > 0;
                       const valuation = hasQuote ? curPrice * h.quantity : h.totalBuyAmount;
                       const profit = hasQuote ? (curPrice - h.avgBuyPrice) * h.quantity : 0;
                       const returnPct = h.avgBuyPrice > 0 && hasQuote ? ((curPrice - h.avgBuyPrice) / h.avgBuyPrice) * 100 : 0;
+                      const convVal = isUSD ? convertToKRW(valuation, 'USD', exchangeRate) : null;
+                      const convBuy = isUSD ? convertToKRW(h.avgBuyPrice, 'USD', exchangeRate) : null;
 
                       return (
                         <tr key={h.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
                           <td className="py-3.5 px-4 font-sans">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <button
                                 onClick={() => navigateToStock(h.symbol)}
                                 className="font-bold text-slate-900 dark:text-white hover:text-rose-500 text-left transition-colors flex items-center gap-1 group"
@@ -521,8 +559,8 @@ export const PortfolioView: React.FC = () => {
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">
                                 {h.symbol}
                               </span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-bold font-mono bg-rose-500/10 text-rose-500">
-                                {h.market}
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold font-mono ${isUSD ? 'bg-blue-500/10 text-blue-500' : 'bg-rose-500/10 text-rose-500'}`}>
+                                {exchangeLabel} · {cur}
                               </span>
                             </div>
                             {h.memo && (
@@ -538,11 +576,13 @@ export const PortfolioView: React.FC = () => {
 
                           <td className="py-3.5 px-3 text-right">
                             <span className="text-slate-900 dark:text-white font-semibold">
-                              {isUSD ? `$${h.avgBuyPrice.toFixed(2)}` : `${h.avgBuyPrice.toLocaleString()}원`}
+                              {formatMoney(h.avgBuyPrice, cur)}
                             </span>
                             {isUSD && (
                               <span className="text-[10px] text-slate-400 block">
-                                ≈ {Math.round(h.avgBuyPrice * currentRate).toLocaleString()}원
+                                {convBuy?.valid && convBuy.valueKRW !== null
+                                  ? `≈ ${formatMoney(convBuy.valueKRW, 'KRW')}`
+                                  : '환율 미확인'}
                               </span>
                             )}
                           </td>
@@ -551,7 +591,7 @@ export const PortfolioView: React.FC = () => {
                             {quote && quote.price > 0 ? (
                               <>
                                 <span className="font-bold text-slate-900 dark:text-white block">
-                                  {isUSD ? `$${curPrice.toFixed(2)}` : `${curPrice.toLocaleString()}원`}
+                                  {formatMoney(curPrice, cur)}
                                 </span>
                                 <span className={`text-[10px] block ${quote.delayLabel.includes('실시간') ? 'text-emerald-500' : 'text-slate-400'}`}>
                                   {quote.delayLabel} ({quote.asOf})
@@ -565,15 +605,13 @@ export const PortfolioView: React.FC = () => {
                           </td>
 
                           <td className="py-3.5 px-3 text-right font-bold text-slate-900 dark:text-white">
-                            {isUSD ? (
-                              <>
-                                <span>${valuation.toFixed(2)}</span>
-                                <span className="text-[10px] text-slate-400 block font-normal">
-                                  ≈ {Math.round(valuation * currentRate).toLocaleString()}원
-                                </span>
-                              </>
-                            ) : (
-                              `${valuation.toLocaleString()}원`
+                            <span>{formatMoney(valuation, cur)}</span>
+                            {isUSD && (
+                              <span className="text-[10px] text-slate-400 block font-normal">
+                                {convVal?.valid && convVal.valueKRW !== null
+                                  ? `≈ ${formatMoney(convVal.valueKRW, 'KRW')}`
+                                  : '원화 환산 보류'}
+                              </span>
                             )}
                           </td>
 
@@ -581,8 +619,7 @@ export const PortfolioView: React.FC = () => {
                             {hasQuote ? (
                               <div className={profit >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
                                 <span>
-                                  {profit >= 0 ? '+' : ''}
-                                  {isUSD ? `$${profit.toFixed(2)}` : `${profit.toLocaleString()}원`}
+                                  {formatMoney(profit, cur, { showSign: true })}
                                 </span>
                                 <span className="text-[11px] block">
                                   ({profit >= 0 ? '+' : ''}{returnPct.toFixed(2)}%)
@@ -690,6 +727,7 @@ export const PortfolioView: React.FC = () => {
                     {virtualTrades.map(t => {
                       const isSell = t.tradeType === 'SELL';
                       const isAdd = t.tradeType === 'ADD_BUY';
+                      const tCur = inferFiatCurrency(t.symbol, undefined, t.currency ?? quotesMap.get(t.symbol)?.currency);
 
                       return (
                         <tr key={t.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/20">
@@ -708,21 +746,22 @@ export const PortfolioView: React.FC = () => {
                             </span>
                           </td>
                           <td className="py-2.5 px-3 font-sans font-bold text-slate-900 dark:text-white">
-                            {t.name}
+                            <span>{t.name}</span>
+                            <span className="ml-1.5 text-[10px] font-mono text-slate-400">{tCur}</span>
                           </td>
                           <td className="py-2.5 px-3 text-right">
-                            {t.price.toLocaleString()}원
+                            {formatMoney(t.price, tCur)}
                           </td>
                           <td className="py-2.5 px-3 text-right font-bold">
                             {t.quantity.toLocaleString()}주
                           </td>
                           <td className="py-2.5 px-3 text-right">
-                            {t.totalAmount.toLocaleString()}원
+                            {formatMoney(t.totalAmount, tCur)}
                           </td>
                           <td className="py-2.5 px-3 text-right">
                             {isSell && t.realizedProfit !== undefined ? (
                               <span className={t.realizedProfit >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
-                                {t.realizedProfit >= 0 ? '+' : ''}{t.realizedProfit.toLocaleString()}원
+                                {formatMoney(t.realizedProfit, tCur, { showSign: true })}
                                 <span className="text-[10px] block">
                                   ({t.realizedProfitRate && t.realizedProfitRate >= 0 ? '+' : ''}{t.realizedProfitRate?.toFixed(2)}%)
                                 </span>
@@ -755,58 +794,111 @@ export const PortfolioView: React.FC = () => {
             <Info className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
             <div className="space-y-0.5">
               <span className="font-bold text-sm block">
-                🎮 [실시간 가상 자금 모의 트레이딩 시뮬레이터]
+                🎮 [실시간 가상 자금 모의 트레이딩 시뮬레이터 — KRW / USD 계좌 분리]
               </span>
               <p className="leading-relaxed">
-                실제 증권 거래나 금융 비용 청구 없이, <strong>초기 가상 자금 1억 원</strong>으로 실시간 키움 API 및 글로벌 시세 데이터를 활용해 매수·매도 주문을 체결하고 수익률을 시험해보는 공간입니다.
+                실제 증권 거래나 금융 비용 청구 없이, <strong>원화 가상 자금 ₩100,000,000</strong>과 <strong>외화 가상 자금 $100,000.00</strong>으로 통화별 분리 체결 및 수익률 검증을 진행합니다.
               </p>
             </div>
           </div>
 
-          {/* Account Metrics Bar */}
-          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3.5">
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] text-slate-400 font-sans block mb-1">총 평가자산</span>
-              <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white">
-                {mockMetrics.totalAssetsKRW.toLocaleString()}원
-              </span>
+          {!fxCheck.valid && (
+            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
+              <ShieldAlert className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold block">USD/KRW 환율 수신 지연·오류 — 기준통화(KRW) 통합 환산 보류</span>
+                <span className="text-[11px] opacity-90">{fxCheck.reason || 'KRW와 USD 자산은 각 통화 단위로만 정확히 집계됩니다.'}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Account Metrics Bar (KRW Account / USD Account / Converted KRW Total / Actions) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5">
+            {/* KRW Sub-account */}
+            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">KRW 원화 모의 계좌</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 font-mono font-bold text-slate-600 dark:text-slate-300">KRW</span>
+              </div>
+              <div>
+                <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white block">
+                  {formatMoney(mockAgg.krw.totalAssets, 'KRW')}
+                </span>
+                <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400">
+                  현금 {formatMoney(mockAgg.krw.cash, 'KRW')} · 주식 {formatMoney(mockAgg.krw.evaluationAmount, 'KRW')}
+                </span>
+              </div>
+              <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] font-mono">
+                <span className={mockAgg.krw.unrealizedPnL >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
+                  평가 {formatMoney(mockAgg.krw.unrealizedPnL, 'KRW', { showSign: true })}
+                </span>
+                <span className={mockAgg.krw.returnRatePercent >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
+                  {mockAgg.krw.returnRatePercent >= 0 ? '+' : ''}{mockAgg.krw.returnRatePercent.toFixed(2)}%
+                </span>
+              </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] text-slate-400 font-sans block mb-1">보유 현금 (예수금)</span>
-              <span className="text-base sm:text-lg font-black font-mono text-emerald-600 dark:text-emerald-400">
-                {mockMetrics.cash.toLocaleString()}원
-              </span>
+            {/* USD Sub-account */}
+            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">USD 달러 모의 계좌</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 font-mono font-bold text-blue-500">USD</span>
+              </div>
+              <div>
+                <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white block">
+                  {formatMoney(mockAgg.usd.totalAssets, 'USD')}
+                </span>
+                <span className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400">
+                  현금 {formatMoney(mockAgg.usd.cash, 'USD')} · 주식 {formatMoney(mockAgg.usd.evaluationAmount, 'USD')}
+                </span>
+              </div>
+              <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] font-mono">
+                <span className={mockAgg.usd.unrealizedPnL >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
+                  평가 {formatMoney(mockAgg.usd.unrealizedPnL, 'USD', { showSign: true })}
+                </span>
+                <span className={mockAgg.usd.returnRatePercent >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
+                  {mockAgg.usd.returnRatePercent >= 0 ? '+' : ''}{mockAgg.usd.returnRatePercent.toFixed(2)}%
+                </span>
+              </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] text-slate-400 font-sans block mb-1">주식 평가금액</span>
-              <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white">
-                {mockMetrics.totalValuationKRW.toLocaleString()}원
-              </span>
+            {/* Converted KRW Combined Card */}
+            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">원화 환산 총자산</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                  fxCheck.valid ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-rose-500/10 text-rose-500'
+                }`}>
+                  {fxCheck.valid && fxCheck.rate ? `₩${fxCheck.rate.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}` : '환산 보류'}
+                </span>
+              </div>
+              {mockAgg.convertedKRW ? (
+                <>
+                  <div>
+                    <span className="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white block">
+                      {formatMoney(mockAgg.convertedKRW.totalAssets, 'KRW')}
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      총수익 {formatMoney(mockAgg.convertedKRW.totalPnL, 'KRW', { showSign: true })} ({mockAgg.convertedKRW.returnRatePercent >= 0 ? '+' : ''}{mockAgg.convertedKRW.returnRatePercent.toFixed(2)}%)
+                    </span>
+                  </div>
+                  <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-500">
+                    <span>종목손익 {formatMoney(mockAgg.convertedKRW.stockPnLKRW, 'KRW', { showSign: true })}</span>
+                    <span>환차익 {formatMoney(mockAgg.convertedKRW.fxPnLKRW, 'KRW', { showSign: true })}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="py-1">
+                  <span className="text-xs font-bold text-rose-500 block">환율 미확인으로 합산 보류</span>
+                  <span className="text-[11px] text-slate-400 block mt-0.5">
+                    시각: {fxCheck.lastUpdated}
+                  </span>
+                </div>
+              )}
             </div>
 
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] text-slate-400 font-sans block mb-1">평가손익</span>
-              <span className={`text-base sm:text-lg font-black font-mono ${
-                mockMetrics.unrealizedProfitKRW >= 0 ? 'text-rose-500' : 'text-blue-500'
-              }`}>
-                {mockMetrics.unrealizedProfitKRW >= 0 ? '+' : ''}
-                {mockMetrics.unrealizedProfitKRW.toLocaleString()}원
-              </span>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] text-slate-400 font-sans block mb-1">총 누적수익률</span>
-              <span className={`text-base sm:text-lg font-black font-mono ${
-                mockMetrics.totalReturnRatePercent >= 0 ? 'text-rose-500' : 'text-blue-500'
-              }`}>
-                {mockMetrics.totalReturnRatePercent >= 0 ? '+' : ''}
-                {mockMetrics.totalReturnRatePercent.toFixed(2)}%
-              </span>
-            </div>
-
-            <div className="col-span-2 lg:col-span-1 p-3 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between lg:flex-col lg:justify-center gap-2">
+            {/* Action Card */}
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between lg:flex-col lg:justify-center gap-2">
               <button
                 onClick={() => handleOpenTradeForStock('005930', 'BUY')}
                 className="w-full py-2 px-3 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-rose-600/20 flex items-center justify-center gap-1.5 active:scale-95"
@@ -817,7 +909,7 @@ export const PortfolioView: React.FC = () => {
               <button
                 onClick={handleResetMockAccount}
                 className="w-full py-1.5 px-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center justify-center gap-1"
-                title="1억 원으로 초기화"
+                title="원화 1억원 / 달러 $100,000 초기화"
               >
                 <RotateCcw className="w-3 h-3" />
                 <span>계좌 초기화</span>
@@ -875,16 +967,20 @@ export const PortfolioView: React.FC = () => {
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
                     {mockPositions.map(p => {
                       const quote = quotesMap.get(p.symbol);
+                      const pCur = inferFiatCurrency(p.symbol, p.market, p.currency);
+                      const isUSD = pCur === 'USD';
+                      const exchangeLabel = inferStockExchange(p.symbol, p.market, p.exchange);
                       const curPrice = quote?.price ?? 0;
                       const hasQuote = curPrice > 0;
                       const valuation = hasQuote ? curPrice * p.quantity : p.totalInvested;
                       const profit = hasQuote ? (curPrice - p.avgBuyPrice) * p.quantity : 0;
                       const returnPct = p.avgBuyPrice > 0 && hasQuote ? ((curPrice - p.avgBuyPrice) / p.avgBuyPrice) * 100 : 0;
+                      const convVal = isUSD ? convertToKRW(valuation, 'USD', exchangeRate) : null;
 
                       return (
                         <tr key={p.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/30 transition-colors">
                           <td className="py-3.5 px-4 font-sans">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <button
                                 onClick={() => navigateToStock(p.symbol)}
                                 className="font-bold text-slate-900 dark:text-white hover:text-rose-500 text-left transition-colors flex items-center gap-1 group"
@@ -895,6 +991,9 @@ export const PortfolioView: React.FC = () => {
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">
                                 {p.symbol}
                               </span>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold font-mono ${isUSD ? 'bg-blue-500/10 text-blue-500' : 'bg-rose-500/10 text-rose-500'}`}>
+                                {exchangeLabel} · {pCur}
+                              </span>
                             </div>
                           </td>
 
@@ -903,14 +1002,14 @@ export const PortfolioView: React.FC = () => {
                           </td>
 
                           <td className="py-3.5 px-3 text-right font-semibold text-slate-900 dark:text-white">
-                            {p.avgBuyPrice.toLocaleString()}원
+                            {formatMoney(p.avgBuyPrice, pCur)}
                           </td>
 
                           <td className="py-3.5 px-3 text-right">
                             {quote && quote.price > 0 ? (
                               <>
                                 <span className="font-bold text-slate-900 dark:text-white block">
-                                  {curPrice.toLocaleString()}원
+                                  {formatMoney(curPrice, pCur)}
                                 </span>
                                 <span className="text-[10px] text-slate-400 block">
                                   {quote.delayLabel}
@@ -922,13 +1021,20 @@ export const PortfolioView: React.FC = () => {
                           </td>
 
                           <td className="py-3.5 px-3 text-right font-bold text-slate-900 dark:text-white">
-                            {valuation.toLocaleString()}원
+                            <span>{formatMoney(valuation, pCur)}</span>
+                            {isUSD && (
+                              <span className="text-[10px] text-slate-400 block font-normal">
+                                {convVal?.valid && convVal.valueKRW !== null
+                                  ? `≈ ${formatMoney(convVal.valueKRW, 'KRW')}`
+                                  : '원화 환산 보류'}
+                              </span>
+                            )}
                           </td>
 
                           <td className="py-3.5 px-3 text-right">
                             {hasQuote ? (
                               <div className={profit >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
-                                <span>{profit >= 0 ? '+' : ''}{profit.toLocaleString()}원</span>
+                                <span>{formatMoney(profit, pCur, { showSign: true })}</span>
                                 <span className="text-[11px] block">
                                   ({profit >= 0 ? '+' : ''}{returnPct.toFixed(2)}%)
                                 </span>
@@ -1000,8 +1106,7 @@ export const PortfolioView: React.FC = () => {
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
                     {mockOrders.map(o => {
                       const isSell = o.orderType === 'SELL';
-                      const isUSD = o.currency === 'USD';
-                      const currSymbol = isUSD ? '$' : '원';
+                      const oCur = inferFiatCurrency(o.symbol, undefined, o.currency ?? quotesMap.get(o.symbol)?.currency);
                       const status = o.status || 'FILLED';
 
                       return (
@@ -1038,13 +1143,14 @@ export const PortfolioView: React.FC = () => {
                             </span>
                           </td>
                           <td className="py-2.5 px-3 font-sans font-bold text-slate-900 dark:text-white">
-                            {o.name}
+                            <span>{o.name}</span>
+                            <span className="ml-1.5 text-[10px] font-mono text-slate-400">{oCur}</span>
                           </td>
                           <td className="py-2.5 px-3 text-right">
                             {status === 'PENDING' && (o.filledQuantity ?? 0) === 0 ? (
                               <span className="text-slate-400 text-[11px]">미체결 대기</span>
                             ) : (
-                              `${isUSD ? '$' : ''}${o.price.toLocaleString()}${isUSD ? '' : '원'}`
+                              formatMoney(o.price, oCur)
                             )}
                           </td>
                           <td className="py-2.5 px-3 text-right font-bold">
@@ -1055,13 +1161,12 @@ export const PortfolioView: React.FC = () => {
                           <td className="py-2.5 px-3 text-right">
                             {status === 'PENDING' && (o.filledQuantity ?? 0) === 0
                               ? '-'
-                              : `${isUSD ? '$' : ''}${o.settledAmount.toLocaleString()}${isUSD ? '' : '원'}`}
+                              : formatMoney(o.settledAmount, oCur)}
                           </td>
                           <td className="py-2.5 px-3 text-right">
                             {isSell && o.realizedProfit !== undefined && status !== 'PENDING' ? (
                               <span className={o.realizedProfit >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
-                                {o.realizedProfit >= 0 ? '+' : ''}
-                                {isUSD ? `$${o.realizedProfit.toFixed(2)}` : `${o.realizedProfit.toLocaleString()}원`}
+                                {formatMoney(o.realizedProfit, oCur, { showSign: true })}
                                 <span className="text-[10px] block">
                                   ({o.realizedProfitRate && o.realizedProfitRate >= 0 ? '+' : ''}{o.realizedProfitRate?.toFixed(2)}%)
                                 </span>

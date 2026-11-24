@@ -21,6 +21,13 @@ import { GoogleGenAI } from '@google/genai';
 import { Stock, StockIndex, ExchangeRate } from '../src/types';
 import { INITIAL_STOCKS, INITIAL_INDICES, INITIAL_EXCHANGE_RATE } from '../src/services/mockData';
 import { TRACKED_STOCKS } from './stockApiService';
+import {
+  inferStockCurrency,
+  inferStockExchange,
+  formatMoney,
+  formatTradingValueByCurrency,
+  validateExchangeRate,
+} from '../src/utils/currency';
 
 // Dynamic references from server.ts
 let activeStocks: Stock[] = [...INITIAL_STOCKS];
@@ -63,20 +70,24 @@ export function get_stock_quote(symbolOrName: string) {
   }
 
   const prevClose = stock.prevClose || (stock.price - stock.change);
+  const currency = inferStockCurrency(stock.symbol, stock.market, stock.currency);
+  const exchange = inferStockExchange(stock.symbol, stock.market, stock.exchange);
   return {
     status: 'ok',
     symbol: stock.symbol,
     name: stock.name,
     market: stock.market,
+    exchange,
+    currency,
     sector: stock.sector,
-    price: stock.price,                   // 현재가 (원)
-    change: stock.change,                 // 변동 금액 (원)
-    changePercent: stock.changePercent,   // 등락률 (%)
-    openPrice: stock.candles?.[stock.candles.length - 1]?.open || prevClose, // 시가
-    highPrice: stock.highPrice,           // 고가
-    lowPrice: stock.lowPrice,             // 저가
-    prevClose,                            // 전일 종가
-    marketCap: stock.marketCap,           // 시가총액
+    price: stock.price,
+    change: stock.change,
+    changePercent: stock.changePercent,
+    openPrice: stock.candles?.[stock.candles.length - 1]?.open || prevClose,
+    highPrice: stock.highPrice,
+    lowPrice: stock.lowPrice,
+    prevClose,
+    marketCap: stock.marketCap,
     dataTimestamp: getKstTimestamp(),
   };
 }
@@ -93,13 +104,16 @@ export function get_stock_volume(symbolOrName: string) {
     };
   }
 
+  const currency = inferStockCurrency(stock.symbol, stock.market, stock.currency);
   return {
     status: 'ok',
     symbol: stock.symbol,
     name: stock.name,
-    volume: stock.volume,                 // 누적 거래량 (주)
-    volumeRatio: stock.volumeRatio || 100,// 20일 평균 대비 거래량 비율 (%)
-    tradingValue: stock.tradingValue,     // 거래대금 (억 원)
+    market: stock.market,
+    currency,
+    volume: stock.volume,
+    volumeRatio: stock.volumeRatio || 100,
+    tradingValue: stock.tradingValue,
     turnoverRate: stock.volume > 0 ? (stock.tradingValue / 100).toFixed(2) + '%' : '0.5%',
     dataTimestamp: getKstTimestamp(),
   };
@@ -108,13 +122,16 @@ export function get_stock_volume(symbolOrName: string) {
 export function get_watchlist(userWatchlistSymbols?: string[]) {
   const symbols = (userWatchlistSymbols && userWatchlistSymbols.length > 0)
     ? userWatchlistSymbols
-    : ['005930', '000660', '005380', '042700']; // 기본 관심종목 (삼성전자, SK하이닉스, 현대차, 한미반도체)
+    : ['005930', '000660', '005380', '042700'];
 
   const items = activeStocks
     .filter(s => symbols.includes(s.symbol))
     .map(s => ({
       symbol: s.symbol,
       name: s.name,
+      market: s.market,
+      exchange: inferStockExchange(s.symbol, s.market, s.exchange),
+      currency: inferStockCurrency(s.symbol, s.market, s.currency),
       price: s.price,
       changePercent: s.changePercent,
       volume: s.volume,
@@ -138,31 +155,36 @@ export function get_watchlist(userWatchlistSymbols?: string[]) {
 export function get_market_summary(market?: string) {
   const kospi = activeIndices.find(i => i.symbol === 'KOSPI') || activeIndices[0];
   const kosdaq = activeIndices.find(i => i.symbol === 'KOSDAQ') || activeIndices[1];
+  const fxCheck = validateExchangeRate(activeRate);
 
   return {
     status: 'ok',
     kospi: {
       name: '코스피 (KOSPI)',
-      value: kospi?.value || 2684.52,
-      change: kospi?.change || 18.42,
-      changePercent: kospi?.changePercent || 0.69,
-      tradingValue: `${kospi?.tradingValue || 10.42}조 원`,
-      advanceCount: kospi?.advanceCount || 542,
-      declineCount: kospi?.declineCount || 321,
+      value: kospi?.value || 0,
+      change: kospi?.change || 0,
+      changePercent: kospi?.changePercent || 0,
+      tradingValue: `${kospi?.tradingValue || 0}조 원`,
+      advanceCount: kospi?.advanceCount || 0,
+      declineCount: kospi?.declineCount || 0,
     },
     kosdaq: {
       name: '코스닥 (KOSDAQ)',
-      value: kosdaq?.value || 872.10,
-      change: kosdaq?.change || -3.25,
-      changePercent: kosdaq?.changePercent || -0.37,
-      tradingValue: `${kosdaq?.tradingValue || 7.85}조 원`,
-      advanceCount: kosdaq?.advanceCount || 680,
-      declineCount: kosdaq?.declineCount || 840,
+      value: kosdaq?.value || 0,
+      change: kosdaq?.change || 0,
+      changePercent: kosdaq?.changePercent || 0,
+      tradingValue: `${kosdaq?.tradingValue || 0}조 원`,
+      advanceCount: kosdaq?.advanceCount || 0,
+      declineCount: kosdaq?.declineCount || 0,
     },
     exchangeRate: {
       currency: activeRate.name || '원/달러 환율',
-      rate: activeRate.rate || 1348.50,
-      changePercent: activeRate.changePercent || -0.31,
+      rate: fxCheck.valid ? fxCheck.rate : null,
+      changePercent: fxCheck.valid ? (activeRate.changePercent ?? 0) : null,
+      status: fxCheck.status,
+      isStale: !fxCheck.valid,
+      lastUpdated: fxCheck.lastUpdated,
+      errorMessage: fxCheck.reason,
     },
     targetMarket: market || 'ALL',
     dataTimestamp: getKstTimestamp(),
@@ -176,6 +198,9 @@ export function get_top_gainers(limit: number = 5) {
     .map(s => ({
       symbol: s.symbol,
       name: s.name,
+      market: s.market,
+      exchange: inferStockExchange(s.symbol, s.market, s.exchange),
+      currency: inferStockCurrency(s.symbol, s.market, s.currency),
       price: s.price,
       changePercent: s.changePercent,
       volume: s.volume,
@@ -197,6 +222,9 @@ export function get_top_losers(limit: number = 5) {
     .map(s => ({
       symbol: s.symbol,
       name: s.name,
+      market: s.market,
+      exchange: inferStockExchange(s.symbol, s.market, s.exchange),
+      currency: inferStockCurrency(s.symbol, s.market, s.currency),
       price: s.price,
       changePercent: s.changePercent,
       volume: s.volume,
@@ -218,6 +246,9 @@ export function get_volume_spikes(threshold: number = 150) {
     .map(s => ({
       symbol: s.symbol,
       name: s.name,
+      market: s.market,
+      exchange: inferStockExchange(s.symbol, s.market, s.exchange),
+      currency: inferStockCurrency(s.symbol, s.market, s.currency),
       price: s.price,
       changePercent: s.changePercent,
       volume: s.volume,
@@ -391,45 +422,54 @@ function generateDeterministicExplanation(functionName: string, data: any, query
 
   switch (functionName) {
     case 'get_stock_quote': {
+      const cur = inferStockCurrency(data.symbol, data.market, data.currency);
       const isUp = data.change >= 0;
-      return `${data.name}(${data.symbol})의 현재가는 전일 종가(${data.prevClose?.toLocaleString()}원) 대비 ${isUp ? '+' : ''}${data.change?.toLocaleString()}원(${isUp ? '+' : ''}${data.changePercent}%) ${isUp ? '상승한' : '하락한'} ${data.price?.toLocaleString()}원입니다. 당일 시가는 ${data.openPrice?.toLocaleString()}원, 장중 고가는 ${data.highPrice?.toLocaleString()}원, 저가는 ${data.lowPrice?.toLocaleString()}원을 기록 중입니다.`;
+      return `${data.name}(${data.symbol}, ${cur})의 현재가는 전일 종가(${formatMoney(data.prevClose ?? 0, cur, { krwStyle: 'unit' })}) 대비 ${formatMoney(data.change ?? 0, cur, { showSign: true, krwStyle: 'unit' })}(${isUp ? '+' : ''}${data.changePercent}%) ${isUp ? '상승한' : '하락한'} ${formatMoney(data.price ?? 0, cur, { krwStyle: 'unit' })}입니다. 당일 시가는 ${formatMoney(data.openPrice ?? 0, cur, { krwStyle: 'unit' })}, 장중 고가는 ${formatMoney(data.highPrice ?? 0, cur, { krwStyle: 'unit' })}, 저가는 ${formatMoney(data.lowPrice ?? 0, cur, { krwStyle: 'unit' })}을(를) 기록 중입니다.`;
     }
 
     case 'get_stock_volume': {
-      return `${data.name}(${data.symbol})의 당일 누적 거래량은 ${data.volume?.toLocaleString()}주이며, 20일 평균 거래량 대비 약 ${data.volumeRatio}% 수준입니다. 당일 누적 거래대금은 약 ${data.tradingValue?.toLocaleString()}억 원으로 시장 내 활발한 유동성을 보여주고 있습니다.`;
+      const cur = inferStockCurrency(data.symbol, data.market, data.currency);
+      return `${data.name}(${data.symbol})의 당일 누적 거래량은 ${data.volume?.toLocaleString()}주이며, 20일 평균 거래량 대비 약 ${data.volumeRatio}% 수준입니다. 당일 누적 거래대금은 약 ${formatTradingValueByCurrency(data.tradingValue ?? 0, cur)}으로 시장 내 활발한 유동성을 보여주고 있습니다.`;
     }
 
     case 'get_watchlist': {
       const top = data.topGainer;
       if (!top) return '현재 등록된 관심종목 데이터가 없습니다.';
+      const cur = inferStockCurrency(top.symbol, top.market, top.currency);
       const isUp = top.changePercent >= 0;
-      return `등록하신 관심종목 총 ${data.totalCount}개 중 오늘 가장 높은 상승률을 기록 중인 종목은 '${top.name}'(현재가 ${top.price?.toLocaleString()}원, ${isUp ? '+' : ''}${top.changePercent}%)입니다.`;
+      return `등록하신 관심종목 총 ${data.totalCount}개 중 오늘 가장 높은 상승률을 기록 중인 종목은 '${top.name}'(현재가 ${formatMoney(top.price ?? 0, cur, { krwStyle: 'unit' })}, ${isUp ? '+' : ''}${top.changePercent}%)입니다.`;
     }
 
     case 'get_volume_spikes': {
       const count = data.count || 0;
       if (count === 0) return '현재 기준 20일 평균 대비 거래량이 급증(140% 이상)한 종목이 포착되지 않았습니다.';
       const first = data.spikes[0];
-      return `오늘 20일 평균 대비 거래량이 급증한 종목은 총 ${count}개입니다. 특히 '${first.name}'이(가) 평균 대비 ${first.volumeRatio}%의 거래량(${first.volume?.toLocaleString()}주, 거래대금 ${first.tradingValue?.toLocaleString()}억 원)을 기록하며 가장 강한 수급 집중을 보이고 있습니다.`;
+      const cur = inferStockCurrency(first.symbol, first.market, first.currency);
+      return `오늘 20일 평균 대비 거래량이 급증한 종목은 총 ${count}개입니다. 특히 '${first.name}'이(가) 평균 대비 ${first.volumeRatio}%의 거래량(${first.volume?.toLocaleString()}주, 거래대금 ${formatTradingValueByCurrency(first.tradingValue ?? 0, cur)})을 기록하며 가장 강한 수급 집중을 보이고 있습니다.`;
     }
 
     case 'get_top_gainers': {
       const first = data.gainers?.[0];
       if (!first) return '상승 종목 데이터를 집계 중입니다.';
-      return `오늘 시장에서 가장 높은 상승률을 기록 중인 상위 종목은 '${first.name}'(+${first.changePercent}%, ${first.price?.toLocaleString()}원)입니다. 상위 5개 종목으로 수급이 지속 유입되고 있습니다.`;
+      const cur = inferStockCurrency(first.symbol, first.market, first.currency);
+      return `오늘 시장에서 가장 높은 상승률을 기록 중인 상위 종목은 '${first.name}'(+${first.changePercent}%, ${formatMoney(first.price ?? 0, cur, { krwStyle: 'unit' })})입니다. 상위 5개 종목으로 수급이 지속 유입되고 있습니다.`;
     }
 
     case 'get_top_losers': {
       const first = data.losers?.[0];
       if (!first) return '하락 종목 데이터를 집계 중입니다.';
-      return `오늘 시장에서 가장 하락폭이 큰 종목은 '${first.name}'(${first.changePercent}%, ${first.price?.toLocaleString()}원)입니다.`;
+      const cur = inferStockCurrency(first.symbol, first.market, first.currency);
+      return `오늘 시장에서 가장 하락폭이 큰 종목은 '${first.name}'(${first.changePercent}%, ${formatMoney(first.price ?? 0, cur, { krwStyle: 'unit' })})입니다.`;
     }
 
     case 'get_market_summary': {
       const k = data.kospi;
       const q = data.kosdaq;
       const ex = data.exchangeRate;
-      return `현재 코스피 지수는 ${k.value?.toLocaleString()}포인트(${k.changePercent >= 0 ? '+' : ''}${k.changePercent}%, 거래대금 ${k.tradingValue}), 코스닥 지수는 ${q.value?.toLocaleString()}포인트(${q.changePercent >= 0 ? '+' : ''}${q.changePercent}%, 거래대금 ${q.tradingValue})를 나타내고 있습니다. 원/달러 환율은 ${ex.rate?.toLocaleString()}원(${ex.changePercent >= 0 ? '+' : ''}${ex.changePercent}%)으로 안정적인 흐름을 유지하고 있습니다.`;
+      const fxText = ex?.rate !== null && ex?.rate !== undefined
+        ? `원/달러 환율은 ${ex.rate.toLocaleString()}원(${(ex.changePercent ?? 0) >= 0 ? '+' : ''}${ex.changePercent ?? 0}%)입니다.`
+        : `원/달러 환율은 현재 지연/조회 불가 상태입니다.`;
+      return `현재 코스피 지수는 ${k.value?.toLocaleString()}포인트(${k.changePercent >= 0 ? '+' : ''}${k.changePercent}%, 거래대금 ${k.tradingValue}), 코스닥 지수는 ${q.value?.toLocaleString()}포인트(${q.changePercent >= 0 ? '+' : ''}${q.changePercent}%, 거래대금 ${q.tradingValue})를 나타내고 있습니다. ${fxText}`;
     }
 
     default:

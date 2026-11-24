@@ -11,13 +11,15 @@ import {
   ArrowDownRight, 
   ChevronRight, 
   X,
-  Sparkles
+  Sparkles,
+  RefreshCw
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Stock } from '../../types';
 import { isSurgeGain, isSurgeLoss, isVolumeSurge } from '../../utils/marketThresholds';
 import { matchHangulSearch } from '../../utils/hangul';
-import { isUSStockSymbol } from '../../utils/stocks/ticker';
+import { isUSStockSymbol, getStockUniqueKey } from '../../utils/stocks/ticker';
+import { inferStockCurrency, formatMoney, validateExchangeRate } from '../../utils/currency';
 
 type MobileTabType = 'watchlist' | 'surge' | 'plunge' | 'volume' | 'kr' | 'us' | 'coin';
 
@@ -34,38 +36,60 @@ export const HomeMobileDashboard: React.FC = () => {
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<MobileTabType>('watchlist');
-  const [searchFilter, setSearchFilter] = useState<'ALL' | 'KR' | 'US' | 'COIN'>('ALL');
+  const [searchFilter, setSearchFilter] = useState<'ALL' | 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN'>('ALL');
   const [query, setQuery] = useState<string>('');
 
   // 1. Search Results if user types in mobile search box
   const [searchResults, setSearchResults] = useState<Stock[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setSearchResults([]);
+      setSearchError(null);
+      setIsSearching(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    let mounted = true;
+    setIsSearching(true);
+    setSearchError(null);
+
     const handler = setTimeout(async () => {
-      const q = query.trim();
-      if (q.length >= 2) {
-        setIsSearching(true);
-        try {
-          const results = await stockRepository.searchStocks({ 
-            query: q, 
-            limit: 15,
-            market: searchFilter !== 'ALL' ? searchFilter : undefined
-          });
+      try {
+        const results = await stockRepository.searchStocks({
+          query: q,
+          limit: 15,
+          market: searchFilter,
+          signal: controller.signal,
+        });
+        if (mounted && !controller.signal.aborted) {
           setSearchResults(results);
-        } catch (err) {
-          console.error('[HomeMobileDashboard] Search API error:', err);
+        }
+      } catch (err: any) {
+        if (err?.name === 'AbortError' || controller.signal.aborted) return;
+        console.error('[HomeMobileDashboard] Search API error:', err);
+        if (mounted) {
+          setSearchError(err?.message || '종목 검색에 실패했습니다.');
           setSearchResults([]);
-        } finally {
+        }
+      } finally {
+        if (mounted && !controller.signal.aborted) {
           setIsSearching(false);
         }
-      } else {
-        setSearchResults([]);
       }
-    }, 200);
+    }, 180);
 
-    return () => clearTimeout(handler);
-  }, [query, searchFilter]);
+    return () => {
+      mounted = false;
+      clearTimeout(handler);
+      controller.abort();
+    };
+  }, [query, searchFilter, retryNonce]);
 
   // 2. Filtered Stocks for the Active Tab
   const tabStocks = useMemo(() => {
@@ -135,13 +159,14 @@ export const HomeMobileDashboard: React.FC = () => {
           )}
         </div>
 
-        {/* Quick Market Filter Pills */}
+        {/* Quick Market Filter Tabs */}
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
           {[
-            { id: 'ALL', label: '전체 통합' },
-            { id: 'KR', label: '🇰🇷 한국' },
-            { id: 'US', label: '🇺🇸 미국' },
-            { id: 'COIN', label: '🪙 가상자산' }
+            { id: 'ALL', label: '전체' },
+            { id: 'KOSPI', label: '코스피' },
+            { id: 'KOSDAQ', label: '코스닥' },
+            { id: 'US', label: '미국' },
+            { id: 'COIN', label: '코인' }
           ].map(f => (
             <button
               key={f.id}
@@ -160,17 +185,34 @@ export const HomeMobileDashboard: React.FC = () => {
         {/* Instant Search Results Dropdown */}
         {query.trim() && (
           <div className="pt-2 border-t border-finance-border max-h-60 overflow-y-auto divide-y divide-finance-border/50">
-            {searchResults.length === 0 ? (
+            {searchError ? (
+              <div className="py-4 text-center space-y-2">
+                <p className="text-xs text-rose-500 font-medium">{searchError}</p>
+                <button
+                  type="button"
+                  onClick={() => setRetryNonce(n => n + 1)}
+                  className="px-3 py-1 rounded-lg bg-rose-500 text-white text-[11px] font-bold inline-flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>다시 시도</span>
+                </button>
+              </div>
+            ) : isSearching && searchResults.length === 0 ? (
+              <div className="py-4 text-center text-xs text-finance-sub-text flex items-center justify-center gap-1.5">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-finance-accent" />
+                <span>검색 중...</span>
+              </div>
+            ) : searchResults.length === 0 ? (
               <div className="py-4 text-center text-xs text-finance-sub-text">
                 일치하는 검색 결과가 없습니다.
               </div>
             ) : (
               searchResults.map(stock => {
-                const isUSD = stock.currency === 'USD' || stock.market === 'US';
+                const stockCur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
                 const isUp = stock.change >= 0;
                 return (
                   <div
-                    key={stock.symbol}
+                    key={getStockUniqueKey(stock)}
                     onClick={() => {
                       navigateToStock(stock.symbol);
                       setQuery('');
@@ -182,14 +224,14 @@ export const HomeMobileDashboard: React.FC = () => {
                         {stock.name}
                       </span>
                       <span className="text-[10px] text-finance-sub-text font-mono">
-                        {stock.symbol} · {stock.market}
+                        {stock.symbol} · {stock.exchange || stock.market} · {stockCur}
                       </span>
                     </div>
                     <div className="text-right">
-                      <span className="font-mono font-bold text-xs block text-finance-text">
-                        {isUSD ? `$${stock.price.toFixed(2)}` : `${stock.price.toLocaleString()}원`}
+                      <span className="font-mono font-bold text-xs block text-finance-text tabular-nums">
+                        {stock.price > 0 ? formatMoney(stock.price, stockCur) : '시세 확인'}
                       </span>
-                      <span className={`text-[10px] font-mono font-bold ${isUp ? 'text-finance-up' : 'text-finance-down'}`}>
+                      <span className={`text-[10px] font-mono font-bold tabular-nums ${isUp ? 'text-finance-up' : 'text-finance-down'}`}>
                         {isUp ? '+' : ''}{stock.changePercent.toFixed(2)}%
                       </span>
                     </div>
@@ -233,17 +275,31 @@ export const HomeMobileDashboard: React.FC = () => {
           </div>
         )}
 
-        {exchangeRate && (
-          <div className="px-3 py-2 rounded-xl bg-finance-card border border-finance-border shadow-2xs shrink-0 min-w-[120px]">
-            <div className="text-[10px] text-finance-sub-text font-bold">원/달러 환율</div>
-            <div className="font-mono font-bold text-xs text-finance-text">
-              {exchangeRate.rate.toLocaleString()}원
+        {(() => {
+          const fxCheck = validateExchangeRate(exchangeRate);
+          return (
+            <div className="px-3 py-2 rounded-xl bg-finance-card border border-finance-border shadow-2xs shrink-0 min-w-[130px]">
+              <div className="flex items-center justify-between gap-1 text-[10px] text-finance-sub-text font-bold">
+                <span>원/달러 환율</span>
+                {!fxCheck.valid && <span className="text-amber-500">오류</span>}
+              </div>
+              {fxCheck.valid && fxCheck.rate ? (
+                <>
+                  <div className="font-mono font-bold text-xs text-finance-text">
+                    {fxCheck.rate.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}원
+                  </div>
+                  <div className={`text-[10px] font-mono font-bold ${(exchangeRate?.changePercent || 0) >= 0 ? 'text-finance-up' : 'text-finance-down'}`}>
+                    {(exchangeRate?.changePercent || 0) >= 0 ? '+' : ''}{(exchangeRate?.changePercent || 0).toFixed(2)}%
+                  </div>
+                </>
+              ) : (
+                <div className="text-[11px] font-bold text-amber-500 mt-0.5">
+                  {fxCheck.status === 'stale' ? '지연/만료' : '조회 실패'}
+                </div>
+              )}
             </div>
-            <div className={`text-[10px] font-mono font-bold ${exchangeRate.changePercent >= 0 ? 'text-finance-up' : 'text-finance-down'}`}>
-              {exchangeRate.changePercent >= 0 ? '+' : ''}{exchangeRate.changePercent.toFixed(2)}%
-            </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* 3. Slideable Market Mover Tabs */}
@@ -291,12 +347,12 @@ export const HomeMobileDashboard: React.FC = () => {
           </div>
         ) : (
           tabStocks.slice(0, 30).map(stock => {
-            const isUSD = stock.currency === 'USD' || stock.market === 'US';
+            const stockCur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
             const isUp = stock.change >= 0;
 
             return (
               <div
-                key={stock.symbol}
+                key={getStockUniqueKey(stock)}
                 onClick={() => navigateToStock(stock.symbol)}
                 className="p-3.5 flex items-center justify-between cursor-pointer active:bg-finance-sub-bg/50 transition-colors"
               >
@@ -313,7 +369,7 @@ export const HomeMobileDashboard: React.FC = () => {
                   <div className="flex items-center gap-1.5 mt-0.5">
                     <span className="text-[10px] text-finance-sub-text font-mono">{stock.symbol}</span>
                     <span className="text-[9px] px-1 py-0.2 rounded bg-finance-sub-bg text-finance-sub-text border border-finance-border/50">
-                      {stock.market}
+                      {stock.exchange || stock.market} · {stockCur}
                     </span>
                     <span className="text-[10px] text-finance-sub-text truncate max-w-[90px]">
                       {stock.sector}
@@ -324,7 +380,7 @@ export const HomeMobileDashboard: React.FC = () => {
                 {/* Right: Real-time Price & Rate */}
                 <div className="text-right shrink-0">
                   <span className="font-mono font-bold text-xs block text-finance-text">
-                    {isUSD ? `$${stock.price.toFixed(2)}` : `${stock.price.toLocaleString()}원`}
+                    {formatMoney(stock.price, stockCur)}
                   </span>
                   <span className={`text-[11px] font-mono font-bold flex items-center justify-end gap-0.5 ${
                     isUp ? 'text-finance-up' : 'text-finance-down'

@@ -54,7 +54,16 @@ export class ForexDataProvider {
   /**
    * Fetch intraday forex ticker with sparkline from public chart endpoint
    */
-  private async fetchYahooForexTicker(ticker: string, symbol: string, name: string, is100Yen: boolean = false): Promise<UnifiedFinancialItem> {
+  private async fetchYahooForexTicker(pair: {
+    ticker: string;
+    symbol: string;
+    name: string;
+    currency: string;
+    unit: string;
+    is100Yen?: boolean;
+    ecbRateFn: (rates: Record<string, number>) => number | null;
+  }): Promise<UnifiedFinancialItem> {
+    const { ticker, symbol, name, currency, unit, is100Yen = false, ecbRateFn } = pair;
     const nowStr = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) + ' (KST)';
     const multiplier = is100Yen ? 100 : 1;
 
@@ -83,18 +92,19 @@ export class ForexDataProvider {
       const meta = result.meta;
       const rawPrice = meta.regularMarketPrice ?? meta.chartPreviousClose;
       const rawPrev = meta.chartPreviousClose ?? rawPrice;
+      const decimals = currency === 'USD' ? 4 : 2;
 
-      const price = Number((rawPrice * multiplier).toFixed(2));
-      const prevClose = Number((rawPrev * multiplier).toFixed(2));
-      const change = Number((price - prevClose).toFixed(2));
+      const price = Number((rawPrice * multiplier).toFixed(decimals));
+      const prevClose = Number((rawPrev * multiplier).toFixed(decimals));
+      const change = Number((price - prevClose).toFixed(decimals));
       const changePercent = prevClose !== 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
 
       const closeArray = (result.indicators?.quote?.[0]?.close || [])
         .filter((v: any) => v !== null && v !== undefined)
-        .map((v: number) => Number((v * multiplier).toFixed(2)));
+        .map((v: number) => Number((v * multiplier).toFixed(decimals)));
       const sparkline = closeArray.length >= 2 ? closeArray.slice(-8) : [prevClose, price];
 
-      // If ECB reference rate exists for this currency, note it
+      // If ECB reference rate exists, note official date
       let ecbNote = '';
       if (this.lastEcbDate && this.ecbRates['KRW']) {
         ecbNote = `ECB 고시 기준일: ${this.lastEcbDate}`;
@@ -107,13 +117,19 @@ export class ForexDataProvider {
         name,
         symbol,
         value: price,
-        displayValue: is100Yen ? `${price.toLocaleString(undefined, { minimumFractionDigits: 2 })}원 / 100엔` : undefined,
+        displayValue: is100Yen
+          ? `${price.toLocaleString(undefined, { minimumFractionDigits: 2 })}원 / 100엔`
+          : currency === 'USD'
+          ? `$${price.toFixed(4)}`
+          : currency === 'JPY'
+          ? `¥${price.toFixed(2)}`
+          : undefined,
         change,
         changePercent,
-        currency: 'KRW',
-        unit: '원',
-        high: meta.regularMarketDayHigh ? Number((meta.regularMarketDayHigh * multiplier).toFixed(2)) : undefined,
-        low: meta.regularMarketDayLow ? Number((meta.regularMarketDayLow * multiplier).toFixed(2)) : undefined,
+        currency,
+        unit,
+        high: meta.regularMarketDayHigh ? Number((meta.regularMarketDayHigh * multiplier).toFixed(decimals)) : undefined,
+        low: meta.regularMarketDayLow ? Number((meta.regularMarketDayLow * multiplier).toFixed(decimals)) : undefined,
         prevClose,
         sparkline,
         provider: 'ECB (Frankfurter) / FX Open Data',
@@ -125,11 +141,31 @@ export class ForexDataProvider {
         notes: ecbNote,
         license: 'ECB Open Data / Open FX',
       };
-    } catch (err: any) {
-      // Fallback: If ECB data is cached in memory, compute approximate value
-      const fallbackPrice = is100Yen
-        ? (this.ecbRates['JPY'] && this.ecbRates['KRW'] ? Number(((this.ecbRates['KRW'] / this.ecbRates['JPY']) * 100).toFixed(2)) : 910)
-        : (this.ecbRates['KRW'] ? Number(this.ecbRates['KRW'].toFixed(2)) : 1380);
+    } catch {
+      const ecbVal = Object.keys(this.ecbRates).length > 0 ? ecbRateFn(this.ecbRates) : null;
+      if (ecbVal && Number.isFinite(ecbVal) && ecbVal > 0) {
+        const decimals = currency === 'USD' ? 4 : 2;
+        const rounded = Number(ecbVal.toFixed(decimals));
+        return {
+          id: ticker.replace(/[^a-zA-Z0-9]/g, '').toLowerCase(),
+          category: 'forex',
+          assetType: 'forex',
+          name,
+          symbol,
+          value: rounded,
+          change: 0,
+          changePercent: 0,
+          currency,
+          unit,
+          provider: 'ECB (Frankfurter) 공식 고시환율',
+          delayStatus: 'official_notice',
+          delayLabel: '공식 고시 (ECB)',
+          isRealtime: false,
+          lastUpdated: nowStr,
+          status: 'delayed',
+          notes: this.lastEcbDate ? `ECB 공식 고시일: ${this.lastEcbDate}` : '공식 고시 기준',
+        };
+      }
 
       return {
         id: ticker.replace(/[^a-zA-Z0-9]/g, '').toLowerCase(),
@@ -137,18 +173,18 @@ export class ForexDataProvider {
         assetType: 'forex',
         name,
         symbol,
-        value: fallbackPrice,
+        value: 0,
         change: 0,
         changePercent: 0,
-        currency: 'KRW',
-        unit: '원',
-        provider: 'ECB (Frankfurter) 공식 고시환율',
-        delayStatus: 'official_notice',
-        delayLabel: '공식 고시 (ECB)',
+        currency,
+        unit,
+        provider: 'ECB (Frankfurter) / FX Open Data',
+        delayStatus: 'delayed_15m',
+        delayLabel: '수신 지연',
         isRealtime: false,
         lastUpdated: nowStr,
-        status: this.lastEcbDate ? 'ok' : 'delayed',
-        notes: this.lastEcbDate ? `ECB 공식 고시일: ${this.lastEcbDate}` : '일시 응답 지연',
+        status: 'error',
+        errorMessage: `${symbol} 실시간 환율 데이터를 수신할 수 없습니다.`,
       };
     }
   }
@@ -160,21 +196,21 @@ export class ForexDataProvider {
     // 1. Refresh ECB base rates in background
     await this.fetchEcbRates().catch(() => null);
 
-    // 2. Fetch primary pairs
+    // 2. Fetch primary pairs with exact quote currencies & cross-rate ECB formulas (base=USD)
     const pairs = [
-      { ticker: 'KRW=X', symbol: 'USD/KRW', name: '원/달러 (USD/KRW)', is100Yen: false },
-      { ticker: 'JPYKRW=X', symbol: '100JPY/KRW', name: '원/100엔 (100JPY/KRW)', is100Yen: true },
-      { ticker: 'EURKRW=X', symbol: 'EUR/KRW', name: '원/유로 (EUR/KRW)', is100Yen: false },
-      { ticker: 'CNYKRW=X', symbol: 'CNY/KRW', name: '원/위안 (CNY/KRW)', is100Yen: false },
-      { ticker: 'GBPKRW=X', symbol: 'GBP/KRW', name: '원/파운드 (GBP/KRW)', is100Yen: false },
-      { ticker: 'CADKRW=X', symbol: 'CAD/KRW', name: '원/캐나다달러 (CAD/KRW)', is100Yen: false },
-      { ticker: 'AUDKRW=X', symbol: 'AUD/KRW', name: '원/호주달러 (AUD/KRW)', is100Yen: false },
-      { ticker: 'CHFKRW=X', symbol: 'CHF/KRW', name: '원/스위스프랑 (CHF/KRW)', is100Yen: false },
-      { ticker: 'EURUSD=X', symbol: 'EUR/USD', name: '유로/달러 (EUR/USD)', is100Yen: false },
-      { ticker: 'JPY=X', symbol: 'USD/JPY', name: '달러/엔 (USD/JPY)', is100Yen: false },
+      { ticker: 'KRW=X', symbol: 'USD/KRW', name: '원/달러 (USD/KRW)', currency: 'KRW', unit: '원', ecbRateFn: (r: Record<string, number>) => r['KRW'] || null },
+      { ticker: 'JPYKRW=X', symbol: '100JPY/KRW', name: '원/100엔 (100JPY/KRW)', currency: 'KRW', unit: '원', is100Yen: true, ecbRateFn: (r: Record<string, number>) => (r['KRW'] && r['JPY'] ? (r['KRW'] / r['JPY']) * 100 : null) },
+      { ticker: 'EURKRW=X', symbol: 'EUR/KRW', name: '원/유로 (EUR/KRW)', currency: 'KRW', unit: '원', ecbRateFn: (r: Record<string, number>) => (r['KRW'] && r['EUR'] ? r['KRW'] / r['EUR'] : null) },
+      { ticker: 'CNYKRW=X', symbol: 'CNY/KRW', name: '원/위안 (CNY/KRW)', currency: 'KRW', unit: '원', ecbRateFn: (r: Record<string, number>) => (r['KRW'] && r['CNY'] ? r['KRW'] / r['CNY'] : null) },
+      { ticker: 'GBPKRW=X', symbol: 'GBP/KRW', name: '원/파운드 (GBP/KRW)', currency: 'KRW', unit: '원', ecbRateFn: (r: Record<string, number>) => (r['KRW'] && r['GBP'] ? r['KRW'] / r['GBP'] : null) },
+      { ticker: 'CADKRW=X', symbol: 'CAD/KRW', name: '원/캐나다달러 (CAD/KRW)', currency: 'KRW', unit: '원', ecbRateFn: (r: Record<string, number>) => (r['KRW'] && r['CAD'] ? r['KRW'] / r['CAD'] : null) },
+      { ticker: 'AUDKRW=X', symbol: 'AUD/KRW', name: '원/호주달러 (AUD/KRW)', currency: 'KRW', unit: '원', ecbRateFn: (r: Record<string, number>) => (r['KRW'] && r['AUD'] ? r['KRW'] / r['AUD'] : null) },
+      { ticker: 'CHFKRW=X', symbol: 'CHF/KRW', name: '원/스위스프랑 (CHF/KRW)', currency: 'KRW', unit: '원', ecbRateFn: (r: Record<string, number>) => (r['KRW'] && r['CHF'] ? r['KRW'] / r['CHF'] : null) },
+      { ticker: 'EURUSD=X', symbol: 'EUR/USD', name: '유로/달러 (EUR/USD)', currency: 'USD', unit: '$', ecbRateFn: (r: Record<string, number>) => (r['EUR'] ? 1 / r['EUR'] : null) },
+      { ticker: 'JPY=X', symbol: 'USD/JPY', name: '달러/엔 (USD/JPY)', currency: 'JPY', unit: '엔', ecbRateFn: (r: Record<string, number>) => r['JPY'] || null },
     ];
 
-    return Promise.all(pairs.map(p => this.fetchYahooForexTicker(p.ticker, p.symbol, p.name, p.is100Yen)));
+    return Promise.all(pairs.map(p => this.fetchYahooForexTicker(p)));
   }
 }
 

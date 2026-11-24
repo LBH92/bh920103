@@ -3,6 +3,14 @@ import { X, Plus, DollarSign, Calendar, TrendingUp, AlertCircle, Check, Search, 
 import { VirtualHolding, Stock } from '../../types';
 import { stockRepository } from '../../services/stockRepository';
 import { portfolioService } from '../../services/portfolioService';
+import { useApp } from '../../context/AppContext';
+import {
+  formatMoney,
+  inferFiatCurrency,
+  inferStockExchange,
+  roundByCurrency,
+  validateExchangeRate,
+} from '../../utils/currency';
 
 interface VirtualHoldingModalProps {
   isOpen: boolean;
@@ -23,10 +31,13 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
   uid,
   defaultSymbol,
 }) => {
+  const { exchangeRate } = useApp();
+  const fxCheck = validateExchangeRate(exchangeRate);
+
   // Stock Search / Select State
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Stock[]>([]);
-  const [selectedStock, setSelectedStock] = useState<{ symbol: string; name: string; market: string; price: number } | null>(null);
+  const [selectedStock, setSelectedStock] = useState<{ symbol: string; name: string; market: string; exchange: string; currency: 'KRW' | 'USD'; price: number } | null>(null);
 
   // Form Fields
   const [price, setPrice] = useState<string>('');
@@ -42,10 +53,14 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
       setIsSubmitting(false);
 
       if (holding) {
+        const cur = inferFiatCurrency(holding.symbol, holding.market, holding.currency);
+        const exchange = inferStockExchange(holding.symbol, holding.market, holding.exchange);
         setSelectedStock({
           symbol: holding.symbol,
           name: holding.name,
           market: holding.market,
+          exchange,
+          currency: cur,
           price: holding.avgBuyPrice,
         });
         if (mode === 'edit') {
@@ -67,10 +82,14 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
       } else if (defaultSymbol) {
         stockRepository.getStock(defaultSymbol).then(s => {
           if (s) {
+            const cur = inferFiatCurrency(s.symbol, s.market, s.currency);
+            const exchange = inferStockExchange(s.symbol, s.market, s.exchange);
             setSelectedStock({
               symbol: s.symbol,
               name: s.name,
               market: s.market,
+              exchange,
+              currency: cur,
               price: s.price,
             });
             setPrice(String(s.price));
@@ -105,6 +124,10 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
 
   if (!isOpen) return null;
 
+  const activeCurrency = selectedStock?.currency || inferFiatCurrency(holding?.symbol, holding?.market, holding?.currency);
+  const isUSD = activeCurrency === 'USD';
+  const validFxRate = fxCheck.valid && fxCheck.rate ? fxCheck.rate : undefined;
+
   // Real-time calculation previews
   const numPrice = parseFloat(price) || 0;
   const numQty = parseInt(quantity, 10) || 0;
@@ -113,21 +136,22 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
   let addBuyPreview = null;
   if (mode === 'add_buy' && holding && numQty > 0 && numPrice > 0) {
     const newQty = holding.quantity + numQty;
-    const newAvg = Math.round(((holding.quantity * holding.avgBuyPrice) + (numQty * numPrice)) / newQty);
+    const rawNewAvg = ((holding.quantity * holding.avgBuyPrice) + (numQty * numPrice)) / newQty;
+    const newAvg = roundByCurrency(rawNewAvg, activeCurrency);
     addBuyPreview = {
       newQty,
       newAvg,
-      diffAvg: newAvg - holding.avgBuyPrice,
-      totalAmount: Math.round(numQty * numPrice),
+      diffAvg: roundByCurrency(newAvg - holding.avgBuyPrice, activeCurrency),
+      totalAmount: roundByCurrency(numQty * numPrice, activeCurrency),
     };
   }
 
   // Preview for Sell: Realized P&L
   let sellPreview = null;
   if (mode === 'sell' && holding && numQty > 0 && numPrice > 0) {
-    const grossSell = Math.round(numQty * numPrice);
-    const costBasis = Math.round(numQty * holding.avgBuyPrice);
-    const profit = grossSell - costBasis;
+    const grossSell = roundByCurrency(numQty * numPrice, activeCurrency);
+    const costBasis = roundByCurrency(numQty * holding.avgBuyPrice, activeCurrency);
+    const profit = roundByCurrency(grossSell - costBasis, activeCurrency);
     const rate = holding.avgBuyPrice > 0 ? ((numPrice - holding.avgBuyPrice) / holding.avgBuyPrice) * 100 : 0;
     sellPreview = {
       grossSell,
@@ -161,18 +185,21 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
           symbol: selectedStock.symbol,
           name: selectedStock.name,
           market: selectedStock.market,
-          avgBuyPrice: numPrice,
+          exchange: selectedStock.exchange,
+          currency: selectedStock.currency,
+          avgBuyPrice: roundByCurrency(numPrice, selectedStock.currency),
           quantity: numQty,
           buyDate: date,
+          entryExchangeRate: selectedStock.currency === 'USD' ? validFxRate : undefined,
           memo,
         });
       } else if (mode === 'add_buy' && holding) {
-        await portfolioService.addBuyVirtualHolding(uid, holding.id, numQty, numPrice, date, memo);
+        await portfolioService.addBuyVirtualHolding(uid, holding.id, numQty, roundByCurrency(numPrice, activeCurrency), date, memo, validFxRate);
       } else if (mode === 'sell' && holding) {
         if (numQty > holding.quantity) {
           throw new Error(`보유 수량(${holding.quantity}주)을 초과하여 매도할 수 없습니다.`);
         }
-        await portfolioService.sellVirtualHolding(uid, holding.id, numQty, numPrice, date, 0, 0, memo);
+        await portfolioService.sellVirtualHolding(uid, holding.id, numQty, roundByCurrency(numPrice, activeCurrency), date, 0, 0, memo, validFxRate);
       } else if (mode === 'edit' && holding) {
         await portfolioService.saveVirtualHolding(
           uid,
@@ -180,9 +207,12 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
             symbol: holding.symbol,
             name: holding.name,
             market: holding.market,
-            avgBuyPrice: numPrice,
+            exchange: selectedStock.exchange,
+            currency: activeCurrency,
+            avgBuyPrice: roundByCurrency(numPrice, activeCurrency),
             quantity: numQty,
             buyDate: date,
+            entryExchangeRate: holding.entryExchangeRate ?? (isUSD ? validFxRate : undefined),
             memo,
           },
           holding.id
@@ -257,7 +287,7 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
                       {selectedStock.symbol}
                     </span>
                     <span className="text-[11px] px-1.5 py-0.5 rounded font-mono font-bold bg-rose-500/10 text-rose-500">
-                      {selectedStock.market}
+                      {selectedStock.exchange} · {selectedStock.currency}
                     </span>
                   </div>
                   <button
@@ -279,43 +309,49 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
                       type="text"
                       value={searchQuery}
                       onChange={e => setSearchQuery(e.target.value)}
-                      placeholder="종목명 또는 6자리 종목코드 입력 (예: 삼성전자, 005930)"
+                      placeholder="종목명 또는 심볼 입력 (예: 삼성전자, 005930, AAPL)"
                       className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
                     />
                   </div>
 
                   {searchResults.length > 0 && (
                     <div className="max-h-40 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#1a1f2c] shadow-lg">
-                      {searchResults.map(stock => (
-                        <button
-                          type="button"
-                          key={stock.symbol}
-                          onClick={() => {
-                            setSelectedStock({
-                              symbol: stock.symbol,
-                              name: stock.name,
-                              market: stock.market,
-                              price: stock.price,
-                            });
-                            setPrice(String(stock.price));
-                            setSearchQuery('');
-                            setSearchResults([]);
-                          }}
-                          className="w-full p-2.5 text-left flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-xs text-slate-900 dark:text-white">
-                              {stock.name}
+                      {searchResults.map(stock => {
+                        const sCur = inferFiatCurrency(stock.symbol, stock.market, stock.currency);
+                        const sExchange = inferStockExchange(stock.symbol, stock.market, stock.exchange);
+                        return (
+                          <button
+                            type="button"
+                            key={stock.symbol}
+                            onClick={() => {
+                              setSelectedStock({
+                                symbol: stock.symbol,
+                                name: stock.name,
+                                market: stock.market,
+                                exchange: sExchange,
+                                currency: sCur,
+                                price: stock.price,
+                              });
+                              setPrice(String(stock.price));
+                              setSearchQuery('');
+                              setSearchResults([]);
+                            }}
+                            className="w-full p-2.5 text-left flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-xs text-slate-900 dark:text-white">
+                                {stock.name}
+                              </span>
+                              <span className="text-[11px] font-mono text-slate-400">
+                                {stock.symbol} · {sExchange}
+                              </span>
+                            </div>
+                            <span className="font-mono text-xs font-bold text-slate-900 dark:text-white">
+                              {formatMoney(stock.price, sCur)}
                             </span>
-                            <span className="text-[11px] font-mono text-slate-400">
-                              {stock.symbol}
-                            </span>
-                          </div>
-                          <span className="font-mono text-xs font-bold text-slate-900 dark:text-white">
-                            {stock.price.toLocaleString()}원
-                          </span>
-                        </button>
-                      ))}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -335,13 +371,13 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
               <div>
                 <span className="text-[11px] text-slate-400 block">평균 매입단가</span>
                 <span className="font-bold font-mono text-slate-900 dark:text-white">
-                  {holding.avgBuyPrice.toLocaleString()}원
+                  {formatMoney(holding.avgBuyPrice, activeCurrency)}
                 </span>
               </div>
               <div>
                 <span className="text-[11px] text-slate-400 block">총 매입금액</span>
                 <span className="font-bold font-mono text-slate-900 dark:text-white">
-                  {(holding.quantity * holding.avgBuyPrice).toLocaleString()}원
+                  {formatMoney(holding.quantity * holding.avgBuyPrice, activeCurrency)}
                 </span>
               </div>
             </div>
@@ -351,15 +387,19 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                {mode === 'sell' ? '매도 단가 (원)' : mode === 'add_buy' ? '추가 매수가 (원)' : '매수 단가 (원)'}
+                {mode === 'sell'
+                  ? `매도 단가 (${isUSD ? 'USD $' : 'KRW ₩'})`
+                  : mode === 'add_buy'
+                  ? `추가 매수가 (${isUSD ? 'USD $' : 'KRW ₩'})`
+                  : `매수 단가 (${isUSD ? 'USD $' : 'KRW ₩'})`}
               </label>
               <input
                 type="number"
-                min="1"
+                min="0.01"
                 step="any"
                 value={price}
                 onChange={e => setPrice(e.target.value)}
-                placeholder="예: 75000"
+                placeholder={isUSD ? '예: 225.50' : '예: 75000'}
                 className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
                 required
               />
@@ -440,9 +480,9 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
               <div className="flex items-center justify-between font-mono">
                 <span className="text-slate-600 dark:text-slate-300">새 평균 매입가:</span>
                 <span className="font-bold text-emerald-600 dark:text-emerald-400">
-                  {addBuyPreview.newAvg.toLocaleString()}원
+                  {formatMoney(addBuyPreview.newAvg, activeCurrency)}
                   <span className="text-[11px] ml-1 text-slate-400">
-                    ({addBuyPreview.diffAvg >= 0 ? '+' : ''}{addBuyPreview.diffAvg.toLocaleString()}원)
+                    ({formatMoney(addBuyPreview.diffAvg, activeCurrency, { showSign: true })})
                   </span>
                 </span>
               </div>
@@ -456,12 +496,12 @@ export const VirtualHoldingModal: React.FC<VirtualHoldingModalProps> = ({
               </span>
               <div className="flex items-center justify-between">
                 <span className="text-slate-600 dark:text-slate-300">매도 총액:</span>
-                <span className="font-bold text-slate-900 dark:text-white">{sellPreview.grossSell.toLocaleString()}원</span>
+                <span className="font-bold text-slate-900 dark:text-white">{formatMoney(sellPreview.grossSell, activeCurrency)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-600 dark:text-slate-300">실현손익:</span>
                 <span className={`font-bold ${sellPreview.profit >= 0 ? 'text-rose-500' : 'text-blue-500'}`}>
-                  {sellPreview.profit >= 0 ? '+' : ''}{sellPreview.profit.toLocaleString()}원 ({sellPreview.profit >= 0 ? '+' : ''}{sellPreview.rate.toFixed(2)}%)
+                  {formatMoney(sellPreview.profit, activeCurrency, { showSign: true })} ({sellPreview.profit >= 0 ? '+' : ''}{sellPreview.rate.toFixed(2)}%)
                 </span>
               </div>
               <div className="flex items-center justify-between text-[11px] text-slate-400">

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Stock, OrderBook } from '../../types';
 import { stockRepository } from '../../services/stockRepository';
 import { AlertCircle } from 'lucide-react';
+import { inferStockCurrency, formatMoney } from '../../utils/currency';
 
 interface OrderBookWidgetProps {
   stock: Stock;
@@ -28,12 +29,11 @@ export const OrderBookWidget = React.memo(({ stock }: OrderBookWidgetProps) => {
     return `${val > 0 ? '+' : ''}${val.toFixed(2)}%`;
   };
 
+  const stockCur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
+
   const formatPrice = (p: number | null | undefined) => {
     if (p === null || p === undefined || p <= 0 || isNaN(p)) return '-';
-    if (stock.currency === 'USD') return `$${p.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-    if (stock.currency === 'USDT') return `${p.toLocaleString(undefined, { minimumFractionDigits: p < 1 ? 4 : 2 })}`;
-    if (stock.currency === 'BTC') return p.toFixed(8);
-    return `${p.toLocaleString()}원`;
+    return formatMoney(p, stockCur);
   };
 
   // Sync state if parent stock prop changes
@@ -48,15 +48,20 @@ export const OrderBookWidget = React.memo(({ stock }: OrderBookWidgetProps) => {
   // Connect to Real-time Order Book and Execution Tick via Kiwoom WebSocket & SSE
   useEffect(() => {
     let isSubscribed = true;
+    setOrderBook(null);
+    setIsRealtime(false);
 
     // 1. Initial REST fetch for Order Book
     stockRepository.getOrderBook(stock.symbol).then(data => {
-      if (isSubscribed && data && Array.isArray(data.asks) && data.asks.length > 0) {
+      if (!isSubscribed || !data) return;
+      if (Array.isArray(data.asks) && data.asks.length > 0) {
         setOrderBook(data);
         setLastUpdated(new Date());
-        if (data.currentPrice) {
-          setCurrentPrice(data.currentPrice);
-        }
+      } else {
+        setOrderBook(data);
+      }
+      if (data.currentPrice && data.currentPrice > 0) {
+        setCurrentPrice(data.currentPrice);
       }
     }).catch(err => {
       console.warn('[OrderBookWidget] Initial order book fetch error, using fallback:', err);
@@ -65,7 +70,7 @@ export const OrderBookWidget = React.memo(({ stock }: OrderBookWidgetProps) => {
     // 2. Subscribe to Real-time 10-level Order Book (Kiwoom WS H0STASP0)
     const unsubOrderBook = stockRepository.subscribeOrderBook?.(stock.symbol, (realtimeOrderBook) => {
       if (!isSubscribed) return;
-      if (realtimeOrderBook && realtimeOrderBook.symbol === stock.symbol) {
+      if (realtimeOrderBook && realtimeOrderBook.symbol === stock.symbol && Array.isArray(realtimeOrderBook.asks) && realtimeOrderBook.asks.length > 0) {
         // 실시간 호가의 최우선 매도호가나 중심가가 현재 종목 주가와 10% 이상 괴리되면 오염 데이터로 간주하여 차단
         const samplePrice = realtimeOrderBook.asks?.[0]?.price || realtimeOrderBook.bids?.[0]?.price;
         if (stock.price > 0 && samplePrice && Math.abs(samplePrice - stock.price) / stock.price > 0.10) {
@@ -77,7 +82,8 @@ export const OrderBookWidget = React.memo(({ stock }: OrderBookWidgetProps) => {
     });
 
     // 3. Subscribe to Real-time Execution Tick (Kiwoom WS H0STCNT0) for 현재가 / 등락률 / 거래량
-    const unsubExecution = stockRepository.subscribeExecutionTick?.(stock.symbol, (tick) => {
+    const unsubExecution = stockRepository.subscribeExecutionTick?.(stock.symbol, (tick: any) => {
+      if (tick?.source === 'SIMULATED') return;
       if (stock.price > 0 && tick.price > 0 && Math.abs(tick.price - stock.price) / stock.price > 0.10) return;
       if (!isSubscribed) return;
       if (tick && tick.symbol === stock.symbol) {
@@ -121,12 +127,24 @@ export const OrderBookWidget = React.memo(({ stock }: OrderBookWidgetProps) => {
           <h4 className="font-bold text-sm tablet:text-[15px] text-finance-text">
             실시간 10단계 호가창
           </h4>
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] tablet:text-[11px] font-bold bg-finance-accent/15 text-finance-accent border border-finance-accent/30 whitespace-nowrap">
-            <span className="w-1.5 h-1.5 rounded-full bg-finance-accent animate-pulse" />
-            {stock.market === 'COIN'
-              ? `${stock.exchange === 'UPBIT' ? '업비트 실시간' : '바이낸스 실시간'}`
-              : (isRealtime ? '키움 실시간' : '실시간 연동')}
-          </span>
+          {(stock.market === 'COIN' && hasRealDepth) || (stock.market !== 'COIN' && stock.market !== 'US' && isRealtime && hasRealDepth) ? (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] tablet:text-[11px] font-bold bg-finance-accent/15 text-finance-accent border border-finance-accent/30 whitespace-nowrap">
+              <span className="w-1.5 h-1.5 rounded-full bg-finance-accent animate-pulse" />
+              {stock.market === 'COIN'
+                ? `${stock.exchange === 'UPBIT' ? '업비트 실시간' : '바이낸스 실시간'}`
+                : '키움 실시간'}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] tablet:text-[11px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 whitespace-nowrap">
+              {stock.market === 'COIN'
+                ? '호가 연결 중'
+                : stock.market === 'US'
+                ? '해외 단일가 (호가 미제공)'
+                : hasRealDepth
+                ? '키움 REST 호가'
+                : '키움 호가 미연결'}
+            </span>
+          )}
           {isRealtime && (
             <span className="text-[10px] tablet:text-[11px] text-finance-sub-text font-mono tabular-nums">
               {lastUpdated.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -213,7 +231,7 @@ export const OrderBookWidget = React.memo(({ stock }: OrderBookWidgetProps) => {
                 {formatPrice(currentPrice)}
               </span>
               <span className={`text-xs tablet:text-[13px] tabular-nums whitespace-nowrap ${change !== null && change !== undefined && change >= 0 ? 'text-finance-up' : 'text-finance-down'}`}>
-                {change !== null && change !== undefined ? `${change >= 0 ? '+' : ''}${change.toLocaleString()}` : '-'} ({formatPercentage(changePercent)})
+                {change !== null && change !== undefined ? formatMoney(change, stockCur, { showSign: true }) : '-'} ({formatPercentage(changePercent)})
               </span>
             </div>
 
@@ -258,7 +276,7 @@ export const OrderBookWidget = React.memo(({ stock }: OrderBookWidgetProps) => {
                 {formatPrice(currentPrice)}
               </span>
               <span className={`text-xs tablet:text-[13px] tabular-nums whitespace-nowrap ${change !== null && change !== undefined && change >= 0 ? 'text-finance-up' : 'text-finance-down'}`}>
-                {change !== null && change !== undefined ? `${change >= 0 ? '+' : ''}${change.toLocaleString()}` : '-'} ({changePercent !== null && changePercent !== undefined ? `${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%` : '-'})
+                {change !== null && change !== undefined ? formatMoney(change, stockCur, { showSign: true }) : '-'} ({changePercent !== null && changePercent !== undefined ? `${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%` : '-'})
               </span>
             </div>
             <div className="flex items-center justify-center gap-2 text-xs tablet:text-[13px] text-finance-sub-text bg-finance-sub-bg/70 border border-finance-border rounded-xl p-3">

@@ -4,6 +4,7 @@ import { Stock, CommunityPost } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { storageService } from '../../services/storageService';
 import { PostEditorModal } from '../community/PostEditorModal';
+import { dedupeById } from '../../utils/dedupe';
 
 interface StockCommunitySectionProps {
   stock: Stock;
@@ -13,7 +14,7 @@ export const StockCommunitySection: React.FC<StockCommunitySectionProps> = ({ st
   const { navigateToPost, requireAuth } = useApp();
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [posts, setPosts] = useState<CommunityPost[]>(() => {
-    const all = storageService.getPosts();
+    const all = dedupeById(storageService.getPosts());
     return all.filter(p => p.symbol === stock.symbol || p.tags?.some(t => t.includes(stock.name)));
   });
 
@@ -23,7 +24,7 @@ export const StockCommunitySection: React.FC<StockCommunitySectionProps> = ({ st
   };
 
   const handlePostSaved = () => {
-    const all = storageService.getPosts();
+    const all = dedupeById(storageService.getPosts());
     setPosts(all.filter(p => p.symbol === stock.symbol || p.tags?.some(t => t.includes(stock.name))));
     setIsEditorOpen(false);
   };

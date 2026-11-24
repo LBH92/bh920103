@@ -3,6 +3,7 @@ import { X, TrendingUp, TrendingDown, DollarSign, AlertCircle, Check, Info, Shie
 import { MockAccount, MockPosition, Stock } from '../../types';
 import { portfolioService } from '../../services/portfolioService';
 import { useApp } from '../../context/AppContext';
+import { formatMoney, inferFiatCurrency, validateExchangeRate } from '../../utils/currency';
 
 interface MockTradeModalProps {
   isOpen: boolean;
@@ -75,13 +76,14 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
           setQuote(q as any);
           setInputPrice(String(q.price));
         } else if (defaultPrice) {
+          const fallbackCurrency = inferFiatCurrency(symbol);
           setQuote({
             price: defaultPrice,
             name: stockName || symbol,
-            currency: 'KRW',
-            delayLabel: '체결가',
-            isRealtime: true,
-            provider: '키움 실전 API',
+            currency: fallbackCurrency,
+            delayLabel: '조회 시세 (지연 가능)',
+            isRealtime: false,
+            provider: fallbackCurrency === 'USD' ? '글로벌 시세 데이터' : '대체 시세 데이터',
             status: 'ok',
             asOf: new Date().toLocaleTimeString('ko-KR'),
             quoteTimestamp: Date.now(),
@@ -96,8 +98,10 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
 
   if (!isOpen) return null;
 
-  const isUSD = quote?.currency === 'USD';
-  const currencySymbol = isUSD ? '$' : '원';
+  const tradeCurrency = inferFiatCurrency(symbol, undefined, quote?.currency);
+  const isUSD = tradeCurrency === 'USD';
+  const currencySymbol = isUSD ? '$' : '₩';
+  const fxCheck = validateExchangeRate(exchangeRate);
 
   const bestAsk = quote?.bestAskPrice || quote?.price || defaultPrice || 0;
   const bestBid = quote?.bestBidPrice || quote?.price || defaultPrice || 0;
@@ -140,7 +144,7 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
     }
 
     if (orderType === 'BUY' && totalSettled > availableCash) {
-      setErrorMsg(`가상 ${isUSD ? '외화(USD)' : '원화(KRW)'} 잔고가 부족합니다. (필요: ${isUSD ? '$' : ''}${totalSettled.toLocaleString()}${isUSD ? '' : '원'}, 보유: ${isUSD ? '$' : ''}${availableCash.toLocaleString()}${isUSD ? '' : '원'})`);
+      setErrorMsg(`가상 ${isUSD ? '외화(USD)' : '원화(KRW)'} 잔고가 부족합니다. (필요: ${formatMoney(totalSettled, tradeCurrency)}, 보유: ${formatMoney(availableCash, tradeCurrency)})`);
       return;
     }
 
@@ -157,19 +161,19 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
         const order = await portfolioService.executeMockBuyOrder(user?.id, {
           symbol,
           name: quote?.name || stockName || symbol,
-          market: quote?.currency === 'USD' ? 'US' : 'KOSPI',
-          currency: quote?.currency || 'KRW',
+          market: isUSD ? 'US' : 'KOSPI',
+          currency: tradeCurrency,
           orderKind,
           price: numPrice,
           quantity: numQty,
           reason,
-          exchangeRate: exchangeRate?.rate,
+          exchangeRate: fxCheck.valid && fxCheck.rate ? fxCheck.rate : undefined,
           idempotencyKey,
           quoteTimestamp: quote?.quoteTimestamp,
         });
 
         if (order.status === 'FILLED') {
-          showToast(`'${quote?.name || symbol}' ${order.quantity}주 전량 매수 체결되었습니다. (${isUSD ? '$' : ''}${order.price.toLocaleString()}${isUSD ? '' : '원'})`, 'success');
+          showToast(`'${quote?.name || symbol}' ${order.quantity}주 전량 매수 체결되었습니다. (${formatMoney(order.price, tradeCurrency)})`, 'success');
         } else if (order.status === 'PARTIALLY_FILLED') {
           showToast(`'${quote?.name || symbol}' ${order.filledQuantity}주 부분 체결, ${order.unfilledQuantity}주 미체결 잔량 대기.`, 'info');
         } else {
@@ -178,18 +182,18 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
       } else {
         const order = await portfolioService.executeMockSellOrder(user?.id, {
           symbol,
-          market: quote?.currency === 'USD' ? 'US' : 'KOSPI',
+          market: isUSD ? 'US' : 'KOSPI',
           orderKind,
           price: numPrice,
           quantity: numQty,
           reason,
-          exchangeRate: exchangeRate?.rate,
+          exchangeRate: fxCheck.valid && fxCheck.rate ? fxCheck.rate : undefined,
           idempotencyKey,
           quoteTimestamp: quote?.quoteTimestamp,
         });
 
         if (order.status === 'FILLED') {
-          showToast(`'${quote?.name || symbol}' ${order.quantity}주 전량 매도 체결되었습니다. (${isUSD ? '$' : ''}${order.price.toLocaleString()}${isUSD ? '' : '원'})`, 'info');
+          showToast(`'${quote?.name || symbol}' ${order.quantity}주 전량 매도 체결되었습니다. (${formatMoney(order.price, tradeCurrency)})`, 'info');
         } else if (order.status === 'PARTIALLY_FILLED') {
           showToast(`'${quote?.name || symbol}' ${order.filledQuantity}주 부분 매도 체결되었습니다.`, 'info');
         } else {
@@ -319,7 +323,7 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
               </span>
               <span className="font-bold text-slate-900 dark:text-white text-sm">
                 {orderType === 'BUY'
-                  ? `${isUSD ? '$' : ''}${availableCash.toLocaleString()}${isUSD ? '' : '원'}`
+                  ? formatMoney(availableCash, tradeCurrency)
                   : `${holdingQty.toLocaleString()}주`}
               </span>
             </div>
@@ -335,7 +339,7 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
                 <div className="text-right">
                   <span className="text-[11px] text-slate-400 block font-sans">평균 매입단가</span>
                   <span className="font-bold text-slate-900 dark:text-white text-sm">
-                    {isUSD ? '$' : ''}{currentHolding.avgBuyPrice.toLocaleString()}{isUSD ? '' : '원'}
+                    {formatMoney(currentHolding.avgBuyPrice, tradeCurrency)}
                   </span>
                 </div>
               )
@@ -425,17 +429,17 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
           {/* Order Settlement Summary */}
           <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 text-xs font-mono space-y-1.5">
             <div className="flex items-center justify-between text-slate-600 dark:text-slate-300">
-              <span className="font-sans">주문 총액:</span>
-              <span>{grossAmount.toLocaleString()}원</span>
+              <span className="font-sans">주문 총액 ({tradeCurrency}):</span>
+              <span>{formatMoney(grossAmount, tradeCurrency)}</span>
             </div>
             <div className="flex items-center justify-between text-slate-500 text-[11px]">
               <span className="font-sans">수수료 ({(commissionRate * 100).toFixed(3)}%):</span>
-              <span>{fee.toLocaleString()}원</span>
+              <span>{formatMoney(fee, tradeCurrency)}</span>
             </div>
-            {orderType === 'SELL' && (
+            {orderType === 'SELL' && !isUSD && (
               <div className="flex items-center justify-between text-slate-500 text-[11px]">
                 <span className="font-sans">증권거래세 ({(taxRate * 100).toFixed(2)}%):</span>
-                <span>{tax.toLocaleString()}원</span>
+                <span>{formatMoney(tax, tradeCurrency)}</span>
               </div>
             )}
             <div className="pt-1.5 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between text-sm font-bold">
@@ -443,7 +447,7 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
                 {orderType === 'BUY' ? '최종 필요 현금:' : '예상 입금 현금:'}
               </span>
               <span className={orderType === 'BUY' ? 'text-rose-500' : 'text-blue-500'}>
-                {totalSettled.toLocaleString()}원
+                {formatMoney(totalSettled, tradeCurrency)}
               </span>
             </div>
           </div>

@@ -20,7 +20,8 @@ import {
   TrendingUp,
   ChevronRight,
   Sun,
-  Moon
+  Moon,
+  BookOpen
 } from 'lucide-react';
 import { AdminSubTab, UserProfile, UserRole } from '../../types';
 import { useApp } from '../../context/AppContext';
@@ -58,6 +59,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
     { id: 'filters', label: '금칙어 관리', icon: <Sparkles className="w-4 h-4" />, minRole: 'admin' },
     { id: 'alerts', label: '알림 관리', icon: <Bell className="w-4 h-4" />, minRole: 'admin' },
     { id: 'market', label: '시장 데이터', icon: <Activity className="w-4 h-4" /> },
+    { id: 'insights', label: '인사이트 발행', icon: <BookOpen className="w-4 h-4" />, minRole: 'admin' },
     { id: 'logs', label: '관리자 로그', icon: <Lock className="w-4 h-4" /> },
     { id: 'inquiries', label: '문의 관리', icon: <MessageSquare className="w-4 h-4" />, minRole: 'admin' },
     { id: 'ads', label: '광고 관리', icon: <Megaphone className="w-4 h-4" />, minRole: 'admin' },

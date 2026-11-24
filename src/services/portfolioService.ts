@@ -49,6 +49,7 @@ import {
 import { stockRepository } from './stockRepository';
 import { globalMarketClient } from './globalMarketClient';
 import { validateMarketTradingHours } from '../utils/marketHours';
+import { formatMoney, inferFiatCurrency, inferStockExchange, roundByCurrency } from '../utils/currency';
 
 const STORAGE_KEYS = {
   VIRTUAL_HOLDINGS: 'bd_virtual_holdings',
@@ -91,22 +92,32 @@ export const portfolioService = {
   // ==========================================
 
   async getVirtualHoldings(uid?: string): Promise<VirtualHolding[]> {
+    const normalizeHolding = (h: VirtualHolding): VirtualHolding => {
+      const currency = inferFiatCurrency(h.symbol, h.market, h.currency);
+      const exchange = inferStockExchange(h.symbol, h.market, h.exchange);
+      return {
+        ...h,
+        currency,
+        exchange,
+      };
+    };
+
     if (!uid) {
-      return loadLocal<VirtualHolding[]>(STORAGE_KEYS.VIRTUAL_HOLDINGS, []);
+      return loadLocal<VirtualHolding[]>(STORAGE_KEYS.VIRTUAL_HOLDINGS, []).map(normalizeHolding);
     }
     try {
       const q = query(collection(db, 'virtualHoldings'), where('uid', '==', uid));
       const snap = await getDocs(q);
       const list: VirtualHolding[] = [];
       snap.forEach(d => {
-        list.push({ id: d.id, ...d.data() } as VirtualHolding);
+        list.push(normalizeHolding({ id: d.id, ...d.data() } as VirtualHolding));
       });
       // Sort by creation / updated date desc
       list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       return list;
     } catch (err) {
       console.warn('[portfolioService] getVirtualHoldings Firestore error, using local:', err);
-      return loadLocal<VirtualHolding[]>(`${STORAGE_KEYS.VIRTUAL_HOLDINGS}_${uid}`, []);
+      return loadLocal<VirtualHolding[]>(`${STORAGE_KEYS.VIRTUAL_HOLDINGS}_${uid}`, []).map(normalizeHolding);
     }
   },
 
@@ -116,18 +127,26 @@ export const portfolioService = {
       symbol: string;
       name: string;
       market: string;
+      exchange?: string;
       currency?: 'KRW' | 'USD';
       quantity: number;
       avgBuyPrice: number;
       buyDate: string;
+      entryExchangeRate?: number;
       memo?: string;
     },
     existingId?: string
   ): Promise<VirtualHolding> {
     const now = new Date().toISOString();
     const id = existingId || (uid ? `${uid}_${data.symbol}` : `holding_${Date.now()}`);
-    const currency = data.currency || (data.market === 'US' || data.market === 'GLOBAL' ? 'USD' : 'KRW');
-    const totalBuyAmount = Math.round(data.quantity * data.avgBuyPrice);
+    const currency = inferFiatCurrency(data.symbol, data.market, data.currency);
+    const exchange = inferStockExchange(data.symbol, data.market, data.exchange);
+    const cleanAvgPrice = roundByCurrency(data.avgBuyPrice, currency);
+    const totalBuyAmount = roundByCurrency(data.quantity * cleanAvgPrice, currency);
+    const validEntryFx =
+      currency === 'USD' && typeof data.entryExchangeRate === 'number' && data.entryExchangeRate > 0
+        ? data.entryExchangeRate
+        : undefined;
 
     const holding: VirtualHolding = {
       id,
@@ -135,11 +154,13 @@ export const portfolioService = {
       symbol: data.symbol,
       name: data.name,
       market: data.market,
+      exchange,
       currency,
       quantity: data.quantity,
-      avgBuyPrice: Math.round(data.avgBuyPrice),
+      avgBuyPrice: cleanAvgPrice,
       totalBuyAmount,
       buyDate: data.buyDate || now.slice(0, 10),
+      ...(validEntryFx ? { entryExchangeRate: validEntryFx } : {}),
       memo: data.memo || '',
       createdAt: now,
       updatedAt: now,
@@ -157,8 +178,10 @@ export const portfolioService = {
             holdingId: id,
             symbol: data.symbol,
             name: data.name,
+            currency,
+            ...(validEntryFx ? { exchangeRate: validEntryFx } : {}),
             tradeType: 'BUY',
-            price: data.avgBuyPrice,
+            price: cleanAvgPrice,
             quantity: data.quantity,
             totalAmount: totalBuyAmount,
             tradeDate: data.buyDate || now.slice(0, 10),
@@ -186,8 +209,10 @@ export const portfolioService = {
           holdingId: id,
           symbol: data.symbol,
           name: data.name,
+          currency,
+          ...(validEntryFx ? { exchangeRate: validEntryFx } : {}),
           tradeType: 'BUY',
-          price: data.avgBuyPrice,
+          price: cleanAvgPrice,
           quantity: data.quantity,
           totalAmount: totalBuyAmount,
           tradeDate: data.buyDate || now.slice(0, 10),
@@ -209,7 +234,8 @@ export const portfolioService = {
     addQty: number,
     addPrice: number,
     tradeDate: string,
-    memo?: string
+    memo?: string,
+    exchangeRate?: number
   ): Promise<VirtualHolding> {
     if (addQty <= 0 || addPrice <= 0) {
       throw new Error('추가 매수 수량과 매수가는 0보다 커야 합니다.');
@@ -221,19 +247,34 @@ export const portfolioService = {
       throw new Error('해당 보유 종목을 찾을 수 없습니다.');
     }
 
+    const currency = inferFiatCurrency(target.symbol, target.market, target.currency);
+    const cleanAddPrice = roundByCurrency(addPrice, currency);
     const prevQty = target.quantity;
     const prevAvgPrice = target.avgBuyPrice;
     const newQty = prevQty + addQty;
     // 가중평균 매입단가 계산: ((기존수량 * 기존평균가) + (추가수량 * 추가단가)) / 총수량
-    const newAvgPrice = Math.round(((prevQty * prevAvgPrice) + (addQty * addPrice)) / newQty);
-    const newTotalBuyAmount = Math.round(newQty * newAvgPrice);
+    const newAvgPrice = roundByCurrency(((prevQty * prevAvgPrice) + (addQty * cleanAddPrice)) / newQty, currency);
+    const newTotalBuyAmount = roundByCurrency(newQty * newAvgPrice, currency);
+    const addTotalAmount = roundByCurrency(addQty * cleanAddPrice, currency);
+    const validFx = currency === 'USD' && typeof exchangeRate === 'number' && exchangeRate > 0 ? exchangeRate : undefined;
+    let updatedEntryFx = target.entryExchangeRate;
+    if (currency === 'USD' && validFx) {
+      if (target.entryExchangeRate && target.entryExchangeRate > 0 && newTotalBuyAmount > 0) {
+        const prevCost = prevQty * prevAvgPrice;
+        updatedEntryFx = Number((((prevCost * target.entryExchangeRate) + (addTotalAmount * validFx)) / (prevCost + addTotalAmount)).toFixed(2));
+      } else {
+        updatedEntryFx = validFx;
+      }
+    }
     const now = new Date().toISOString();
 
     const updatedHolding: VirtualHolding = {
       ...target,
+      currency,
       quantity: newQty,
       avgBuyPrice: newAvgPrice,
       totalBuyAmount: newTotalBuyAmount,
+      ...(updatedEntryFx ? { entryExchangeRate: updatedEntryFx } : {}),
       updatedAt: now,
     };
 
@@ -244,12 +285,14 @@ export const portfolioService = {
       holdingId,
       symbol: target.symbol,
       name: target.name,
+      currency,
+      ...(validFx ? { exchangeRate: validFx } : {}),
       tradeType: 'ADD_BUY',
-      price: addPrice,
+      price: cleanAddPrice,
       quantity: addQty,
-      totalAmount: Math.round(addQty * addPrice),
+      totalAmount: addTotalAmount,
       tradeDate: tradeDate || now.slice(0, 10),
-      memo: memo || `추가 매수 (${addQty}주 @ ${addPrice.toLocaleString()}원)`,
+      memo: memo || `추가 매수 (${addQty}주 @ ${formatMoney(cleanAddPrice, currency)})`,
       createdAt: now,
     };
 
@@ -285,7 +328,8 @@ export const portfolioService = {
     tradeDate: string,
     fee: number = 0,
     tax: number = 0,
-    memo?: string
+    memo?: string,
+    exchangeRate?: number
   ): Promise<{ remainingQty: number; realizedProfit: number; realizedProfitRate: number }> {
     if (sellQty <= 0 || sellPrice <= 0) {
       throw new Error('매도 수량과 매도가는 0보다 커야 합니다.');
@@ -301,14 +345,17 @@ export const portfolioService = {
       throw new Error(`보유 수량(${target.quantity}주)을 초과하여 매도할 수 없습니다.`);
     }
 
+    const currency = inferFiatCurrency(target.symbol, target.market, target.currency);
+    const cleanSellPrice = roundByCurrency(sellPrice, currency);
     const remainingQty = target.quantity - sellQty;
-    const grossSellAmount = Math.round(sellQty * sellPrice);
-    const grossCostBasis = Math.round(sellQty * target.avgBuyPrice);
+    const grossSellAmount = roundByCurrency(sellQty * cleanSellPrice, currency);
+    const grossCostBasis = roundByCurrency(sellQty * target.avgBuyPrice, currency);
     // 실현 손익 = (매도가 - 평균매입가) * 매도수량 - 수수료 - 제세금
-    const realizedProfit = Math.round((grossSellAmount - grossCostBasis) - fee - tax);
+    const realizedProfit = roundByCurrency((grossSellAmount - grossCostBasis) - fee - tax, currency);
     const realizedProfitRate = target.avgBuyPrice > 0
-      ? Number((((sellPrice - target.avgBuyPrice) / target.avgBuyPrice) * 100).toFixed(2))
+      ? Number((((cleanSellPrice - target.avgBuyPrice) / target.avgBuyPrice) * 100).toFixed(2))
       : 0;
+    const validFx = currency === 'USD' && typeof exchangeRate === 'number' && exchangeRate > 0 ? exchangeRate : undefined;
 
     const now = new Date().toISOString();
     const tradeId = `vtrade_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -318,8 +365,10 @@ export const portfolioService = {
       holdingId,
       symbol: target.symbol,
       name: target.name,
+      currency,
+      ...(validFx ? { exchangeRate: validFx } : {}),
       tradeType: 'SELL',
-      price: sellPrice,
+      price: cleanSellPrice,
       quantity: sellQty,
       totalAmount: grossSellAmount,
       tradeDate: tradeDate || now.slice(0, 10),
@@ -327,7 +376,7 @@ export const portfolioService = {
       realizedProfitRate,
       fee,
       tax,
-      memo: memo || `매도 실행 (${sellQty}주, 실현손익: ${realizedProfit >= 0 ? '+' : ''}${realizedProfit.toLocaleString()}원)`,
+      memo: memo || `매도 실행 (${sellQty}주, 실현손익: ${formatMoney(realizedProfit, currency, { showSign: true })})`,
       createdAt: now,
     };
 
@@ -338,8 +387,9 @@ export const portfolioService = {
       // 부분 매도 -> 보유 수량 차감 (평균 매입가는 유지)
       const updatedHolding: VirtualHolding = {
         ...target,
+        currency,
         quantity: remainingQty,
-        totalBuyAmount: Math.round(remainingQty * target.avgBuyPrice),
+        totalBuyAmount: roundByCurrency(remainingQty * target.avgBuyPrice, currency),
         updatedAt: now,
       };
 
@@ -393,21 +443,26 @@ export const portfolioService = {
   },
 
   async getVirtualHoldingTrades(uid?: string): Promise<VirtualHoldingTrade[]> {
+    const normalizeTrade = (t: VirtualHoldingTrade): VirtualHoldingTrade => ({
+      ...t,
+      currency: inferFiatCurrency(t.symbol, undefined, t.currency),
+    });
+
     if (!uid) {
-      return loadLocal<VirtualHoldingTrade[]>(STORAGE_KEYS.VIRTUAL_TRADES, []);
+      return loadLocal<VirtualHoldingTrade[]>(STORAGE_KEYS.VIRTUAL_TRADES, []).map(normalizeTrade);
     }
     try {
       const q = query(collection(db, 'virtualHoldingHistory'), where('uid', '==', uid));
       const snap = await getDocs(q);
       const list: VirtualHoldingTrade[] = [];
       snap.forEach(d => {
-        list.push({ id: d.id, ...d.data() } as VirtualHoldingTrade);
+        list.push(normalizeTrade({ id: d.id, ...d.data() } as VirtualHoldingTrade));
       });
       list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       return list;
     } catch (err) {
       console.warn('[portfolioService] getVirtualHoldingTrades Firestore error, using local:', err);
-      return loadLocal<VirtualHoldingTrade[]>(`${STORAGE_KEYS.VIRTUAL_TRADES}_${uid}`, []);
+      return loadLocal<VirtualHoldingTrade[]>(`${STORAGE_KEYS.VIRTUAL_TRADES}_${uid}`, []).map(normalizeTrade);
     }
   },
 
@@ -538,40 +593,51 @@ export const portfolioService = {
   },
 
   async getMockPositions(uid?: string): Promise<MockPosition[]> {
+    const normalizePos = (p: MockPosition): MockPosition => ({
+      ...p,
+      currency: inferFiatCurrency(p.symbol, p.market, p.currency),
+      exchange: inferStockExchange(p.symbol, p.market, p.exchange),
+    });
+
     if (!uid) {
-      return loadLocal<MockPosition[]>(STORAGE_KEYS.MOCK_POSITIONS, []);
+      return loadLocal<MockPosition[]>(STORAGE_KEYS.MOCK_POSITIONS, []).map(normalizePos);
     }
     try {
       const q = query(collection(db, 'mockHoldings'), where('uid', '==', uid));
       const snap = await getDocs(q);
       const list: MockPosition[] = [];
       snap.forEach(d => {
-        list.push({ id: d.id, ...d.data() } as MockPosition);
+        list.push(normalizePos({ id: d.id, ...d.data() } as MockPosition));
       });
       list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       return list;
     } catch (err) {
       console.warn('[portfolioService] getMockPositions Firestore error:', err);
-      return loadLocal<MockPosition[]>(`${STORAGE_KEYS.MOCK_POSITIONS}_${uid}`, []);
+      return loadLocal<MockPosition[]>(`${STORAGE_KEYS.MOCK_POSITIONS}_${uid}`, []).map(normalizePos);
     }
   },
 
   async getMockOrders(uid?: string): Promise<MockOrder[]> {
+    const normalizeOrder = (o: MockOrder): MockOrder => ({
+      ...o,
+      currency: inferFiatCurrency(o.symbol, undefined, o.currency),
+    });
+
     if (!uid) {
-      return loadLocal<MockOrder[]>(STORAGE_KEYS.MOCK_ORDERS, []);
+      return loadLocal<MockOrder[]>(STORAGE_KEYS.MOCK_ORDERS, []).map(normalizeOrder);
     }
     try {
       const q = query(collection(db, 'mockOrders'), where('uid', '==', uid));
       const snap = await getDocs(q);
       const list: MockOrder[] = [];
       snap.forEach(d => {
-        list.push({ id: d.id, ...d.data() } as MockOrder);
+        list.push(normalizeOrder({ id: d.id, ...d.data() } as MockOrder));
       });
       list.sort((a, b) => b.executedAt.localeCompare(a.executedAt));
       return list;
     } catch (err) {
       console.warn('[portfolioService] getMockOrders Firestore error:', err);
-      return loadLocal<MockOrder[]>(`${STORAGE_KEYS.MOCK_ORDERS}_${uid}`, []);
+      return loadLocal<MockOrder[]>(`${STORAGE_KEYS.MOCK_ORDERS}_${uid}`, []).map(normalizeOrder);
     }
   },
 
@@ -593,7 +659,8 @@ export const portfolioService = {
     }
   ): Promise<MockOrder> {
     const { symbol, name, market, price, quantity, reason, orderKind = 'LIMIT', idempotencyKey, quoteTimestamp } = params;
-    const currency = params.currency || (market === 'US' || market === 'GLOBAL' ? 'USD' : 'KRW');
+    const currency = inferFiatCurrency(symbol, market, params.currency);
+    const exchange = inferStockExchange(symbol, market);
     const isUSD = currency === 'USD';
 
     // 0. Idempotency Check (중복 주문 및 더블 클릭 방지)
@@ -687,6 +754,26 @@ export const portfolioService = {
             unfilledQty -= takeQty;
           }
           if (unfilledQty === 0) break;
+        }
+      } else if (isUSD && Number((orderBook as any)?.currentPrice) > 0) {
+        // 미국 주식은 무료 L2 호가창 미제공이므로 서버 실시간 현재가(currentPrice) 기준 단일 체결 처리
+        const usRefPrice = Number(Number((orderBook as any).currentPrice).toFixed(2));
+        if (orderKind === 'LIMIT' && price < usRefPrice) {
+          executionStatus = 'PENDING';
+          filledQty = 0;
+          unfilledQty = quantity;
+        } else {
+          fills.push({
+            price: usRefPrice,
+            quantity,
+            amount: Number((quantity * usRefPrice).toFixed(2)),
+            level: 1,
+            executedAt: now,
+          });
+          totalExecutedAmount = Number((quantity * usRefPrice).toFixed(2));
+          filledQty = quantity;
+          unfilledQty = 0;
+          executionStatus = 'FILLED';
         }
       } else {
         // 호가 데이터 미수신 또는 유효 잔량 부재: 임의 입력가로 체결하지 않고 시장가는 거절, 지정가는 대기(PENDING) 유지
@@ -1015,7 +1102,7 @@ export const portfolioService = {
             );
           }
 
-          const currency = currentPos.currency || 'KRW';
+          const currency = inferFiatCurrency(currentPos.symbol, currentPos.market, currentPos.currency);
           const isUSD = currency === 'USD';
           const market = params.market || currentPos.market || (isUSD ? 'US' : 'KRX');
 
@@ -1077,6 +1164,25 @@ export const portfolioService = {
                   unfilledQty -= takeQty;
                 }
                 if (unfilledQty === 0) break;
+              }
+            } else if (isUSD && Number((orderBook as any)?.currentPrice) > 0) {
+              const usRefPrice = Number(Number((orderBook as any).currentPrice).toFixed(2));
+              if (orderKind === 'LIMIT' && price > usRefPrice) {
+                executionStatus = 'PENDING';
+                filledQty = 0;
+                unfilledQty = quantity;
+              } else {
+                fills.push({
+                  price: usRefPrice,
+                  quantity,
+                  amount: Number((quantity * usRefPrice).toFixed(2)),
+                  level: 1,
+                  executedAt: now,
+                });
+                totalExecutedAmount = Number((quantity * usRefPrice).toFixed(2));
+                filledQty = quantity;
+                unfilledQty = 0;
+                executionStatus = 'FILLED';
               }
             } else {
               // 호가 데이터 미수신 또는 잔량 부재 시 임의 가격 체결 금지
@@ -1190,7 +1296,7 @@ export const portfolioService = {
       );
     }
 
-    const currency = currentPos.currency || 'KRW';
+    const currency = inferFiatCurrency(currentPos.symbol, currentPos.market, currentPos.currency);
     const isUSD = currency === 'USD';
     const grossAmount = isUSD ? Number((price * quantity).toFixed(2)) : Math.round(price * quantity);
     const fee = isUSD ? Number((grossAmount * acc.commissionRate).toFixed(2)) : Math.round(grossAmount * acc.commissionRate);
@@ -1288,19 +1394,33 @@ export const portfolioService = {
           // fallback to stock.price
         }
 
+        const resolvedCurrency = inferFiatCurrency(stock.symbol, stock.market, stock.currency);
+        const resolvedExchange = inferStockExchange(stock.symbol, stock.market, stock.exchange);
+        const isUS = resolvedCurrency === 'USD';
+
+        const isLiveExchange = stock.dataSource === 'kiwoom' || stock.dataSource === 'upbit' || stock.dataSource === 'binance';
+        const resolvedProvider = stock.dataSource === 'yahoo'
+          ? 'Yahoo Finance API'
+          : stock.dataSource === 'upbit'
+          ? 'Upbit API'
+          : stock.dataSource === 'binance'
+          ? 'Binance API'
+          : (isUS ? 'Yahoo Finance API' : '키움증권 실전 API');
+
         return {
           symbol: stock.symbol,
           name: stock.name,
           price: stock.price,
           change: stock.change,
           changePercent: stock.changePercent,
-          currency: 'KRW',
+          currency: resolvedCurrency,
           market: stock.market,
-          delayLabel: '실시간 체결가',
-          isRealtime: true,
-          provider: '키움증권 실전 API',
-          status: 'ok',
-          asOf: new Date().toLocaleTimeString('ko-KR'),
+          exchange: resolvedExchange,
+          delayLabel: stock.delayLabel || (isUS ? '15분 지연 시세' : (stock.dataSource === 'yahoo' ? '대체 시세 (지연)' : '실시간 체결가')),
+          isRealtime: !isUS && isLiveExchange,
+          provider: resolvedProvider,
+          status: stock.isStale || stock.dataSource === 'yahoo' ? 'delayed' : 'ok',
+          asOf: stock.lastUpdated || new Date().toLocaleTimeString('ko-KR'),
           quoteTimestamp: Date.now(),
           bestAskPrice,
           bestBidPrice,

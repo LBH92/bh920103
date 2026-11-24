@@ -5,6 +5,7 @@ import { serverResilienceService } from './serverResilienceService';
 import { kiwoomApiService } from './kiwoomApiService';
 import { adminAuth, adminDb } from './firebaseAdmin';
 import { runNonAdminCleanup } from '../scripts/cleanup_non_admin_users';
+import { editorialContentService } from './editorialContentService';
 
 export interface ServerAdminLog {
   id: string;
@@ -1074,6 +1075,59 @@ export const createAdminRouter = (options?: { getPresence?: () => any }) => {
     } catch (err: any) {
       console.error('[Admin] Delete orphan error:', err);
       res.status(500).json({ error: '고아 프로필 정리 실패', details: err.message });
+    }
+  });
+
+  // 18. Editorial Content Management (Insights & AdSense Preparation)
+  router.get('/insights', async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit as string) || 50;
+      const list = await editorialContentService.getAdminInsights(limit);
+      res.json(list);
+    } catch (err: any) {
+      res.status(500).json({ error: '인사이트 목록 조회 실패', details: err.message });
+    }
+  });
+
+  router.post('/insights/generate-draft', async (req, res) => {
+    try {
+      const { category, topic, targetSymbol } = req.body;
+      if (!category) {
+        return res.status(400).json({ error: '카테고리는 필수 항목입니다.' });
+      }
+      const adminUid = (req as any).adminUid || 'superadmin';
+      const adminEmail = (req as any).adminEmail || 'admin@byungdol.com';
+      const draft = await editorialContentService.generateDraft(
+        { category, topic, targetSymbol },
+        adminUid,
+        adminEmail
+      );
+      res.json({ success: true, draft });
+    } catch (err: any) {
+      res.status(500).json({ error: '초안 생성 실패', details: err.message });
+    }
+  });
+
+  router.put('/insights/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const updates = req.body;
+      const adminEmail = (req as any).adminEmail || 'admin@byungdol.com';
+      const updated = await editorialContentService.updateInsight(id, updates, adminEmail);
+      res.json({ success: true, insight: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: '인사이트 수정 실패', details: err.message });
+    }
+  });
+
+  router.delete('/insights/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const adminEmail = (req as any).adminEmail || 'admin@byungdol.com';
+      await editorialContentService.deleteInsight(id, adminEmail);
+      res.json({ success: true, id });
+    } catch (err: any) {
+      res.status(500).json({ error: '인사이트 삭제 실패', details: err.message });
     }
   });
 

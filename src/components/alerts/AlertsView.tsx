@@ -33,6 +33,8 @@ import { notificationService } from '../../services/notificationService';
 import { fcmPushService, PushStatus } from '../../services/fcmPushService';
 import { SetPriceAlertModal } from '../stocks/SetPriceAlertModal';
 import { WatchlistNotificationSettingsModal } from './WatchlistNotificationSettingsModal';
+import { inferStockCurrency, formatMoney } from '../../utils/currency';
+import { dedupeById } from '../../utils/dedupe';
 
 export const AlertsView: React.FC = () => {
   const { 
@@ -90,8 +92,8 @@ export const AlertsView: React.FC = () => {
         notificationService.getNotifications(user?.id),
         notificationService.getUserAlertRules(user?.id),
       ]);
-      setNotifications(notifsData);
-      setRules(rulesData);
+      setNotifications(dedupeById(notifsData));
+      setRules(dedupeById(rulesData));
     } catch (err) {
       console.warn('[AlertsView] loadData error:', err);
     } finally {
@@ -168,7 +170,7 @@ export const AlertsView: React.FC = () => {
     // Poll notifications every 5 seconds to catch server-generated alerts
     const interval = setInterval(() => {
       notificationService.getNotifications(user?.id)
-        .then(res => setNotifications(res))
+        .then(res => setNotifications(dedupeById(res)))
         .catch(() => {});
     }, 5000);
     return () => clearInterval(interval);
@@ -216,7 +218,7 @@ export const AlertsView: React.FC = () => {
         enabled: true,
       });
 
-      setRules(prev => [newRule, ...prev]);
+      setRules(prev => dedupeById([newRule, ...prev]));
       setIsRuleModalOpen(false);
       showToast(
         `${newRule.symbolName} [${getAlertTypeName(ruleType)}] 알림 조건(${ruleValue}${getAlertUnit(ruleType)})이 등록되었습니다.`,
@@ -702,11 +704,15 @@ export const AlertsView: React.FC = () => {
 
                         <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
                           {notif.message}
-                          {notif.metrics?.price !== undefined && (
-                            <span className="ml-1 font-bold text-slate-900 dark:text-white">
-                              (당시가: {notif.metrics.price.toLocaleString()}원)
-                            </span>
-                          )}
+                          {notif.metrics?.price !== undefined && (() => {
+                            const matched = notif.stockSymbol ? stocks.find(s => s.symbol === notif.stockSymbol) : undefined;
+                            const cur = inferStockCurrency(notif.stockSymbol, matched?.market, matched?.currency);
+                            return (
+                              <span className="ml-1 font-bold text-slate-900 dark:text-white">
+                                (당시가: {formatMoney(notif.metrics.price, cur)})
+                              </span>
+                            );
+                          })()}
                         </p>
 
                         {/* 감지 사유 명시 */}
@@ -831,7 +837,7 @@ export const AlertsView: React.FC = () => {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-              {priceAlerts.map(alert => {
+              {dedupeById(priceAlerts).map(alert => {
                 const currentStock = stocks.find(s => s.symbol === alert.symbol);
                 const currentPrice = currentStock?.price || 0;
                 const diffPct = currentPrice > 0 ? ((alert.targetPrice - currentPrice) / currentPrice) * 100 : 0;
@@ -915,14 +921,14 @@ export const AlertsView: React.FC = () => {
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-slate-500 dark:text-slate-400 font-medium">설정 목표가:</span>
                         <span className="font-mono font-black text-sm text-slate-900 dark:text-white">
-                          {alert.targetPrice.toLocaleString()}원
+                          {formatMoney(alert.targetPrice, inferStockCurrency(alert.symbol, currentStock?.market, currentStock?.currency))}
                         </span>
                       </div>
 
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-slate-500 dark:text-slate-400 font-medium">실시간 현재가:</span>
                         <span className="font-mono font-bold text-xs text-slate-700 dark:text-slate-300">
-                          {currentPrice > 0 ? `${currentPrice.toLocaleString()}원` : '-'}
+                          {currentPrice > 0 ? formatMoney(currentPrice, inferStockCurrency(alert.symbol, currentStock?.market, currentStock?.currency)) : '-'}
                           {diffPct !== 0 && (
                             <span className={`ml-1.5 text-[11px] ${diffPct > 0 ? 'text-rose-500' : 'text-blue-500'}`}>
                               ({diffPct > 0 ? `+${diffPct.toFixed(1)}%` : `${diffPct.toFixed(1)}%`})
@@ -940,7 +946,9 @@ export const AlertsView: React.FC = () => {
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             <span>목표가 도달 완료</span>
                             {alert.triggeredPrice && (
-                              <span className="font-mono text-slate-400">({alert.triggeredPrice.toLocaleString()}원)</span>
+                              <span className="font-mono text-slate-400">
+                                ({formatMoney(alert.triggeredPrice, inferStockCurrency(alert.symbol, currentStock?.market, currentStock?.currency))})
+                              </span>
                             )}
                           </span>
                         ) : alert.enabled === false ? (
@@ -1067,7 +1075,7 @@ export const AlertsView: React.FC = () => {
                       <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-100 dark:border-slate-800">
                         <span className="text-slate-400">현재가:</span>
                         <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
-                          {currentStock.price.toLocaleString()}원 ({currentStock.changePercent > 0 ? '+' : ''}{currentStock.changePercent}%)
+                          {formatMoney(currentStock.price, inferStockCurrency(currentStock.symbol, currentStock.market, currentStock.currency))} ({currentStock.changePercent > 0 ? '+' : ''}{currentStock.changePercent}%)
                         </span>
                       </div>
                     )}

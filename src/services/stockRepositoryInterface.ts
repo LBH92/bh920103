@@ -3,7 +3,7 @@
  * Defines contract implemented by both MockStockRepository and RealStockRepository
  */
 
-import { Stock, StockIndex, ExchangeRate, CandleData, StockNews, OrderBook, KiwoomChartPeriod, KiwoomChartResponse } from '../types';
+import { Stock, StockIndex, ExchangeRate, CandleData, StockNews, OrderBook, KiwoomChartPeriod, KiwoomChartResponse, ChartCandleType } from '../types';
 
 export type ChartPeriod = '1m' | '5m' | '15m' | '30m' | '1h' | 'day' | '1D' | '1W' | '1M' | '3M' | '6M' | '1Y';
 
@@ -15,9 +15,22 @@ export interface VolumeAnalysisData {
   tradingValue: number;
   executionStrength: number;
   turnoverRatio: number;
-  foreignNetBuy: number;
-  instNetBuy: number;
-  individualNetBuy: number;
+  foreignNetBuy: number | null;
+  instNetBuy: number | null;
+  individualNetBuy: number | null;
+  foreignNetBuyAmountMillion?: number | null;
+  instNetBuyAmountMillion?: number | null;
+  individualNetBuyAmountMillion?: number | null;
+  foreignNetBuyQty?: number | null;
+  instNetBuyQty?: number | null;
+  individualNetBuyQty?: number | null;
+  investorUnit?: '억원' | '백만원' | '주' | '천주';
+  investorQtyUnit?: '주' | '천주';
+  investorDataSource?: string;
+  investorBaseDate?: string;
+  investorUpdateTime?: string;
+  investorDataAvailable?: boolean;
+  isDirectInvestorIndividual?: boolean;
 }
 
 export type StockDataSourceType = 'MOCK' | 'REAL';
@@ -41,7 +54,7 @@ export interface IStockRepository {
   /**
    * Search stocks by query
    */
-  searchStocks(options: { query: string; limit?: number; market?: string }): Promise<Stock[]>;
+  searchStocks(options: { query: string; limit?: number; market?: string; signal?: AbortSignal }): Promise<Stock[]>;
 
   /**
    * Get historical chart candles
@@ -49,9 +62,13 @@ export interface IStockRepository {
   getChartCandles(symbol: string, period: ChartPeriod): Promise<CandleData[]>;
 
   /**
-   * Get real Kiwoom Open API chart (TR ka10080 분봉, ka10081 일봉)
+   * Get real chart data with metadata (candleType, date navigation, OHLCV)
    */
-  getKiwoomChart?(symbol: string, period: KiwoomChartPeriod): Promise<KiwoomChartResponse>;
+  getKiwoomChart?(
+    symbol: string,
+    period: KiwoomChartPeriod,
+    options?: { candleType?: ChartCandleType; date?: string; signal?: AbortSignal }
+  ): Promise<KiwoomChartResponse>;
 
   /**
    * Get related news

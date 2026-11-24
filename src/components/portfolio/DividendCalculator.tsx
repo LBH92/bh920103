@@ -13,10 +13,12 @@ import {
 import { portfolioService } from '../../services/portfolioService';
 import { dividendService, CalculatedDividendResult } from '../../services/dividendService';
 import { useApp } from '../../context/AppContext';
+import { formatMoney, inferFiatCurrency, validateExchangeRate } from '../../utils/currency';
 
 export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
   const { exchangeRate, navigateToStock } = useApp();
-  const currentRate = exchangeRate?.rate || 1400;
+  const fxCheck = validateExchangeRate(exchangeRate);
+  const validFxRate = fxCheck.valid ? fxCheck.rate : null;
 
   const [dividendResults, setDividendResults] = useState<CalculatedDividendResult[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -29,12 +31,13 @@ export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
     try {
       const holdings = await portfolioService.getVirtualHoldings(uid);
       const results: CalculatedDividendResult[] = holdings.map(h => {
+        const cur = inferFiatCurrency(h.symbol, h.market, h.currency);
         return dividendService.calculateDividend(
           h.symbol,
           h.quantity,
           h.name,
-          h.currency,
-          currentRate
+          cur,
+          validFxRate
         );
       });
 
@@ -49,21 +52,35 @@ export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
 
   useEffect(() => {
     loadData();
-  }, [uid, currentRate]);
+  }, [uid, validFxRate]);
 
-  // Aggregate totals in KRW
+  const hasUsdDividend = dividendResults.some(item => item.currency === 'USD' && item.hasDividend);
+  const canAggregateKRW = !hasUsdDividend || (fxCheck.valid && validFxRate !== null);
+
+  // Aggregate native KRW, native USD, and optionally FX-converted KRW totals
   const totals = dividendResults.reduce(
     (acc, item) => {
-      acc.preTaxKRW += item.annualPreTaxKRW;
-      acc.postTaxKRW += item.annualPostTaxKRW;
-      acc.taxKRW += (item.annualPreTaxKRW - item.annualPostTaxKRW);
+      if (item.currency === 'USD') {
+        acc.preTaxUSD += item.annualPreTaxDividend;
+        acc.postTaxUSD += item.annualPostTaxDividend;
+      } else {
+        acc.preTaxNativeKRW += item.annualPreTaxDividend;
+        acc.postTaxNativeKRW += item.annualPostTaxDividend;
+      }
+
+      if (canAggregateKRW && item.annualPreTaxKRW !== null && item.annualPostTaxKRW !== null) {
+        acc.preTaxKRW += item.annualPreTaxKRW;
+        acc.postTaxKRW += item.annualPostTaxKRW;
+        acc.taxKRW += (item.annualPreTaxKRW - item.annualPostTaxKRW);
+      }
+
       if (item.hasDividend) acc.dividendStockCount += 1;
       return acc;
     },
-    { preTaxKRW: 0, postTaxKRW: 0, taxKRW: 0, dividendStockCount: 0 }
+    { preTaxNativeKRW: 0, postTaxNativeKRW: 0, preTaxUSD: 0, postTaxUSD: 0, preTaxKRW: 0, postTaxKRW: 0, taxKRW: 0, dividendStockCount: 0 }
   );
 
-  const monthlyAveragePostTaxKRW = Math.round(totals.postTaxKRW / 12);
+  const monthlyAveragePostTaxKRW = canAggregateKRW ? Math.round(totals.postTaxKRW / 12) : null;
 
   if (loading) {
     return (
@@ -114,11 +131,15 @@ export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
           <span className="text-slate-500 dark:text-slate-400 text-xs block mb-1">
             연간 총 배당금 (세전)
           </span>
-          <p className="text-lg sm:text-xl font-black font-mono text-slate-900 dark:text-white">
-            {totals.preTaxKRW.toLocaleString()}원
-          </p>
-          <span className="text-[10px] text-slate-400">
-            보유 종목 연간 DPS × 수량 합산
+          {canAggregateKRW ? (
+            <p className="text-lg sm:text-xl font-black font-mono text-slate-900 dark:text-white">
+              {formatMoney(totals.preTaxKRW, 'KRW')}
+            </p>
+          ) : (
+            <p className="text-sm font-bold text-rose-500">환율 미확인 (원화 환산 보류)</p>
+          )}
+          <span className="text-[10px] text-slate-400 font-mono block">
+            KRW {formatMoney(totals.preTaxNativeKRW, 'KRW')} / USD {formatMoney(totals.preTaxUSD, 'USD')}
           </span>
         </div>
 
@@ -127,12 +148,23 @@ export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
           <span className="text-slate-500 dark:text-slate-400 text-xs block mb-1">
             연간 실수령 배당금 (세후)
           </span>
-          <p className="text-lg sm:text-xl font-black font-mono text-emerald-600 dark:text-emerald-400">
-            {totals.postTaxKRW.toLocaleString()}원
-          </p>
-          <span className="text-[10px] text-slate-400">
-            원천징수세액 -{totals.taxKRW.toLocaleString()}원 (15.4%)
-          </span>
+          {canAggregateKRW ? (
+            <>
+              <p className="text-lg sm:text-xl font-black font-mono text-emerald-600 dark:text-emerald-400">
+                {formatMoney(totals.postTaxKRW, 'KRW')}
+              </p>
+              <span className="text-[10px] text-slate-400 font-mono block">
+                원천징수세액 -{formatMoney(totals.taxKRW, 'KRW')} (15.4%)
+              </span>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-bold text-rose-500">환율 미확인</p>
+              <span className="text-[10px] text-slate-400 font-mono block">
+                KRW {formatMoney(totals.postTaxNativeKRW, 'KRW')} / USD {formatMoney(totals.postTaxUSD, 'USD')}
+              </span>
+            </>
+          )}
         </div>
 
         {/* 월평균 실수령 배당금 */}
@@ -142,7 +174,7 @@ export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
             <Wallet className="w-4 h-4 text-emerald-500" />
           </div>
           <p className="text-lg sm:text-xl font-black font-mono text-slate-900 dark:text-white">
-            {monthlyAveragePostTaxKRW.toLocaleString()}원 / 월
+            {monthlyAveragePostTaxKRW !== null ? `${formatMoney(monthlyAveragePostTaxKRW, 'KRW')} / 월` : '환산 보류'}
           </p>
           <span className="text-[10px] text-slate-400">
             매월 연금형 현금 흐름 환산치
@@ -157,8 +189,10 @@ export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
           <p className="text-lg sm:text-xl font-black font-mono text-slate-900 dark:text-white">
             {totals.dividendStockCount} / {dividendResults.length}종목
           </p>
-          <span className="text-[10px] text-slate-400">
-            기준 환율 {currentRate.toLocaleString()}원/달러 적용
+          <span className={`text-[10px] font-mono ${fxCheck.valid ? 'text-slate-400' : 'text-rose-500'}`}>
+            {fxCheck.valid && validFxRate
+              ? `기준 환율 ₩${validFxRate.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}/USD (${fxCheck.lastUpdated})`
+              : '환율 확인 불가 — 원화 환산 중단'}
           </span>
         </div>
       </div>
@@ -235,7 +269,7 @@ export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
                       <td className="py-3 px-3 text-right">
                         {item.hasDividend ? (
                           <span className="font-bold text-slate-900 dark:text-white">
-                            {isUSD ? `$${item.annualDPS.toFixed(2)}` : `${item.annualDPS.toLocaleString()}원`}
+                            {formatMoney(item.annualDPS, item.currency)}
                           </span>
                         ) : (
                           <span className="text-slate-400 font-sans text-[11px]">-</span>
@@ -269,11 +303,13 @@ export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
                         {item.hasDividend ? (
                           <>
                             <span className="font-bold text-slate-900 dark:text-white block">
-                              {isUSD ? `$${item.annualPreTaxDividend.toFixed(2)}` : `${item.annualPreTaxDividend.toLocaleString()}원`}
+                              {formatMoney(item.annualPreTaxDividend, item.currency)}
                             </span>
                             {isUSD && (
                               <span className="text-[10px] text-slate-400 block">
-                                ≈ {item.annualPreTaxKRW.toLocaleString()}원
+                                {item.fxApplied && item.annualPreTaxKRW !== null
+                                  ? `≈ ${formatMoney(item.annualPreTaxKRW, 'KRW')}`
+                                  : '원화 환산 보류'}
                               </span>
                             )}
                           </>
@@ -287,11 +323,13 @@ export const DividendCalculator: React.FC<{ uid: string }> = ({ uid }) => {
                         {item.hasDividend ? (
                           <>
                             <span className="font-bold text-emerald-600 dark:text-emerald-400 block">
-                              {isUSD ? `$${item.annualPostTaxDividend.toFixed(2)}` : `${item.annualPostTaxDividend.toLocaleString()}원`}
+                              {formatMoney(item.annualPostTaxDividend, item.currency)}
                             </span>
                             {isUSD && (
                               <span className="text-[10px] text-slate-400 block">
-                                ≈ {item.annualPostTaxKRW.toLocaleString()}원
+                                {item.fxApplied && item.annualPostTaxKRW !== null
+                                  ? `≈ ${formatMoney(item.annualPostTaxKRW, 'KRW')}`
+                                  : '원화 환산 보류'}
                               </span>
                             )}
                           </>

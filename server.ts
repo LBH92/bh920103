@@ -21,6 +21,8 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
+import zlib from 'zlib';
+import { monitorEventLoopDelay } from 'perf_hooks';
 import { fileURLToPath } from 'url';
 import { 
   fetchRealStockData, 
@@ -31,19 +33,67 @@ import {
   fetchRealIndicesWithSource,
   fetchRealExchangeRate,
   fetchUnifiedStockChart,
+  fetchStockInvestorFlow,
+  flushLastValidStockCache,
+  pruneServerCache,
+  toCompactStockQuote,
   TRACKED_STOCKS
 } from './server/stockApiService';
-import { Stock, AppNotification, MarketFilterType, RankingSortType, KiwoomChartResponse } from './src/types';
+import { Stock, AppNotification, MarketFilterType, RankingSortType, KiwoomChartResponse, ChartCandleType } from './src/types';
 import { kiwoomApiService } from './server/kiwoomApiService';
 import { rankingApiService } from './server/rankingApiService';
 import { indexApiService } from './server/indexApiService';
 import { matchHangulSearch } from './src/utils/hangul';
 import { isUSStockSymbol, standardizeTicker } from './src/utils/stocks/ticker';
+import { sanitizeAndValidateCandles } from './src/utils/chartSanitizer';
 import { usStockSearchService } from './server/usStockMaster';
 import { cryptoMasterService } from './server/cryptoMasterService';
+import { getKrStockEnMeta } from './server/krStockEnNames';
 import { serverResilienceService } from './server/serverResilienceService';
 import { randomUUID } from 'crypto';
 import { INITIAL_STOCKS, INITIAL_INDICES, INITIAL_EXCHANGE_RATE, generateOrderBook } from './src/services/mockData';
+
+const eventLoopMonitor = monitorEventLoopDelay({ resolution: 20 });
+eventLoopMonitor.enable();
+
+process.on('unhandledRejection', (reason: any) => {
+  const msg = reason?.message || String(reason || 'Unhandled Rejection');
+  console.error('[Process][unhandledRejection]', msg);
+  serverResilienceService.recordError({
+    type: 'INTERNAL_SERVER_ERROR',
+    message: `UnhandledRejection: ${msg}`,
+    service: 'Process',
+  });
+});
+
+process.on('uncaughtException', (err: Error) => {
+  console.error('[Process][uncaughtException]', err?.message || err);
+  serverResilienceService.recordError({
+    type: 'INTERNAL_SERVER_ERROR',
+    message: `UncaughtException: ${err?.message || String(err)}`,
+    service: 'Process',
+  });
+});
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const current = nextIndex++;
+        results[current] = await worker(items[current], current);
+      }
+    })
+  );
+  return results;
+}
 import {
   evaluateMarketData,
   getMonitoringConfig,
@@ -89,7 +139,7 @@ import {
   get_volume_spikes,
 } from './server/aiStockQueryService';
 import { newsApiService } from './server/newsApiService';
-import { createAdminRouter } from './server/adminServerService';
+import { createAdminRouter, verifyFirebaseIdToken } from './server/adminServerService';
 import { fcmServerService } from './server/fcmServerService';
 import { getGlobalMarketSummary } from './server/globalMarketService';
 import { unifiedFinancialHubService } from './server/unifiedFinancialHubService';
@@ -101,19 +151,22 @@ import { chatImageUploadService } from './server/chatImageUploadService';
 import multer from 'multer';
 import { verifyAndAward } from './server/activityService';
 import { disclosureApiService } from './server/disclosureApiService';
+import { editorialContentService } from './server/editorialContentService';
+import { seoPrerenderService, STATIC_PAGE_SEO } from './server/seoPrerenderService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const isProduction = process.env.NODE_ENV === 'production';
-const PORT = 3000;
+const PORT = isProduction ? (Number(process.env.PORT) || 3000) : 3000;
 
 // Environment Data Source Configuration:
 // Default strictly to REAL stock data source (Live Exchange & Yahoo Finance feeds)
 const isFixedIpServer = kiwoomApiService.isFixedIpServer();
-const DEFAULT_SOURCE = process.env.STOCK_DATA_SOURCE || 'REAL';
+const RAW_STOCK_DATA_SOURCE = (process.env.STOCK_DATA_SOURCE || 'REAL').trim().toUpperCase();
+const DEFAULT_SOURCE = (RAW_STOCK_DATA_SOURCE === 'MOCK' || RAW_STOCK_DATA_SOURCE === 'TEST') ? 'MOCK' : 'REAL';
 
-console.log(`[Server] Default Stock Data Source: ${DEFAULT_SOURCE} (isProduction: ${isProduction}, isFixedIpServer: ${isFixedIpServer}, KiwoomConfigured: ${kiwoomApiService.isConfigured()})`);
+console.log(`[Server] Default Stock Data Source: ${DEFAULT_SOURCE} (raw: ${RAW_STOCK_DATA_SOURCE}, isProduction: ${isProduction}, isFixedIpServer: ${isFixedIpServer}, KiwoomConfigured: ${kiwoomApiService.isConfigured()})`);
 
 // In-Memory Server Mock Stock Data State (Simulating Exchange Live Feed for MOCK mode)
 let mockServerStocks = [...INITIAL_STOCKS];
@@ -160,10 +213,10 @@ export async function runRealKiwoomMarketEvaluation(
       symbolSet.add('000660');
     }
 
-    // 2. Fetch real Kiwoom quotes for each monitored symbol
+    // 2. Fetch real quotes concurrently (bounded) for monitored symbols
     // (Uses serverCache & kiwoom stockPriceCache so multiple users watching the same stock share 1 fetch)
     const realStocks: Stock[] = [];
-    for (const sym of Array.from(symbolSet)) {
+    await mapWithConcurrency(Array.from(symbolSet), 6, async (sym) => {
       try {
         const res = await fetchRealStockDataWithSource(sym);
         if (
@@ -175,19 +228,20 @@ export async function runRealKiwoomMarketEvaluation(
         ) {
           realStocks.push(res.stock);
         }
-      } catch (err) {
-        // Safe skip on single symbol network/rate-limit error (Requirement 11)
+      } catch {
+        // Safe skip on single symbol network/rate-limit error
       }
-    }
+    });
 
     // 3. Fetch real Kiwoom indices (KOSPI & KOSDAQ)
     const indicesRes = await fetchRealIndicesWithSource();
     const realIndices = indicesRes.indices;
 
-    // 4. Update AI server references with real data
+    // 4. Update AI server references with real data & real FX
     try {
-      updateServerDataReferences(realStocks, realIndices, mockServerExchangeRate);
-      updateQueryServiceData(realStocks, realIndices, mockServerExchangeRate);
+      const latestFx = await fetchRealExchangeRate().catch(() => mockServerExchangeRate);
+      updateServerDataReferences(realStocks, realIndices, latestFx);
+      updateQueryServiceData(realStocks, realIndices, latestFx);
     } catch {}
 
     // 5. Run Market-Wide and User Anomaly Evaluation on REAL Kiwoom Data
@@ -200,9 +254,9 @@ export async function runRealKiwoomMarketEvaluation(
   }
 }
 
-// Background Periodic Evaluation Loop (runs every 8 seconds, deduplicated)
+// Background Periodic Evaluation Loop (runs every 15 seconds, deduplicated & tracked)
 let isEvaluatingBackground = false;
-setInterval(async () => {
+const bgEvalInterval = setInterval(async () => {
   if (isEvaluatingBackground) return;
   isEvaluatingBackground = true;
   try {
@@ -212,7 +266,7 @@ setInterval(async () => {
   } finally {
     isEvaluatingBackground = false;
   }
-}, 8000);
+}, 15000);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -222,6 +276,76 @@ const upload = multer({
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
+
+  // Origin-allowlisted CORS for Capacitor mobile WebView & Cloud Run preview domains
+  app.use('/api', (req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      const isAllowed =
+        origin === 'capacitor://localhost' ||
+        origin === 'ionic://localhost' ||
+        origin === 'http://localhost' ||
+        origin === 'https://localhost' ||
+        origin.startsWith('http://localhost:') ||
+        origin.startsWith('http://127.0.0.1:') ||
+        /^https:\/\/[a-z0-9.-]+\.run\.app$/i.test(origin) ||
+        (process.env.APP_URL && origin === process.env.APP_URL.replace(/\/+$/, ''));
+      if (isAllowed) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-User-Uid, X-Requested-With');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+      }
+    }
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(204);
+    }
+    next();
+  });
+
+  const clientTickStreams = new Set<express.Response>();
+  const clientOrderBookStreams = new Set<express.Response>();
+
+  // Non-blocking gzip compression for JSON payloads >= 1KB (Nginx/proxy compatible)
+  app.use((req, res, next) => {
+    if (req.method === 'HEAD') return next();
+    const acceptEncoding = String(req.headers['accept-encoding'] || '');
+
+    const origJson = res.json.bind(res);
+    res.json = ((body?: any) => {
+      res.vary('Accept-Encoding');
+      if (
+        !/\bgzip\b/i.test(acceptEncoding) ||
+        res.headersSent ||
+        res.getHeader('Content-Encoding') ||
+        res.statusCode === 204 ||
+        res.statusCode === 304
+      ) {
+        return origJson(body);
+      }
+      let jsonStr: string;
+      try {
+        jsonStr = JSON.stringify(body);
+      } catch {
+        return origJson(body);
+      }
+      if (!jsonStr || Buffer.byteLength(jsonStr, 'utf8') < 1024) {
+        return origJson(body);
+      }
+      zlib.gzip(jsonStr, (err, compressed) => {
+        if (err || res.headersSent) {
+          return origJson(body);
+        }
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Content-Length', String(compressed.length));
+        res.end(compressed);
+      });
+      return res;
+    }) as any;
+    next();
+  });
 
   // -------------------------------------------------------------
   // Request ID Tracing & Sanitized Logger Middleware
@@ -243,6 +367,132 @@ async function startServer() {
   app.get('/manifest.json', (_req, res) => {
     res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
     res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
+  });
+
+  // -------------------------------------------------------------
+  // Dynamic SEO Sitemap & Robots.txt (Must precede static public file middleware)
+  // -------------------------------------------------------------
+  app.get('/robots.txt', (req, res) => {
+    const baseUrl = seoPrerenderService.resolveBaseUrl(req);
+    const content = `# robots.txt for Byeongdol Investment
+User-agent: *
+Allow: /
+Allow: /insights
+Allow: /insights/*
+Allow: /about
+Allow: /privacy
+Allow: /terms
+Allow: /disclaimer
+Allow: /contact
+
+Disallow: /admin
+Disallow: /admin/*
+Disallow: /profile
+Disallow: /api/*
+
+Sitemap: ${baseUrl}/sitemap.xml
+`;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(content);
+  });
+
+  app.get('/sitemap.xml', async (req, res) => {
+    try {
+      const baseUrl = seoPrerenderService.resolveBaseUrl(req);
+      let publishedList: any[] = [];
+      try {
+        publishedList = await editorialContentService.getPublicPublishedInsights(undefined, 100);
+      } catch {}
+
+      const coreUrls = [
+        { path: '', changefreq: 'daily', priority: '1.0' },
+        { path: '/insights', changefreq: 'daily', priority: '0.9' },
+        { path: '/insights/domestic-market', changefreq: 'daily', priority: '0.8' },
+        { path: '/insights/us-market', changefreq: 'daily', priority: '0.8' },
+        { path: '/insights/economy', changefreq: 'daily', priority: '0.8' },
+        { path: '/about', changefreq: 'monthly', priority: '0.5' },
+        { path: '/privacy', changefreq: 'monthly', priority: '0.5' },
+        { path: '/terms', changefreq: 'monthly', priority: '0.5' },
+        { path: '/disclaimer', changefreq: 'monthly', priority: '0.5' },
+        { path: '/contact', changefreq: 'monthly', priority: '0.5' },
+      ];
+
+      const xmlEntries = coreUrls.map(u => `  <url>
+    <loc>${baseUrl}${u.path}</loc>
+    <changefreq>${u.changefreq}</changefreq>
+    <priority>${u.priority}</priority>
+  </url>`).join('\n');
+
+      const formatLastMod = (raw: any): string | null => {
+        if (!raw) return null;
+        // 1. Firestore Timestamp instance with toDate()
+        if (typeof raw?.toDate === 'function') {
+          try {
+            const d = raw.toDate();
+            if (d instanceof Date && !isNaN(d.getTime())) {
+              return d.toISOString().split('T')[0];
+            }
+          } catch {}
+        }
+        // 2. Firestore Timestamp serialized object with _seconds or seconds
+        if (typeof raw?.seconds === 'number' || typeof raw?._seconds === 'number') {
+          const secs = raw.seconds ?? raw._seconds;
+          const d = new Date(secs * 1000);
+          if (!isNaN(d.getTime())) {
+            return d.toISOString().split('T')[0];
+          }
+        }
+        // 3. Date instance
+        if (raw instanceof Date) {
+          if (!isNaN(raw.getTime())) {
+            return raw.toISOString().split('T')[0];
+          }
+        }
+        // 4. Epoch timestamp in seconds or milliseconds
+        if (typeof raw === 'number') {
+          const ms = raw > 1e11 ? raw : raw * 1000;
+          const d = new Date(ms);
+          if (!isNaN(d.getTime())) {
+            return d.toISOString().split('T')[0];
+          }
+        }
+        // 5. ISO String or parseable date string
+        if (typeof raw === 'string') {
+          if (raw.includes('T')) {
+            const part = raw.split('T')[0];
+            if (/^\d{4}-\d{2}-\d{2}$/.test(part)) return part;
+          }
+          const d = new Date(raw);
+          if (!isNaN(d.getTime())) {
+            return d.toISOString().split('T')[0];
+          }
+        }
+        return null;
+      };
+
+      const articleEntries = publishedList.map(a => {
+        const lastMod = formatLastMod(a.updatedAt || a.createdAt || a.publishedAt);
+        const lastModTag = lastMod ? `\n    <lastmod>${lastMod}</lastmod>` : '';
+        return `  <url>
+    <loc>${baseUrl}/insights/${a.id}</loc>${lastModTag}
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>`;
+      }).join('\n');
+
+      const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${xmlEntries}
+${articleEntries}
+</urlset>`;
+
+      res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+      res.setHeader('Cache-Control', 'public, max-age=1800');
+      res.send(sitemapXml);
+    } catch (err: any) {
+      res.status(500).send(`Error generating sitemap: ${err.message}`);
+    }
   });
 
   // Serve static public assets (icons, etc.)
@@ -281,11 +531,16 @@ async function startServer() {
   // Liveness Check: Confirms the HTTP process is running and responding
   app.get('/health', (_req, res) => {
     const memory = process.memoryUsage();
+    const meanLagMs = Number((eventLoopMonitor.mean / 1e6).toFixed(2));
     res.status(200).json({
       status: 'OK',
       timestamp: new Date().toISOString(),
       uptimeSeconds: Math.floor(process.uptime()),
       memoryUsageMB: Math.floor(memory.heapUsed / 1024 / 1024),
+      heapTotalMB: Math.floor(memory.heapTotal / 1024 / 1024),
+      rssMB: Math.floor(memory.rss / 1024 / 1024),
+      eventLoopLagMs: Number.isFinite(meanLagMs) ? meanLagMs : 0,
+      sseClients: clientTickStreams.size + clientOrderBookStreams.size,
       environment: process.env.NODE_ENV || 'development',
     });
   });
@@ -345,6 +600,17 @@ async function startServer() {
     resetAt: number;
   }
   const rateLimitMap = new Map<string, RateLimitRecord>();
+  const MAX_RATE_LIMIT_ENTRIES = 5000;
+
+  const rateLimitPruneInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [key, rec] of rateLimitMap.entries()) {
+      if (now > rec.resetAt) {
+        rateLimitMap.delete(key);
+      }
+    }
+    pruneServerCache();
+  }, 60000);
 
   const createRateLimiter = (maxRequests: number, windowMs: number) => {
     return (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -355,6 +621,10 @@ async function startServer() {
 
       if (!record || now > record.resetAt) {
         record = { count: 1, resetAt: now + windowMs };
+        if (rateLimitMap.size >= MAX_RATE_LIMIT_ENTRIES) {
+          const oldestKey = rateLimitMap.keys().next().value;
+          if (oldestKey) rateLimitMap.delete(oldestKey);
+        }
         rateLimitMap.set(key, record);
       } else {
         record.count++;
@@ -432,6 +702,7 @@ async function startServer() {
   // 1. All Stocks
   app.get('/api/stocks', async (req, res) => {
     const source = getRequestedSource(req);
+    const includeCandles = req.query.includeCandles === 'true';
     res.setHeader('Cache-Control', 'no-cache');
 
     if (source !== 'MOCK') {
@@ -439,7 +710,7 @@ async function startServer() {
         const { stocks, dataSource } = await fetchAllRealStocksWithSource();
         if (stocks && stocks.length > 0) {
           res.setHeader('X-Data-Source', dataSource);
-          return res.json(stocks);
+          return res.json(includeCandles ? stocks : stocks.map(toCompactStockQuote));
         }
       } catch (err: any) {
         console.log('[Server] Error fetching real stocks, falling back:', err.message);
@@ -448,7 +719,7 @@ async function startServer() {
 
     // Fallback to mock data
     res.setHeader('X-Data-Source', 'mock');
-    res.json(mockServerStocks);
+    res.json(includeCandles ? mockServerStocks : mockServerStocks.map(toCompactStockQuote));
   });
 
   // 1-1. Kiwoom API Diagnostics & Live Test
@@ -608,15 +879,14 @@ async function startServer() {
   });
 
   // 1-1-1. Real-time Stock Execution Ticks (SSE Stream)
-  const clientTickStreams = new Set<express.Response>();
-
   // Relay Kiwoom WebSocket ticks to all active SSE browser clients
   kiwoomApiService.onTick((tick) => {
+    if (clientTickStreams.size === 0) return;
     const payload = `data: ${JSON.stringify(tick)}\n\n`;
     for (const client of clientTickStreams) {
       try {
         client.write(payload);
-      } catch (err) {
+      } catch {
         clientTickStreams.delete(client);
       }
     }
@@ -626,6 +896,7 @@ async function startServer() {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
     clientTickStreams.add(res);
@@ -637,15 +908,14 @@ async function startServer() {
   });
 
   // 1-1-2. Real-time 10-Level Order Book (SSE Stream)
-  const clientOrderBookStreams = new Set<express.Response>();
-
   // Relay Kiwoom WebSocket order book updates to all active SSE browser clients
   kiwoomApiService.onOrderBook((orderBook) => {
+    if (clientOrderBookStreams.size === 0) return;
     const payload = `data: ${JSON.stringify(orderBook)}\n\n`;
     for (const client of clientOrderBookStreams) {
       try {
         client.write(payload);
-      } catch (err) {
+      } catch {
         clientOrderBookStreams.delete(client);
       }
     }
@@ -655,6 +925,7 @@ async function startServer() {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
     clientOrderBookStreams.add(res);
@@ -665,10 +936,21 @@ async function startServer() {
     });
   });
 
-  // Background Simulated Tick Broadcast for SSE clients in Preview Mode or when Kiwoom WS is disconnected
-  setInterval(() => {
+  // Background Simulated Tick Broadcast & SSE keep-alive heartbeat (every 2.5s)
+  let sseHeartbeatTick = 0;
+  const sseBroadcastInterval = setInterval(() => {
     if (clientTickStreams.size === 0 && clientOrderBookStreams.size === 0) return;
+    sseHeartbeatTick++;
+    if (sseHeartbeatTick % 8 === 0) {
+      for (const client of clientTickStreams) {
+        try { client.write(': keep-alive\n\n'); } catch { clientTickStreams.delete(client); }
+      }
+      for (const client of clientOrderBookStreams) {
+        try { client.write(': keep-alive\n\n'); } catch { clientOrderBookStreams.delete(client); }
+      }
+    }
     if (kiwoomApiService.isWsConnected()) return; // Kiwoom live websocket is active
+    if (DEFAULT_SOURCE === 'REAL') return; // Never broadcast simulated ticks/orderbooks in REAL mode
 
     const subscribedList = Array.from(kiwoomApiService.getSubscribedSymbols());
     const targetSymbols = subscribedList.length > 0 ? subscribedList : ['005930', '000660'];
@@ -765,275 +1047,313 @@ async function startServer() {
     }
   });
 
+  // Short-TTL search response cache & in-flight deduplication
+  const searchResponseCache = new Map<string, { data: any[]; timestamp: number }>();
+  const inFlightSearchRequests = new Map<string, Promise<any[]>>();
+  const SEARCH_CACHE_TTL_MS = 5000;
+
   // 1-2. Stock Search API (Must be declared before :symbol)
   app.get('/api/stocks/search', async (req, res) => {
     const query = sanitizeInputText(req.query.q as string, 50).trim();
     const market = sanitizeInputText(req.query.market as string, 10).toUpperCase();
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 12, 50);
 
-    console.log(`[ServerSearch] API called: q="${query}", market="${market}"`);
-
     if (!query) {
       return res.json([]);
     }
 
     const q = query.toLowerCase();
-
-    // 0. Search Cryptocurrency Markets (Upbit & Binance Spot)
-    let cryptoMatches: any[] = [];
-    const shouldSearchCrypto = !market || market === 'ALL' || market === 'COIN';
-    if (shouldSearchCrypto) {
-      try {
-        const cryptoSearchResults = await cryptoMasterService.search(query, { limit: Math.min(limit, 15) });
-        cryptoMatches = await Promise.all(
-          cryptoSearchResults.map(async c => {
-            let price = 0;
-            let change = 0;
-            let changePercent = 0;
-            // Fetch fast live light quote directly from official exchange ticker APIs
-            try {
-              const quote = await cryptoMasterService.getLightQuote(c.symbol);
-              if (quote) {
-                price = quote.price;
-                change = quote.change;
-                changePercent = quote.changePercent;
-              }
-            } catch {}
-
-            return {
-              symbol: c.symbol,
-              name: c.name,
-              nameEn: c.nameEn,
-              market: 'COIN' as const,
-              exchange: c.exchange,
-              productType: 'SPOT' as const,
-              sector: `${c.exchange === 'UPBIT' ? '업비트' : '바이낸스'} 현물 (${c.tradingPair})`,
-              price,
-              change,
-              changePercent,
-              marketCap: 0,
-              currency: c.currency,
-              tradingPair: c.tradingPair,
-              baseCurrency: c.baseAsset,
-              quoteCurrency: c.quoteAsset,
-              warning: c.warning,
-              quoteAvailable: true,
-            };
-          })
-        );
-      } catch (err: any) {
-        console.warn('[ServerSearch] cryptoMasterService search error:', err.message);
-      }
+    const cacheKey = `${q}|${market || 'ALL'}|${limit}`;
+    const cachedSearch = searchResponseCache.get(cacheKey);
+    if (cachedSearch && Date.now() - cachedSearch.timestamp < SEARCH_CACHE_TTL_MS) {
+      res.setHeader('X-Data-Source', 'combined');
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.json(cachedSearch.data);
     }
 
-    // Fast timeout wrapper helper to guarantee search endpoint responds in < 1.2s
-    const fetchQuoteFast = async (sym: string) => {
-      try {
-        const timeout = new Promise<any>((resolve) => setTimeout(() => resolve({ stock: null }), 1200));
-        const quoteRes = await Promise.race([fetchRealStockDataWithSource(sym), timeout]);
-        return quoteRes?.stock || null;
-      } catch {
-        return null;
-      }
-    };
-
-    // 1. Search US Stock Master & Global Markets (supports NASDAQ, NYSE, ETFs, ADRs, and Korean aliases)
-    let usMatches: any[] = [];
-    if (!market || market === 'ALL' || market === 'US') {
-      try {
-        const usSearchResults = await usStockSearchService.search(query, limit);
-        console.log(`[ServerSearch] US search service returned ${usSearchResults.length} items for "${query}"`);
-        usMatches = await Promise.all(
-          usSearchResults.map(async u => {
-            let price = 0;
-            let change = 0;
-            let changePercent = 0;
+    try {
+      let pending = inFlightSearchRequests.get(cacheKey);
+      if (!pending) {
+        pending = (async () => {
+          // 0. Search Cryptocurrency Markets (Upbit & Binance Spot)
+          let cryptoMatches: any[] = [];
+          const shouldSearchCrypto = !market || market === 'ALL' || market === 'COIN';
+          if (shouldSearchCrypto) {
             try {
-              const stock = await fetchQuoteFast(u.symbol);
-              if (stock) {
-                price = stock.price;
-                change = stock.change;
-                changePercent = stock.changePercent;
-              }
-            } catch {}
+              const cryptoSearchResults = await cryptoMasterService.search(query, { limit: Math.min(limit, 15) });
+              cryptoMatches = await Promise.all(
+                cryptoSearchResults.map(async c => {
+                  let price = 0;
+                  let change = 0;
+                  let changePercent = 0;
+                  try {
+                    const quote = await cryptoMasterService.getLightQuote(c.symbol);
+                    if (quote) {
+                      price = quote.price;
+                      change = quote.change;
+                      changePercent = quote.changePercent;
+                    }
+                  } catch {}
 
-            return {
-              symbol: u.symbol,
-              name: u.name,
-              nameEn: u.nameEn,
-              market: 'US' as const,
-              exchange: u.exchange,
-              productType: u.type,
-              sector: u.sector,
-              price,
-              change,
-              changePercent,
-              marketCap: 0,
-              currency: 'USD' as const,
-              quoteAvailable: true,
-            };
-          })
-        );
-      } catch (err: any) {
-        console.warn('[ServerSearch] usStockSearchService error:', err.message);
-      }
-    }
-    console.log(`[ServerSearch] Final US matches: ${usMatches.length}`);
-
-    // 2. Search Domestic Korean Stocks (KOSPI, KOSDAQ, ETF/ETN via Kiwoom master or TRACKED_STOCKS)
-    let domesticResults: any[] = [];
-    const shouldSearchKR = !market || market === 'ALL' || market === 'KR' || market === 'KOSPI' || market === 'KOSDAQ';
-
-    if (shouldSearchKR) {
-      const masterStocks = kiwoomApiService.getMasterStocks();
-      const baseStockList = masterStocks && masterStocks.length > 0
-        ? masterStocks
-        : TRACKED_STOCKS.map(t => ({
-            code: t.symbol,
-            name: t.name,
-            market: t.market,
-            sector: t.sector,
-            lastPrice: 0,
-            marketCap: 0,
-          }));
-
-      const matched = baseStockList.filter(s => {
-        if (market && market !== 'ALL' && market !== 'KR' && s.market !== market) {
-          return false;
-        }
-        return (
-          s.name.toLowerCase().includes(q) ||
-          s.code.toLowerCase().includes(q) ||
-          s.sector.toLowerCase().includes(q) ||
-          matchHangulSearch(s.name, q)
-        );
-      });
-
-      // Priority ranking: Exact > StartsWith > Blue-chip > Shorter Name
-      const majorCodes = new Set([
-        '005930', '000660', '373220', '207940', '005380', '000270', '068270', 
-        '005490', '105560', '035420', '051910', '035720', '028260', '196170', 
-        '247540', '086520', '006400', '012450', '003670', '066570', '001040'
-      ]);
-
-      matched.sort((a, b) => {
-        if (a.code.toLowerCase() === q) return -1;
-        if (b.code.toLowerCase() === q) return 1;
-        if (a.name === query) return -1;
-        if (b.name === query) return 1;
-        if (a.code.toLowerCase().startsWith(q) && !b.code.toLowerCase().startsWith(q)) return -1;
-        if (!a.code.toLowerCase().startsWith(q) && b.code.toLowerCase().startsWith(q)) return 1;
-        if (a.name.startsWith(query) && !b.name.startsWith(query)) return -1;
-        if (!a.name.startsWith(query) && b.name.startsWith(query)) return 1;
-        const aMajor = majorCodes.has(a.code) ? 1 : 0;
-        const bMajor = majorCodes.has(b.code) ? 1 : 0;
-        if (aMajor !== bMajor) return bMajor - aMajor;
-        return a.name.length - b.name.length;
-      });
-
-      domesticResults = await Promise.all(
-        matched.slice(0, limit).map(async m => {
-          let price = m.lastPrice || 0;
-          let change = 0;
-          let changePercent = 0;
-          try {
-            const stock = await fetchQuoteFast(m.code);
-            if (stock) {
-              price = stock.price;
-              change = stock.change;
-              changePercent = stock.changePercent;
+                  return {
+                    symbol: c.symbol,
+                    name: c.name,
+                    nameEn: c.nameEn,
+                    market: 'COIN' as const,
+                    exchange: c.exchange,
+                    productType: 'SPOT' as const,
+                    sector: `${c.exchange === 'UPBIT' ? '업비트' : '바이낸스'} ${c.quoteAsset} 마켓 (현물)`,
+                    price,
+                    change,
+                    changePercent,
+                    marketCap: 0,
+                    currency: c.currency,
+                    tradingPair: c.tradingPair,
+                    baseCurrency: c.baseAsset,
+                    quoteCurrency: c.quoteAsset,
+                    warning: c.warning,
+                    quoteAvailable: true,
+                  };
+                })
+              );
+            } catch (err: any) {
+              console.warn('[ServerSearch] cryptoMasterService search error:', err.message);
             }
-          } catch {}
-          return {
-            symbol: m.code,
-            name: m.name,
-            market: m.market,
-            sector: m.sector,
-            price,
-            change,
-            changePercent,
-            marketCap: m.marketCap || 0,
-            currency: 'KRW' as const,
-            quoteAvailable: true,
+          }
+
+          const fetchQuoteFast = async (sym: string) => {
+            try {
+              const timeout = new Promise<any>((resolve) => setTimeout(() => resolve({ stock: null }), 1200));
+              const quoteRes = await Promise.race([fetchRealStockDataWithSource(sym), timeout]);
+              return quoteRes?.stock || null;
+            } catch {
+              return null;
+            }
           };
-        })
-      );
-    }
 
-    // 3. Search Market Indices & Exchange Rate (only if query matches indicators)
-    const marketIndicators: any[] = [];
-    const isIndicatorQuery = ['코스피', 'kospi', '코스닥', 'kosdaq', '환율', 'usd', 'krw', '원달러'].some(k => q.includes(k) || k.includes(q));
-    if (isIndicatorQuery && (!market || market === 'ALL' || market === 'KR')) {
-      try {
-        if ('코스피'.includes(q) || 'kospi'.includes(q)) {
-          const timeout = new Promise<any>(r => setTimeout(() => r(null), 1200));
-          const indices = await Promise.race([indexApiService.getIndexDetail('KOSPI'), timeout]);
-          if (indices) marketIndicators.push({ symbol: 'KOSPI', name: '코스피', nameEn: 'KOSPI', market: 'KR', price: indices.value, change: indices.change, changePercent: indices.changePercent, currency: 'KRW', productType: 'INDEX' });
-        }
-        if ('코스닥'.includes(q) || 'kosdaq'.includes(q)) {
-          const timeout = new Promise<any>(r => setTimeout(() => r(null), 1200));
-          const kosdaq = await Promise.race([indexApiService.getIndexDetail('KOSDAQ'), timeout]);
-          if (kosdaq) marketIndicators.push({ symbol: 'KOSDAQ', name: '코스닥', nameEn: 'KOSDAQ', market: 'KR', price: kosdaq.value, change: kosdaq.change, changePercent: kosdaq.changePercent, currency: 'KRW', productType: 'INDEX' });
-        }
-        if ('환율'.includes(q) || 'usd'.includes(q) || '원달러'.includes(q)) {
-          const timeout = new Promise<any>(r => setTimeout(() => r(null), 1200));
-          const exchangeRate = await Promise.race([fetchRealExchangeRate(), timeout]);
-          if (exchangeRate) marketIndicators.push({ symbol: 'USD/KRW', name: '원/달러 환율', nameEn: 'USD/KRW', market: 'KR', price: exchangeRate.rate, change: exchangeRate.change, changePercent: exchangeRate.changePercent, currency: 'KRW', productType: 'EXCHANGE_RATE' });
-        }
-      } catch (err: any) {
-        console.warn('[ServerSearch] Indicator search error:', err.message);
+          // 1. Search US Stock Master & Global Markets
+          let usMatches: any[] = [];
+          if (!market || market === 'ALL' || market === 'US') {
+            try {
+              const usSearchResults = await usStockSearchService.search(query, limit);
+              usMatches = await Promise.all(
+                usSearchResults.map(async u => {
+                  let price = 0;
+                  let change = 0;
+                  let changePercent = 0;
+                  try {
+                    const stock = await fetchQuoteFast(u.symbol);
+                    if (stock) {
+                      price = stock.price;
+                      change = stock.change;
+                      changePercent = stock.changePercent;
+                    }
+                  } catch {}
+
+                  return {
+                    symbol: u.symbol,
+                    name: u.name,
+                    nameEn: u.nameEn,
+                    market: 'US' as const,
+                    exchange: u.exchange,
+                    productType: u.type,
+                    sector: u.sector,
+                    price,
+                    change,
+                    changePercent,
+                    marketCap: 0,
+                    currency: 'USD' as const,
+                    quoteAvailable: true,
+                  };
+                })
+              );
+            } catch (err: any) {
+              console.warn('[ServerSearch] usStockSearchService error:', err.message);
+            }
+          }
+
+          // 2. Search Domestic Korean Stocks (KOSPI, KOSDAQ) including English names/aliases
+          let domesticResults: any[] = [];
+          const shouldSearchKR = !market || market === 'ALL' || market === 'KR' || market === 'KOSPI' || market === 'KOSDAQ';
+
+          if (shouldSearchKR) {
+            const masterStocks = kiwoomApiService.getMasterStocks();
+            const baseStockList = masterStocks && masterStocks.length > 0
+              ? masterStocks
+              : TRACKED_STOCKS.map(t => ({
+                  code: t.symbol,
+                  name: t.name,
+                  market: t.market,
+                  sector: t.sector,
+                  lastPrice: 0,
+                  marketCap: 0,
+                }));
+
+            const matched = baseStockList.filter(s => {
+              if (market && market !== 'ALL' && market !== 'KR' && s.market !== market) {
+                return false;
+              }
+              const enMeta = getKrStockEnMeta(s.code);
+              const matchesEn = Boolean(
+                enMeta && (
+                  enMeta.nameEn.toLowerCase().includes(q) ||
+                  enMeta.aliases.some(a => a.includes(q))
+                )
+              );
+              return (
+                s.name.toLowerCase().includes(q) ||
+                s.code.toLowerCase().includes(q) ||
+                s.sector.toLowerCase().includes(q) ||
+                matchHangulSearch(s.name, query) ||
+                matchesEn
+              );
+            });
+
+            const majorCodes = new Set([
+              '005930', '000660', '373220', '207940', '005380', '000270', '068270',
+              '005490', '105560', '035420', '051910', '035720', '028260', '196170',
+              '247540', '086520', '006400', '012450', '003670', '066570', '001040'
+            ]);
+
+            matched.sort((a, b) => {
+              if (a.code.toLowerCase() === q) return -1;
+              if (b.code.toLowerCase() === q) return 1;
+              if (a.name === query) return -1;
+              if (b.name === query) return 1;
+              const aEn = getKrStockEnMeta(a.code);
+              const bEn = getKrStockEnMeta(b.code);
+              const aEnExact = aEn && (aEn.nameEn.toLowerCase() === q || aEn.aliases.includes(q)) ? 1 : 0;
+              const bEnExact = bEn && (bEn.nameEn.toLowerCase() === q || bEn.aliases.includes(q)) ? 1 : 0;
+              if (aEnExact !== bEnExact) return bEnExact - aEnExact;
+              if (a.code.toLowerCase().startsWith(q) && !b.code.toLowerCase().startsWith(q)) return -1;
+              if (!a.code.toLowerCase().startsWith(q) && b.code.toLowerCase().startsWith(q)) return 1;
+              if (a.name.startsWith(query) && !b.name.startsWith(query)) return -1;
+              if (!a.name.startsWith(query) && b.name.startsWith(query)) return 1;
+              const aMajor = majorCodes.has(a.code) ? 1 : 0;
+              const bMajor = majorCodes.has(b.code) ? 1 : 0;
+              if (aMajor !== bMajor) return bMajor - aMajor;
+              return a.name.length - b.name.length;
+            });
+
+            domesticResults = await Promise.all(
+              matched.slice(0, limit).map(async m => {
+                let price = m.lastPrice || 0;
+                let change = 0;
+                let changePercent = 0;
+                const enMeta = getKrStockEnMeta(m.code);
+                try {
+                  const stock = await fetchQuoteFast(m.code);
+                  if (stock) {
+                    price = stock.price;
+                    change = stock.change;
+                    changePercent = stock.changePercent;
+                  }
+                } catch {}
+                return {
+                  symbol: m.code,
+                  name: m.name,
+                  nameEn: enMeta?.nameEn,
+                  market: m.market,
+                  exchange: m.market,
+                  productType: 'EQUITY' as const,
+                  sector: m.sector,
+                  price,
+                  change,
+                  changePercent,
+                  marketCap: m.marketCap || 0,
+                  currency: 'KRW' as const,
+                  quoteAvailable: true,
+                };
+              })
+            );
+          }
+
+          // 3. Market Indicators (exact/partial indicator keywords)
+          const marketIndicators: any[] = [];
+          const isIndicatorQuery = ['코스피', 'kospi', '코스닥', 'kosdaq', '환율', 'usd', 'krw', '원달러'].some(k => q.includes(k) || k.includes(q));
+          if (isIndicatorQuery && (!market || market === 'ALL' || market === 'KR')) {
+            try {
+              if ('코스피'.includes(q) || 'kospi'.includes(q)) {
+                const timeout = new Promise<any>(r => setTimeout(() => r(null), 1200));
+                const indices = await Promise.race([indexApiService.getIndexDetail('KOSPI'), timeout]);
+                if (indices) marketIndicators.push({ symbol: 'KOSPI', name: '코스피', nameEn: 'KOSPI', market: 'KOSPI', exchange: 'KRX', price: indices.value, change: indices.change, changePercent: indices.changePercent, currency: 'KRW', productType: 'INDEX' });
+              }
+              if ('코스닥'.includes(q) || 'kosdaq'.includes(q)) {
+                const timeout = new Promise<any>(r => setTimeout(() => r(null), 1200));
+                const kosdaq = await Promise.race([indexApiService.getIndexDetail('KOSDAQ'), timeout]);
+                if (kosdaq) marketIndicators.push({ symbol: 'KOSDAQ', name: '코스닥', nameEn: 'KOSDAQ', market: 'KOSDAQ', exchange: 'KRX', price: kosdaq.value, change: kosdaq.change, changePercent: kosdaq.changePercent, currency: 'KRW', productType: 'INDEX' });
+              }
+              if ('환율'.includes(q) || 'usd'.includes(q) || '원달러'.includes(q)) {
+                const timeout = new Promise<any>(r => setTimeout(() => r(null), 1200));
+                const exchangeRate = await Promise.race([fetchRealExchangeRate(), timeout]);
+                if (exchangeRate) marketIndicators.push({ symbol: 'USD/KRW', name: '원/달러 환율', nameEn: 'USD/KRW', market: 'KOSPI', exchange: 'FX', price: exchangeRate.rate, change: exchangeRate.change, changePercent: exchangeRate.changePercent, currency: 'KRW', productType: 'INDEX' });
+              }
+            } catch (err: any) {
+              console.warn('[ServerSearch] Indicator search error:', err.message);
+            }
+          }
+
+          let combined = [
+            ...cryptoMatches,
+            ...usMatches,
+            ...domesticResults,
+            ...marketIndicators.filter(m => m.name.toLowerCase().includes(q) || m.symbol.toLowerCase().includes(q)),
+          ];
+
+          combined.sort((a, b) => {
+            const aExactSym = a.symbol.toLowerCase() === q || (a.baseCurrency && a.baseCurrency.toLowerCase() === q);
+            const bExactSym = b.symbol.toLowerCase() === q || (b.baseCurrency && b.baseCurrency.toLowerCase() === q);
+            if (aExactSym && !bExactSym) return -1;
+            if (!aExactSym && bExactSym) return 1;
+
+            const aExactName = a.name.toLowerCase() === q || a.name === query || (a.nameEn && a.nameEn.toLowerCase() === q);
+            const bExactName = b.name.toLowerCase() === q || b.name === query || (b.nameEn && b.nameEn.toLowerCase() === q);
+            if (aExactName && !bExactName) return -1;
+            if (!aExactName && bExactName) return 1;
+
+            return 0;
+          });
+
+          if (limit > 0) {
+            combined = combined.slice(0, limit);
+          }
+
+          searchResponseCache.set(cacheKey, { data: combined, timestamp: Date.now() });
+          if (searchResponseCache.size > 300) {
+            const firstKey = searchResponseCache.keys().next().value;
+            if (firstKey) searchResponseCache.delete(firstKey);
+          }
+          return combined;
+        })().finally(() => {
+          inFlightSearchRequests.delete(cacheKey);
+        });
+        inFlightSearchRequests.set(cacheKey, pending);
       }
+
+      const combined = await pending;
+      res.setHeader('X-Data-Source', 'combined');
+      res.setHeader('X-Cache', 'MISS');
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.json(combined);
+    } catch (err: any) {
+      console.error('[ServerSearch] Fatal search error:', err.message);
+      return res.status(500).json({ error: '종목 검색 중 서버 오류가 발생했습니다.' });
     }
-
-    // 4. Smart Merge & Exact Priority Ranking (Crypto + US + KR + Indices)
-    let combined = [...cryptoMatches, ...usMatches, ...domesticResults, ...marketIndicators.filter(m => m.name.toLowerCase().includes(q) || m.symbol.toLowerCase().includes(q))];
-
-    // Boost exact ticker/symbol or exact Korean name matches to the very top
-    combined.sort((a, b) => {
-      const aExactSym = a.symbol.toLowerCase() === q || (a.baseCurrency && a.baseCurrency.toLowerCase() === q);
-      const bExactSym = b.symbol.toLowerCase() === q || (b.baseCurrency && b.baseCurrency.toLowerCase() === q);
-      if (aExactSym && !bExactSym) return -1;
-      if (!aExactSym && bExactSym) return 1;
-
-      const aExactName = a.name.toLowerCase() === q || a.name === query;
-      const bExactName = b.name.toLowerCase() === q || b.name === query;
-      if (aExactName && !bExactName) return -1;
-      if (!aExactName && bExactName) return 1;
-
-      return 0;
-    });
-
-    if (limit > 0) {
-      combined = combined.slice(0, limit);
-    }
-
-    res.setHeader('X-Data-Source', 'combined');
-    res.setHeader('Cache-Control', 'no-cache');
-    console.log(`[ServerSearch] Returning ${combined.length} results for query "${query}" (market: ${market || 'ALL'})`);
-    return res.json(combined);
   });
 
-  // 1-3. Batch Stock Quotes (for Watchlist & multiple symbols)
-  app.get('/api/stocks/quotes', async (req, res) => {
-    const rawSymbols = (req.query.symbols as string || '')
-      .split(',')
-      .map(s => s.trim())
-      .filter(isValidStockSymbol);
-    if (rawSymbols.length === 0) {
-      return res.json([]);
-    }
+  // 1-3. Batch Stock Quotes (Concurrent, Deduplicated, Compact by default)
+  const resolveBatchQuotes = async (symbols: string[], includeCandles: boolean) => {
+    const uniqueSymbols = Array.from(new Set(symbols)).slice(0, 50);
+    const sources = new Set<string>();
 
-    const uniqueSymbols = Array.from(new Set(rawSymbols)).slice(0, 50);
-    const results: any[] = [];
-    let isAnyKiwoom = false;
-
-    for (const sym of uniqueSymbols) {
+    const results = await mapWithConcurrency(uniqueSymbols, 6, async (sym) => {
       if (cryptoMasterService.isCryptoSymbol(sym)) {
         try {
-          const cryptoStock = await cryptoMasterService.getCryptoStockQuote(sym);
+          const cryptoStock = await cryptoMasterService.getCryptoStockQuote(sym, { includeCandles });
           if (cryptoStock) {
-            results.push(cryptoStock);
-            continue;
+            sources.add(cryptoStock.dataSource || 'crypto');
+            return includeCandles ? cryptoStock : toCompactStockQuote(cryptoStock);
           }
         } catch (err: any) {
           console.warn(`[Server] Batch crypto quote error for ${sym}:`, err.message);
@@ -1043,35 +1363,57 @@ async function startServer() {
       try {
         const { stock, dataSource } = await fetchRealStockDataWithSource(sym);
         if (stock) {
-          if (dataSource === 'kiwoom') isAnyKiwoom = true;
-          results.push(stock);
-          continue;
+          sources.add(dataSource);
+          return includeCandles ? stock : toCompactStockQuote(stock);
         }
       } catch (err: any) {
         console.warn(`[Server] Batch quote error for ${sym}:`, err.message);
       }
 
-      const fallback = DEFAULT_SOURCE !== 'REAL' ? (mockServerStocks.find(s => s.symbol === sym) || INITIAL_STOCKS.find(s => s.symbol === sym)) : null;
+      const fallback = DEFAULT_SOURCE !== 'REAL'
+        ? (mockServerStocks.find(s => s.symbol === sym) || INITIAL_STOCKS.find(s => s.symbol === sym))
+        : null;
       if (fallback) {
-        results.push(fallback);
-      } else if (DEFAULT_SOURCE === 'REAL') {
-        // Return unavailable status instead of mock data
-        results.push({
-          symbol: sym,
-          name: sym + ' (시세 연결 실패)',
-          price: 0,
-          change: 0,
-          changePercent: 0,
-          volume: 0,
-          status: 'error',
-          dataSource: 'mock',
-          isStale: true
-        });
+        sources.add('mock');
+        return includeCandles ? fallback : toCompactStockQuote(fallback);
       }
+
+      sources.add('unavailable');
+      return {
+        symbol: sym,
+        name: sym + ' (시세 연결 실패)',
+        price: 0,
+        change: 0,
+        changePercent: 0,
+        volume: 0,
+        status: 'error',
+        dataSource: 'mock',
+        isStale: true,
+      };
+    });
+
+    const sourceHeader =
+      sources.size === 0 ? 'unavailable' :
+      sources.size === 1 ? Array.from(sources)[0] :
+      sources.has('kiwoom') && !sources.has('yahoo') ? 'kiwoom' : 'combined';
+
+    return { results, sourceHeader };
+  };
+
+  app.get('/api/stocks/quotes', async (req, res) => {
+    const rawSymbols = (req.query.symbols as string || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(isValidStockSymbol);
+    if (rawSymbols.length === 0) {
+      return res.json([]);
     }
 
+    const includeCandles = req.query.includeCandles === 'true';
+    const { results, sourceHeader } = await resolveBatchQuotes(rawSymbols, includeCandles);
+
     res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('X-Data-Source', isAnyKiwoom ? 'kiwoom' : 'mock');
+    res.setHeader('X-Data-Source', sourceHeader);
     res.json(results);
   });
 
@@ -1083,54 +1425,11 @@ async function startServer() {
       return res.json([]);
     }
 
-    const uniqueSymbols = Array.from(new Set(rawSymbols)).slice(0, 50);
-    const results: any[] = [];
-    let isAnyKiwoom = false;
-
-    for (const sym of uniqueSymbols) {
-      if (cryptoMasterService.isCryptoSymbol(sym)) {
-        try {
-          const cryptoStock = await cryptoMasterService.getCryptoStockQuote(sym);
-          if (cryptoStock) {
-            results.push(cryptoStock);
-            continue;
-          }
-        } catch (err: any) {
-          console.warn(`[Server] Batch crypto quote error for ${sym}:`, err.message);
-        }
-      }
-
-      try {
-        const { stock, dataSource } = await fetchRealStockDataWithSource(sym);
-        if (stock) {
-          if (dataSource === 'kiwoom') isAnyKiwoom = true;
-          results.push(stock);
-          continue;
-        }
-      } catch (err: any) {
-        console.warn(`[Server] Batch quote error for ${sym}:`, err.message);
-      }
-
-      const fallback = DEFAULT_SOURCE !== 'REAL' ? (mockServerStocks.find(s => s.symbol === sym) || INITIAL_STOCKS.find(s => s.symbol === sym)) : null;
-      if (fallback) {
-        results.push(fallback);
-      } else if (DEFAULT_SOURCE === 'REAL') {
-        results.push({
-          symbol: sym,
-          name: sym + ' (시세 연결 실패)',
-          price: 0,
-          change: 0,
-          changePercent: 0,
-          volume: 0,
-          status: 'error',
-          dataSource: 'mock',
-          isStale: true
-        });
-      }
-    }
+    const includeCandles = req.query.includeCandles === 'true' || req.body?.includeCandles === true;
+    const { results, sourceHeader } = await resolveBatchQuotes(rawSymbols, includeCandles);
 
     res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('X-Data-Source', isAnyKiwoom ? 'kiwoom' : 'mock');
+    res.setHeader('X-Data-Source', sourceHeader);
     res.json(results);
   });
 
@@ -1217,39 +1516,94 @@ async function startServer() {
     }
 
     const period = sanitizeInputText(req.query.period as string, 10) || '1d';
+    const rawCandleType = sanitizeInputText(req.query.candleType as string, 10).toLowerCase();
+    const candleType: ChartCandleType | undefined =
+      rawCandleType === 'minute' || rawCandleType === 'day' || rawCandleType === 'week' || rawCandleType === 'month'
+        ? (rawCandleType as ChartCandleType)
+        : undefined;
     const date = sanitizeInputText(req.query.date as string, 20);
     const startDate = sanitizeInputText(req.query.startDate as string, 20);
     const endDate = sanitizeInputText(req.query.endDate as string, 20);
+    const isHistorical = Boolean(date || startDate || endDate);
 
     // Cryptocurrency chart routing (Upbit & Binance)
     if (cryptoMasterService.isCryptoSymbol(symbol)) {
       try {
-        const candles = await cryptoMasterService.getCryptoCandles(symbol, period);
+        const candles = await cryptoMasterService.getCryptoCandles(symbol, period, {
+          candleType,
+          date,
+          startDate,
+          endDate,
+        });
+        const coin = cryptoMasterService.getBySymbol(symbol);
+        const inferredCurrency =
+          coin?.currency ||
+          (symbol.toUpperCase().startsWith('KRW-') ? 'KRW' : symbol.toUpperCase().startsWith('BTC-') ? 'BTC' : 'USDT');
+        const resolvedType: ChartCandleType =
+          candleType ||
+          (['1d', '1w', '1m', '5m', '15m', '30m', '1h'].includes(period.toLowerCase())
+            ? 'minute'
+            : ['3y', '5y', 'week'].includes(period.toLowerCase())
+            ? 'week'
+            : ['all', 'month'].includes(period.toLowerCase())
+            ? 'month'
+            : 'day');
+
         if (candles && candles.length > 0) {
-          const coin = cryptoMasterService.getBySymbol(symbol);
           const lastCandle = candles[candles.length - 1];
+          const selectedDate = (endDate || date || '').trim() || undefined;
+          let selectedDateClose: number | undefined;
+          if (selectedDate) {
+            const matched = candles.filter(c => c.time.startsWith(selectedDate));
+            selectedDateClose = matched.length > 0 ? matched[matched.length - 1].close : lastCandle.close;
+          }
+
           const chartResponse: KiwoomChartResponse = {
             symbol,
             period,
             periodLabel: period,
+            candleType: resolvedType,
             trId: 'CRYPTO_PUBLIC_API',
             supported: true,
             candles,
             currentPrice: lastCandle.close,
             lastCandleClose: lastCandle.close,
+            selectedDateClose,
+            selectedDate,
+            isHistoricalView: isHistorical,
+            isStale: false,
             source: coin?.exchange === 'BINANCE' ? 'binance' : 'upbit',
             cached: false,
             timestamp: Date.now(),
-            currency: (coin?.currency || 'KRW') as any,
+            currency: inferredCurrency as any,
           };
           res.setHeader('X-Data-Source', chartResponse.source);
           res.setHeader('X-Cache', 'MISS');
           return res.json(chartResponse);
         }
+
+        if (isHistorical) {
+          return res.json({
+            symbol,
+            period,
+            periodLabel: period,
+            candleType: resolvedType,
+            trId: 'CRYPTO_PUBLIC_API',
+            supported: true,
+            candles: [],
+            selectedDate: date || undefined,
+            isHistoricalView: true,
+            source: coin?.exchange === 'BINANCE' ? 'binance' : 'upbit',
+            cached: false,
+            timestamp: Date.now(),
+            currency: inferredCurrency as any,
+            error: null,
+          });
+        }
       } catch (err: any) {
         console.warn(`[Server] Crypto chart inquiry error for ${symbol}:`, err.message);
       }
-      return res.status(500).json({
+      return res.status(502).json({
         symbol,
         period,
         supported: false,
@@ -1262,19 +1616,22 @@ async function startServer() {
     }
 
     try {
-      const isHistorical = Boolean(date || startDate);
-      const isMultiPeriod = ['1d', '1w', '1m', '1mo', '3m', '3mo', '6m', '6mo', 'ytd', '1y', '5y', 'all'].includes(period.toLowerCase());
+      const pLower = period.toLowerCase();
+      const isMultiPeriod = [
+        '1d', '1w', '1m', '1mo', '3m', '3mo', '6m', '6mo', 'ytd', '1y', '3y', '5y', 'all', 'week', 'month'
+      ].includes(pLower);
       const isUS = isUSStockSymbol(symbol);
+      const isExplicitKiwoomMinute = ['1m', '5m', '15m', '30m', '1h'].includes(pLower) && (!candleType || candleType === 'minute');
 
-      // If historical date navigation, multi-period query, or US stock: use unified chart fetcher
-      if (isHistorical || isMultiPeriod || isUS) {
-        const chartData = await fetchUnifiedStockChart(symbol, { period, date, startDate, endDate });
+      // Use unified multi-period chart fetcher for historical view, multi-periods, explicit non-minute candleType, or US stocks
+      if (isHistorical || isUS || (candleType && candleType !== 'minute') || (isMultiPeriod && !isExplicitKiwoomMinute)) {
+        const chartData = await fetchUnifiedStockChart(symbol, { period, candleType, date, startDate, endDate });
         res.setHeader('X-Data-Source', chartData.source);
         res.setHeader('X-Cache', chartData.cached ? 'HIT' : 'MISS');
         return res.json(chartData);
       }
 
-      // Default minute period for Korean stocks with Kiwoom Open API
+      // Minute / daily period for Korean stocks with Kiwoom Open API
       let currentPrice: number | undefined;
       let liveStockObj: any = null;
       try {
@@ -1286,12 +1643,17 @@ async function startServer() {
       } catch {}
 
       let chartData = await kiwoomApiService.fetchStockChart(symbol, period as any, currentPrice);
+      if (chartData.candles && chartData.candles.length > 0) {
+        chartData.candles = sanitizeAndValidateCandles(chartData.candles);
+      }
+
       // Fallback to unified chart if Kiwoom returned 0 candles
       if (!chartData.candles || chartData.candles.length === 0) {
-        chartData = await fetchUnifiedStockChart(symbol, { period, date, startDate, endDate });
+        chartData = await fetchUnifiedStockChart(symbol, { period, candleType, date, startDate, endDate });
       }
 
       chartData.currency = chartData.currency || 'KRW';
+      chartData.candleType = chartData.candleType || (pLower === 'day' ? 'day' : 'minute');
       chartData.currentPrice = chartData.currentPrice || currentPrice || liveStockObj?.price;
       if (chartData.candles && chartData.candles.length > 0 && !chartData.lastCandleClose) {
         chartData.lastCandleClose = chartData.candles[chartData.candles.length - 1].close;
@@ -1324,8 +1686,28 @@ async function startServer() {
       return res.status(400).json({ error: '올바르지 않은 종목 코드 형식입니다.' });
     }
     const period = sanitizeInputText(req.query.period as string, 10) || 'day';
+    const rawCandleType = sanitizeInputText(req.query.candleType as string, 10).toLowerCase();
+    const candleType: ChartCandleType | undefined =
+      rawCandleType === 'minute' || rawCandleType === 'day' || rawCandleType === 'week' || rawCandleType === 'month'
+        ? (rawCandleType as ChartCandleType)
+        : undefined;
+    const date = sanitizeInputText(req.query.date as string, 20);
 
     try {
+      if (cryptoMasterService.isCryptoSymbol(symbol)) {
+        const candles = await cryptoMasterService.getCryptoCandles(symbol, period, { candleType, date });
+        return res.json(sanitizeAndValidateCandles(candles));
+      }
+
+      const pLower = period.toLowerCase();
+      const useUnified = isUSStockSymbol(symbol) || Boolean(date) || Boolean(candleType && candleType !== 'minute') || ['1d', '1w', '1mo', '3mo', '6mo', '1y', '3y', '5y', 'all', 'week', 'month'].includes(pLower);
+      if (useUnified) {
+        const unified = await fetchUnifiedStockChart(symbol, { period, candleType, date });
+        res.setHeader('X-Data-Source', unified.source);
+        res.setHeader('X-Cache', unified.cached ? 'HIT' : 'MISS');
+        return res.json(unified.candles || []);
+      }
+
       let currentPrice: number | undefined;
       try {
         const { stock: liveStock } = await fetchRealStockDataWithSource(symbol);
@@ -1334,16 +1716,19 @@ async function startServer() {
         }
       } catch {}
       const chartResult = await kiwoomApiService.fetchStockChart(symbol, period, currentPrice);
-      if (chartResult.candles && chartResult.candles.length > 0) {
+      const cleanCandles = sanitizeAndValidateCandles(chartResult.candles || []);
+      if (cleanCandles.length > 0) {
         res.setHeader('X-Data-Source', chartResult.source);
         res.setHeader('X-Cache', chartResult.cached ? 'HIT' : 'MISS');
         res.setHeader('X-Kiwoom-TR', chartResult.trId);
-        return res.json(chartResult.candles);
+        return res.json(cleanCandles);
       }
+
+      const fallbackUnified = await fetchUnifiedStockChart(symbol, { period, candleType, date });
+      return res.json(fallbackUnified.candles || []);
     } catch (err) {}
 
-    // Requirement 8 & 9: Do NOT generate random mock candles!
-    // Return empty array if real data is unavailable
+    // Return empty array if real data is unavailable (never fabricate candles)
     res.json([]);
   });
 
@@ -1396,14 +1781,76 @@ async function startServer() {
       });
     }
 
-    // Zero-mock guard in REAL mode
+    // Zero-mock guard in REAL mode (avoid 404 console error while never returning fake depth)
     if (DEFAULT_SOURCE === 'REAL') {
-      return res.status(404).json({ error: '해당 종목의 실시간 호가 데이터를 조회할 수 없습니다.' });
+      const krQuote = await fetchRealStockDataWithSource(symbol).catch(() => ({ stock: null }));
+      return res.json({
+        symbol,
+        currentPrice: krQuote?.stock?.price || 0,
+        asks: [],
+        bids: [],
+        totalAskVolume: 0,
+        totalBidVolume: 0,
+        timestamp: new Date().toISOString(),
+        status: 'unavailable',
+        dataSource: 'kiwoom_disconnected',
+        message: '키움 Open API 실시간 호가 미연결 상태입니다. (고정 IP 등록 후 제공)',
+      });
     }
     
     // Fallback to generated Order Book in TEST mode
     const mockStock = mockServerStocks.find(s => s.symbol === symbol) || INITIAL_STOCKS.find(s => s.symbol === symbol);
     res.json(generateOrderBook(mockStock || { symbol, price: 10000, change: 0, changePercent: 0 } as any));
+  });
+
+  // 3-1-B. Stock Investor Trading Flow (투자자별 매매동향 - Kiwoom ka10059)
+  app.get('/api/stocks/:symbol/investor-flow', async (req, res) => {
+    const symbol = req.params.symbol;
+    if (!isValidStockSymbol(symbol)) {
+      return res.status(400).json({ error: '올바르지 않은 종목 코드 형식입니다.' });
+    }
+
+    const rawUnit = sanitizeInputText(req.query.unit as string, 15).toLowerCase();
+    const unit: 'amount' | 'quantity' | 'both' =
+      rawUnit === 'amount' || rawUnit === 'quantity' ? rawUnit : 'both';
+    const rawTradeType = sanitizeInputText(req.query.tradeType as string, 5);
+    const tradeType: '0' | '1' | '2' =
+      rawTradeType === '1' || rawTradeType === '2' ? rawTradeType : '0';
+    const date = sanitizeInputText((req.query.date || req.query.dt) as string, 12) || undefined;
+
+    try {
+      const flow = await fetchStockInvestorFlow(symbol, { unit, date, tradeType });
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('X-Data-Source', flow.available ? 'kiwoom_ka10059' : 'unavailable');
+      res.setHeader('X-Kiwoom-TR', 'ka10059');
+      return res.json(flow);
+    } catch (err: any) {
+      console.error(`[Server] Investor flow error for ${symbol}:`, err.message);
+      return res.status(500).json({
+        symbol,
+        trId: 'ka10059',
+        available: false,
+        investorDataAvailable: false,
+        investorDataSource: '수급 데이터 미수신',
+        investorUnit: '억원',
+        investorQtyUnit: '주',
+        baseDate: null,
+        updateTime: null,
+        tradeType,
+        foreignNetBuy: null,
+        instNetBuy: null,
+        individualNetBuy: null,
+        foreignNetBuyAmountMillion: null,
+        instNetBuyAmountMillion: null,
+        individualNetBuyAmountMillion: null,
+        foreignNetBuyQty: null,
+        instNetBuyQty: null,
+        individualNetBuyQty: null,
+        isDirectInvestorIndividual: false,
+        rows: [],
+        reason: err.message || '수급 데이터 조회 오류',
+      });
+    }
   });
 
   // 3-2. Stock Disclosures Analysis
@@ -1612,13 +2059,32 @@ async function startServer() {
     const source = getRequestedSource(req);
     res.setHeader('X-Data-Source', source);
 
-    if (source === 'REAL') {
+    if (source.toUpperCase() !== 'MOCK') {
       try {
         const realExchange = await fetchRealExchangeRate();
         if (realExchange) {
           return res.json(realExchange);
         }
-      } catch (err) {}
+      } catch (err: any) {
+        return res.json({
+          currency: 'USD/KRW',
+          baseCurrency: 'USD',
+          quoteCurrency: 'KRW',
+          pair: 'USD/KRW',
+          name: '원/달러 환율',
+          rate: 0,
+          change: 0,
+          changePercent: 0,
+          high: 0,
+          low: 0,
+          sparkline: [],
+          status: 'error',
+          isStale: true,
+          lastUpdated: new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }),
+          timestamp: Date.now(),
+          errorMessage: err?.message || '실시간 환율 조회에 실패했습니다.',
+        });
+      }
     }
 
     res.json(mockServerExchangeRate);
@@ -2350,12 +2816,51 @@ async function startServer() {
 
   // User Activity Verification
   app.post('/api/user/verify-activity', async (req, res) => {
-    const { uid, activityType } = req.body;
-    if (!uid || !activityType) {
+    const { uid, activityType } = req.body || {};
+    if (!uid || typeof uid !== 'string' || !activityType) {
       return res.status(400).json({ error: 'Missing parameters' });
     }
-    await verifyAndAward(uid, activityType);
-    res.json({ success: true });
+    if (activityType !== 'post' && activityType !== 'comment') {
+      return res.status(400).json({ error: 'Invalid activityType' });
+    }
+
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice(7).trim();
+      if (token) {
+        const decoded = await verifyFirebaseIdToken(token);
+        if (!decoded || decoded.uid !== uid) {
+          return res.status(403).json({ error: 'Unauthorized activity verification' });
+        }
+      }
+    }
+
+    const result = await verifyAndAward(uid, activityType);
+    res.json({ success: true, ...result });
+  });
+
+  // 10-B. Public Editorial Insights API (AdSense Content - Published Only)
+  app.get('/api/insights/public', async (req, res) => {
+    try {
+      const category = req.query.category as any;
+      const limit = parseInt(req.query.limit as string) || 30;
+      const insights = await editorialContentService.getPublicPublishedInsights(category, limit);
+      res.json(insights);
+    } catch (err: any) {
+      res.status(500).json({ error: '인사이트 조회 실패', details: err.message });
+    }
+  });
+
+  app.get('/api/insights/public/:id', async (req, res) => {
+    try {
+      const insight = await editorialContentService.getPublicInsightById(req.params.id);
+      if (!insight) {
+        return res.status(404).json({ error: '게시된 인사이트를 찾을 수 없습니다.' });
+      }
+      res.json(insight);
+    } catch (err: any) {
+      res.status(500).json({ error: '인사이트 상세 조회 실패', details: err.message });
+    }
   });
 
   // -------------------------------------------------------------
@@ -2369,6 +2874,32 @@ async function startServer() {
       error: '존재하지 않는 API 엔드포인트입니다.',
       path: req.path,
     });
+  });
+
+  // 13. Public SEO Prerendering Middleware for AdSense & Crawlers
+  app.use(async (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return next();
+    }
+    if (
+      req.path.startsWith('/api') ||
+      req.path.startsWith('/assets') ||
+      req.path.startsWith('/icons') ||
+      req.path.startsWith('/@') ||
+      req.path.startsWith('/src') ||
+      req.path.startsWith('/node_modules') ||
+      req.path.includes('.')
+    ) {
+      return next();
+    }
+
+    try {
+      const handled = await seoPrerenderService.handlePrerender(req, res, isProduction);
+      if (handled) return;
+    } catch (err: any) {
+      console.warn('[SEO] Prerender error:', err?.message || err);
+    }
+    next();
   });
 
   // -------------------------------------------------------------
@@ -2435,8 +2966,26 @@ async function startServer() {
     }
   });
 
-  const handleTermination = () => {
-    console.log('[Server] Gracefully closing HTTP server...');
+  const handleTermination = async () => {
+    console.log('[Server] Gracefully closing HTTP server and cleaning resources...');
+    clearInterval(bgEvalInterval);
+    clearInterval(sseBroadcastInterval);
+    clearInterval(rateLimitPruneInterval);
+    eventLoopMonitor.disable();
+
+    for (const client of clientTickStreams) {
+      try { client.end(); } catch {}
+    }
+    clientTickStreams.clear();
+
+    for (const client of clientOrderBookStreams) {
+      try { client.end(); } catch {}
+    }
+    clientOrderBookStreams.clear();
+
+    kiwoomApiService.cleanup();
+    await flushLastValidStockCache();
+
     server.close(() => {
       console.log('[Server] Port 3000 released cleanly.');
       process.exit(0);

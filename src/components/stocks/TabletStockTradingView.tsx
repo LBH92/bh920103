@@ -26,9 +26,16 @@ import { OrderBookWidget } from './OrderBookWidget';
 import { StockNewsSection } from './StockNewsSection';
 import { StockCommunitySection } from './StockCommunitySection';
 import { matchHangulSearch } from '../../utils/hangul';
-import { isUSStockSymbol } from '../../utils/stocks/ticker';
+import { isUSStockSymbol, getStockUniqueKey } from '../../utils/stocks/ticker';
 import { stockRepository } from '../../services/stockRepository';
+import { Loader2, AlertCircle } from 'lucide-react';
 import { MockTradeModal } from '../portfolio/MockTradeModal';
+import {
+  inferStockCurrency,
+  inferStockExchange,
+  formatMoney,
+  formatMarketCapByCurrency,
+} from '../../utils/currency';
 
 export const TabletStockTradingView: React.FC = () => {
   const { 
@@ -46,42 +53,103 @@ export const TabletStockTradingView: React.FC = () => {
     return globalSelectedSymbol || (stocks.length > 0 ? stocks[0].symbol : '005930');
   });
 
-  const [marketFilter, setMarketFilter] = useState<'ALL' | 'KR' | 'US' | 'COIN' | 'WATCHLIST'>('ALL');
+  const [marketFilter, setMarketFilter] = useState<'ALL' | 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN' | 'WATCHLIST'>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [remoteSearchResults, setRemoteSearchResults] = useState<Stock[]>([]);
+  const [isSearchingRemote, setIsSearchingRemote] = useState<boolean>(false);
+  const [remoteSearchError, setRemoteSearchError] = useState<string | null>(null);
+  const [remoteSearchRetry, setRemoteSearchRetry] = useState<number>(0);
+  const [selectedRemoteStock, setSelectedRemoteStock] = useState<Stock | null>(null);
   const [isLeftCollapsed, setIsLeftCollapsed] = useState<boolean>(false);
   const [activeRightTab, setActiveRightTab] = useState<'orderbook' | 'metrics' | 'news' | 'community'>('orderbook');
   const [isTradeModalOpen, setIsTradeModalOpen] = useState<boolean>(false);
 
-  // Selected Stock Realtime Detail State
+  // Selected Stock Realtime Detail State (check tracked stocks first, then remote selection)
   const activeStock = useMemo(() => {
-    return stocks.find(s => s.symbol === selectedSymbol) || stocks[0] || null;
-  }, [stocks, selectedSymbol]);
+    const local = stocks.find(s => s.symbol === selectedSymbol);
+    if (local) return local;
+    if (selectedRemoteStock && selectedRemoteStock.symbol === selectedSymbol) return selectedRemoteStock;
+    return stocks[0] || null;
+  }, [stocks, selectedSymbol, selectedRemoteStock]);
 
   // Sync when globalSelectedSymbol changes
   useEffect(() => {
     if (globalSelectedSymbol && globalSelectedSymbol !== selectedSymbol) {
       setSelectedSymbol(globalSelectedSymbol);
+      if (!stocks.some(s => s.symbol === globalSelectedSymbol)) {
+        stockRepository.getStock(globalSelectedSymbol).then(fetched => {
+          if (fetched) setSelectedRemoteStock(fetched);
+        }).catch(() => {});
+      }
     }
   }, [globalSelectedSymbol]);
 
+  // Remote unified search across KOSPI / KOSDAQ / US / COIN when typing
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q || marketFilter === 'WATCHLIST') {
+      setRemoteSearchResults([]);
+      setIsSearchingRemote(false);
+      setRemoteSearchError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setIsSearchingRemote(true);
+    setRemoteSearchError(null);
+
+    const timer = setTimeout(async () => {
+      try {
+        const results = await stockRepository.searchStocks({
+          query: q,
+          limit: 25,
+          market: marketFilter !== 'ALL' ? marketFilter : undefined,
+          signal: controller.signal,
+        });
+        if (!controller.signal.aborted) {
+          setRemoteSearchResults(results);
+        }
+      } catch (err: any) {
+        if (err?.name === 'AbortError' || controller.signal.aborted) return;
+        setRemoteSearchResults([]);
+        setRemoteSearchError(err?.message || '검색 서버 연결 실패');
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsSearchingRemote(false);
+        }
+      }
+    }, 180);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [searchQuery, marketFilter, remoteSearchRetry]);
+
   // Filtered Stock List for Left Column
   const filteredStocks = useMemo(() => {
+    const q = searchQuery.trim();
+    if (q && marketFilter !== 'WATCHLIST') {
+      return remoteSearchResults;
+    }
+
     return stocks.filter(stock => {
-      // 1. Search Query
-      if (searchQuery.trim()) {
-        const q = searchQuery.trim();
+      if (q) {
         const matchesName = matchHangulSearch(stock.name, q);
+        const matchesNameEn = stock.nameEn ? stock.nameEn.toLowerCase().includes(q.toLowerCase()) : false;
         const matchesSymbol = stock.symbol.toLowerCase().includes(q.toLowerCase());
         const matchesSector = stock.sector.toLowerCase().includes(q.toLowerCase());
-        if (!matchesName && !matchesSymbol && !matchesSector) return false;
+        if (!matchesName && !matchesNameEn && !matchesSymbol && !matchesSector) return false;
       }
 
-      // 2. Market / Watchlist Filter
       if (marketFilter === 'WATCHLIST') {
         return isWatchlisted(stock.symbol);
       }
-      if (marketFilter === 'KR') {
-        return stock.market === 'KOSPI' || stock.market === 'KOSDAQ';
+      if (marketFilter === 'KOSPI') {
+        return stock.market === 'KOSPI';
+      }
+      if (marketFilter === 'KOSDAQ') {
+        return stock.market === 'KOSDAQ';
       }
       if (marketFilter === 'US') {
         return stock.market === 'US' || isUSStockSymbol(stock.symbol);
@@ -89,28 +157,44 @@ export const TabletStockTradingView: React.FC = () => {
       if (marketFilter === 'COIN') {
         return stock.market === 'COIN' || stock.symbol.includes('-') || stock.symbol.endsWith('USDT');
       }
-      return true; // ALL
+      return true;
     });
-  }, [stocks, searchQuery, marketFilter, watchlist, isWatchlisted]);
+  }, [stocks, remoteSearchResults, searchQuery, marketFilter, watchlist, isWatchlisted]);
 
-  // Keep first stock selected if current selection is not in list
+  const handleSelectListStock = async (stock: Stock) => {
+    setSelectedSymbol(stock.symbol);
+    setSelectedRemoteStock(stock);
+    if (!stocks.some(s => s.symbol === stock.symbol)) {
+      try {
+        const full = await stockRepository.getStock(stock.symbol);
+        if (full) setSelectedRemoteStock(full);
+      } catch {}
+    }
+  };
+
+  // Keep first stock selected only when not actively typing search
   useEffect(() => {
-    if (filteredStocks.length > 0 && !filteredStocks.some(s => s.symbol === selectedSymbol)) {
+    if (!searchQuery.trim() && filteredStocks.length > 0 && !filteredStocks.some(s => s.symbol === selectedSymbol) && !selectedRemoteStock) {
       setSelectedSymbol(filteredStocks[0].symbol);
     }
-  }, [filteredStocks, selectedSymbol]);
+  }, [filteredStocks, selectedSymbol, searchQuery, selectedRemoteStock]);
 
-  const isUSD = activeStock?.currency === 'USD' || activeStock?.market === 'US';
+  const activeCur = activeStock
+    ? inferStockCurrency(activeStock.symbol, activeStock.market, activeStock.currency)
+    : 'KRW';
+  const activeExchange = activeStock
+    ? inferStockExchange(activeStock.symbol, activeStock.market, activeStock.exchange)
+    : '';
   const isWatch = activeStock ? isWatchlisted(activeStock.symbol) : false;
   const isUp = activeStock ? activeStock.change >= 0 : true;
 
   return (
-    <div className="flex h-[calc(100vh-120px)] rounded-2xl bg-finance-card border border-finance-border shadow-xs overflow-hidden select-none text-finance-text">
+    <div className="flex flex-col md:flex-row h-[calc(100vh-120px)] rounded-2xl bg-finance-card border border-finance-border shadow-xs overflow-hidden select-none text-finance-text">
       {/* ========================================================= */}
-      {/* LEFT COLUMN: Stock List & Search Panel (약 28~32%)         */}
+      {/* LEFT COLUMN: Stock List & Search Panel (Hidden on mobile)  */}
       {/* ========================================================= */}
       <div 
-        className={`flex flex-col border-r border-finance-border bg-finance-sub-bg/30 transition-all duration-200 shrink-0 ${
+        className={`hidden md:flex flex-col border-r border-finance-border bg-finance-sub-bg/30 transition-all duration-200 shrink-0 ${
           isLeftCollapsed ? 'w-12' : 'w-[32%] min-w-[260px] max-w-[360px]'
         }`}
       >
@@ -151,15 +235,16 @@ export const TabletStockTradingView: React.FC = () => {
           <div className="px-2.5 py-2 border-b border-finance-border bg-finance-sub-bg/50 flex items-center gap-1 overflow-x-auto no-scrollbar">
             {[
               { id: 'ALL', label: '전체' },
-              { id: 'KR', label: '한국' },
+              { id: 'KOSPI', label: '코스피' },
+              { id: 'KOSDAQ', label: '코스닥' },
               { id: 'US', label: '미국' },
               { id: 'COIN', label: '코인' },
-              { id: 'WATCHLIST', label: '⭐관심' }
+              { id: 'WATCHLIST', label: '관심' }
             ].map(tab => (
               <button
                 key={tab.id}
                 onClick={() => setMarketFilter(tab.id as any)}
-                className={`px-2.5 py-1 rounded-lg text-[11px] tablet:text-[12px] font-bold shrink-0 transition-all ${
+                className={`px-2.5 py-1 rounded-lg text-[11px] tablet:text-[12px] font-bold shrink-0 transition-all cursor-pointer ${
                   marketFilter === tab.id
                     ? 'bg-finance-accent text-white shadow-xs'
                     : 'text-finance-sub-text hover:text-finance-text hover:bg-finance-sub-bg'
@@ -184,7 +269,24 @@ export const TabletStockTradingView: React.FC = () => {
 
         {/* Scrollable Stock List */}
         <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60">
-          {filteredStocks.length === 0 ? (
+          {isSearchingRemote ? (
+            <div className="p-6 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-rose-500" />
+              <span>통합 종목 검색 중...</span>
+            </div>
+          ) : remoteSearchError && searchQuery.trim() ? (
+            <div className="p-5 text-center space-y-2 text-xs">
+              <AlertCircle className="w-5 h-5 text-amber-500 mx-auto" />
+              <p className="text-slate-500">{remoteSearchError}</p>
+              <button
+                type="button"
+                onClick={() => setRemoteSearchRetry(n => n + 1)}
+                className="px-3 py-1 rounded-lg bg-rose-500 text-white font-bold cursor-pointer"
+              >
+                다시 시도
+              </button>
+            </div>
+          ) : filteredStocks.length === 0 ? (
             <div className="p-6 text-center text-xs text-slate-400">
               일치하는 종목이 없습니다.
             </div>
@@ -196,8 +298,8 @@ export const TabletStockTradingView: React.FC = () => {
               if (isLeftCollapsed) {
                 return (
                   <button
-                    key={stock.symbol}
-                    onClick={() => setSelectedSymbol(stock.symbol)}
+                    key={getStockUniqueKey(stock)}
+                    onClick={() => handleSelectListStock(stock)}
                     className={`w-full py-3 flex flex-col items-center justify-center transition-colors ${
                       isSelected
                         ? 'bg-rose-500/10 border-l-4 border-rose-500 text-rose-600 font-bold'
@@ -217,8 +319,8 @@ export const TabletStockTradingView: React.FC = () => {
 
               return (
                 <div
-                  key={stock.symbol}
-                  onClick={() => setSelectedSymbol(stock.symbol)}
+                  key={getStockUniqueKey(stock)}
+                  onClick={() => handleSelectListStock(stock)}
                   className={`px-3 py-2.5 flex items-center justify-between cursor-pointer transition-colors ${
                     isSelected
                       ? 'bg-finance-accent/15 border-l-4 border-finance-accent text-finance-text font-bold'
@@ -246,7 +348,7 @@ export const TabletStockTradingView: React.FC = () => {
                   {/* Right: Price & Change Rate */}
                   <div className="text-right shrink-0">
                     <span className="font-mono font-bold text-xs tablet:text-[14px] block text-finance-text tabular-nums whitespace-nowrap">
-                      {stock.currency === 'USD' ? `$${stock.price.toFixed(2)}` : `${stock.price.toLocaleString()}원`}
+                      {formatMoney(stock.price, inferStockCurrency(stock.symbol, stock.market, stock.currency))}
                     </span>
                     <span className={`text-[10px] tablet:text-[11.5px] font-mono font-bold block tabular-nums whitespace-nowrap ${stockIsUp ? 'text-finance-up' : 'text-finance-down'}`}>
                       {stockIsUp ? '+' : ''}{stock.changePercent.toFixed(2)}%
@@ -265,6 +367,25 @@ export const TabletStockTradingView: React.FC = () => {
       <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
         {activeStock ? (
           <>
+            {/* Mobile Stock Switcher Bar */}
+            <div className="md:hidden px-4 py-2 bg-finance-sub-bg/80 border-b border-finance-border flex items-center justify-between gap-2">
+              <span className="text-xs text-finance-sub-text font-semibold">종목 전환:</span>
+              <select
+                value={selectedSymbol}
+                onChange={(e) => {
+                  const found = stocks.find(s => s.symbol === e.target.value);
+                  if (found) handleSelectListStock(found);
+                }}
+                className="flex-1 bg-finance-card border border-finance-border rounded-lg px-2.5 py-1 text-xs text-finance-text font-bold focus:outline-none"
+              >
+                {stocks.map(s => (
+                  <option key={s.symbol} value={s.symbol}>
+                    {s.name} ({s.symbol})
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* 1. Header Overview Bar */}
             <div className="p-4 sm:p-5 border-b border-finance-border bg-finance-card flex flex-wrap items-center justify-between gap-4">
               {/* Left: Stock Name & Real-time Price */}
@@ -278,7 +399,7 @@ export const TabletStockTradingView: React.FC = () => {
                       {activeStock.symbol}
                     </span>
                     <span className="text-xs tablet:text-[12px] font-semibold px-2 py-0.5 rounded-full bg-finance-accent/15 text-finance-accent border border-finance-accent/30">
-                      {activeStock.market}
+                      {activeExchange} · {activeCur}
                     </span>
                     <span className="text-xs tablet:text-[12px] text-finance-sub-text hidden sm:inline">
                       {activeStock.sector}
@@ -287,13 +408,13 @@ export const TabletStockTradingView: React.FC = () => {
 
                   <div className="flex items-baseline gap-3 mt-1">
                     <span className="text-xl sm:text-2xl tablet:text-[22px] font-black font-mono tabular-nums whitespace-nowrap text-finance-text">
-                      {isUSD ? `$${activeStock.price.toFixed(2)}` : `${activeStock.price.toLocaleString()}원`}
+                      {formatMoney(activeStock.price, activeCur)}
                     </span>
                     <span className={`text-sm tablet:text-[14px] font-bold font-mono tabular-nums whitespace-nowrap flex items-center gap-0.5 ${isUp ? 'text-finance-up' : 'text-finance-down'}`}>
                       {isUp ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
                       <span>{isUp ? '+' : ''}{activeStock.changePercent.toFixed(2)}%</span>
                       <span className="text-xs tablet:text-[11.5px] font-normal tabular-nums">
-                        ({isUp ? '+' : ''}{isUSD ? `$${activeStock.change.toFixed(2)}` : `${activeStock.change.toLocaleString()}원`})
+                        ({formatMoney(activeStock.change, activeCur, { showSign: true })})
                       </span>
                     </span>
                   </div>
@@ -337,23 +458,23 @@ export const TabletStockTradingView: React.FC = () => {
               <div>
                 <span className="text-[11px] tablet:text-[11.5px] text-finance-sub-text block leading-snug">당일 고가 / 저가</span>
                 <span className="font-mono font-bold text-finance-text text-xs tablet:text-[13.5px] tabular-nums whitespace-nowrap">
-                  {isUSD ? `$${activeStock.highPrice || activeStock.price}` : `${(activeStock.highPrice || activeStock.price).toLocaleString()}원`}
+                  {formatMoney(activeStock.highPrice || activeStock.price, activeCur)}
                   <span className="text-finance-sub-text font-normal"> / </span>
-                  {isUSD ? `$${activeStock.lowPrice || activeStock.price}` : `${(activeStock.lowPrice || activeStock.price).toLocaleString()}원`}
+                  {formatMoney(activeStock.lowPrice || activeStock.price, activeCur)}
                 </span>
               </div>
 
               <div>
                 <span className="text-[11px] tablet:text-[11.5px] text-finance-sub-text block leading-snug">거래량 (24H)</span>
                 <span className="font-mono font-bold text-finance-text text-xs tablet:text-[13.5px] tabular-nums whitespace-nowrap">
-                  {(activeStock.volume || 0).toLocaleString()}주
+                  {(activeStock.volume || 0).toLocaleString()}{activeStock.market === 'COIN' ? '' : '주'}
                 </span>
               </div>
 
               <div>
                 <span className="text-[11px] tablet:text-[11.5px] text-finance-sub-text block leading-snug">시가총액</span>
                 <span className="font-mono font-bold text-finance-text text-xs tablet:text-[13.5px] tabular-nums whitespace-nowrap">
-                  {activeStock.marketCap ? `${(activeStock.marketCap).toLocaleString()}억 원` : '-'}
+                  {formatMarketCapByCurrency(activeStock.marketCap, activeCur)}
                 </span>
               </div>
 
@@ -413,21 +534,21 @@ export const TabletStockTradingView: React.FC = () => {
                     <div className="p-3 bg-finance-card rounded-xl border border-finance-border">
                       <span className="text-finance-sub-text text-xs tablet:text-[11.5px] block mb-1">52주 최고가</span>
                       <span className="font-mono font-bold text-sm tablet:text-[14px] text-finance-text tabular-nums whitespace-nowrap">
-                        {activeStock.high52w ? `${activeStock.high52w.toLocaleString()}원` : '-'}
+                        {activeStock.high52w ? formatMoney(activeStock.high52w, activeCur) : '-'}
                       </span>
                     </div>
 
                     <div className="p-3 bg-finance-card rounded-xl border border-finance-border">
                       <span className="text-finance-sub-text text-xs tablet:text-[11.5px] block mb-1">52주 최저가</span>
                       <span className="font-mono font-bold text-sm tablet:text-[14px] text-finance-text tabular-nums whitespace-nowrap">
-                        {activeStock.low52w ? `${activeStock.low52w.toLocaleString()}원` : '-'}
+                        {activeStock.low52w ? formatMoney(activeStock.low52w, activeCur) : '-'}
                       </span>
                     </div>
 
                     <div className="p-3 bg-finance-card rounded-xl border border-finance-border">
                       <span className="text-finance-sub-text text-xs tablet:text-[11.5px] block mb-1">주당순이익 (EPS)</span>
                       <span className="font-mono font-bold text-sm tablet:text-[14px] text-finance-text tabular-nums whitespace-nowrap">
-                        {activeStock.eps ? `${activeStock.eps.toLocaleString()}원` : '-'}
+                        {activeStock.eps ? formatMoney(activeStock.eps, activeCur) : '-'}
                       </span>
                     </div>
 

@@ -36,6 +36,7 @@ import { getKRXMarketStatus, MarketStatusInfo } from '../../utils/marketHours';
 import { isPreviewEnvironment } from '../../utils/environment';
 import { KstClock } from '../common/KstClock';
 import { MobileDrawer } from './MobileDrawer';
+import { MobileRollingTicker } from '../common/MobileRollingTicker';
 
 export const Navbar: React.FC = () => {
   const {
@@ -63,13 +64,14 @@ export const Navbar: React.FC = () => {
     isSideChatOpen,
     toggleSideChat,
     unreadChatCount,
+    mobileMenuOpen,
+    setMobileMenuOpen,
   } = useApp();
 
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
   const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0);
   const [isKiwoomModalOpen, setIsKiwoomModalOpen] = useState(false);
   const [marketStatus, setMarketStatus] = useState<MarketStatusInfo>(() => getKRXMarketStatus());
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
@@ -174,7 +176,10 @@ export const Navbar: React.FC = () => {
   return (
     <>
       <header className="sticky top-0 z-40 w-full border-b border-finance-border bg-finance-card/95 backdrop-blur-md">
-        {/* Top Real-time Market Ticker Ribbon */}
+        {/* Mobile Rolling Ticker Ribbon (28px height) */}
+        <MobileRollingTicker />
+
+        {/* Top Real-time Market Ticker Ribbon (Desktop) */}
         <div className="hidden sm:flex items-center justify-between px-4 py-1.5 text-xs tablet:text-[11.5px] text-finance-sub-text border-b border-finance-border bg-finance-sub-bg/60">
            <div className="flex gap-4">
               <span className="font-medium">{marketStatus.statusLabel}</span>
@@ -189,8 +194,8 @@ export const Navbar: React.FC = () => {
            </div>
         </div>
         
-        {/* Main Navigation Bar */}
-        <nav className="max-w-[95rem] mx-auto px-4 py-3 tablet:py-2.5 flex items-center justify-between gap-3">
+        {/* Main Navigation Bar (Mobile height 44-48px) */}
+        <nav className="max-w-[95rem] mx-auto px-4 py-2 md:py-3 flex items-center justify-between gap-3">
            <div className="flex items-center gap-6 tablet:gap-3 min-w-0">
              <button onClick={() => setActiveTab('home')} className="brand-logo text-xl tablet:text-[20px] font-black text-finance-text tracking-tight hover:opacity-90 transition-opacity shrink-0 whitespace-nowrap">병돌 인베스트먼트</button>
              <div className="hidden md:flex gap-1.5 tablet:gap-1 items-center nav-items-wrapper overflow-x-auto no-scrollbar">

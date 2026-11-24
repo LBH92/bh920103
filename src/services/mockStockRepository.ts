@@ -230,9 +230,10 @@ export class MockStockRepository implements IStockRepository {
     const tradingValue = stock ? stock.tradingValue : 2500;
     const executionStrength = stock ? (stock.change >= 0 ? 118.5 : 84.2) : 105.0;
     const turnoverRatio = Number(((volume / ((stock?.marketCap || 100000) * 1000)) * 100).toFixed(2)) || 2.45;
-    const foreignNetBuy = stock ? stock.foreignNetBuy : 500;
-    const instNetBuy = stock ? stock.instNetBuy : 300;
-    const individualNetBuy = -(foreignNetBuy + instNetBuy);
+    const foreignNetBuy = (stock && stock.foreignNetBuy !== undefined) ? stock.foreignNetBuy : null;
+    const instNetBuy = (stock && stock.instNetBuy !== undefined) ? stock.instNetBuy : null;
+    const investorDataAvailable = Boolean(foreignNetBuy !== null && instNetBuy !== null && stock?.market !== 'US');
+    const individualNetBuy = investorDataAvailable ? -(foreignNetBuy! + instNetBuy!) : null;
 
     return {
       volumeRatio,
@@ -245,6 +246,10 @@ export class MockStockRepository implements IStockRepository {
       foreignNetBuy,
       instNetBuy,
       individualNetBuy,
+      investorDataSource: 'Mock Data',
+      investorBaseDate: new Date().toISOString().slice(0, 10),
+      investorUpdateTime: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+      investorDataAvailable,
     };
   }
 
@@ -314,7 +319,7 @@ export class MockStockRepository implements IStockRepository {
   }
 
   async getOrderBook(symbol: string): Promise<OrderBook> {
-    const stock = this.localStocks.find(s => s.symbol === symbol) || INITIAL_STOCKS.find(s => s.symbol === symbol);
+    const stock = await this.getStock(symbol);
     if (stock) {
       return generateOrderBook(stock);
     }

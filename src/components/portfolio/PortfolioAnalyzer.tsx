@@ -13,6 +13,8 @@ import {
 import { portfolioAnalyzerService } from '../../services/portfolioAnalyzerService';
 import { PortfolioSummary, PortfolioHolding } from '../../types';
 import { AverageBuyPriceSimulator } from './AverageBuyPriceSimulator';
+import { useApp } from '../../context/AppContext';
+import { formatMoney, inferStockExchange } from '../../utils/currency';
 
 interface Props {
   uid: string;
@@ -21,6 +23,7 @@ interface Props {
 }
 
 export const PortfolioAnalyzer: React.FC<Props> = ({ uid, onUpdated, onSelectStock }) => {
+  const { exchangeRate } = useApp();
   const [summary, setSummary] = useState<PortfolioSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -30,7 +33,7 @@ export const PortfolioAnalyzer: React.FC<Props> = ({ uid, onUpdated, onSelectSto
     if (!isSilent) setLoading(true);
     else setRefreshing(true);
     try {
-      const data = await portfolioAnalyzerService.getPortfolioSummary(uid);
+      const data = await portfolioAnalyzerService.getPortfolioSummary(uid, exchangeRate);
       setSummary(data);
     } catch (err) {
       console.warn('[PortfolioAnalyzer] fetchData error:', err);
@@ -38,7 +41,7 @@ export const PortfolioAnalyzer: React.FC<Props> = ({ uid, onUpdated, onSelectSto
       setLoading(false);
       setRefreshing(false);
     }
-  }, [uid]);
+  }, [uid, exchangeRate]);
 
   useEffect(() => {
     fetchData();
@@ -105,65 +108,80 @@ export const PortfolioAnalyzer: React.FC<Props> = ({ uid, onUpdated, onSelectSto
         </button>
       </div>
 
-      {/* 2. Top Summary KPI Cards */}
+      {/* 2. Top Summary KPI Cards (Separated KRW & USD + FX-converted Total) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* 총 자산 평가액 */}
+        {/* 통합 원화 환산 총자산 */}
         <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800">
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
-            <span>총 자산 평가액</span>
+            <span>기준통화(KRW) 환산 총자산</span>
             <Wallet className="w-4 h-4 text-slate-400" />
           </div>
-          <p className="text-lg sm:text-xl font-black font-mono text-slate-900 dark:text-white">
-            {summary.totalAssets.toLocaleString()}원
-          </p>
-          <span className="text-[10px] text-slate-400">
-            현금 {summary.totalCash.toLocaleString()}원 포함
-          </span>
+          {summary.fxValid ? (
+            <>
+              <p className="text-lg sm:text-xl font-black font-mono text-slate-900 dark:text-white">
+                {formatMoney(summary.totalAssets, 'KRW')}
+              </p>
+              <span className="text-[10px] text-slate-400 font-mono block">
+                현금 {formatMoney(summary.totalCash, 'KRW')} · 환율 ₩{summary.fxRate?.toLocaleString('ko-KR', { maximumFractionDigits: 2 })} ({summary.fxTimestamp})
+              </span>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-bold text-rose-500">환율 미확인 (원화 환산 보류)</p>
+              <span className="text-[10px] text-slate-400 font-mono block mt-1">
+                KRW {formatMoney(summary.krw?.totalAssets ?? 0, 'KRW')} / USD {formatMoney(summary.usd?.totalAssets ?? 0, 'USD')}
+              </span>
+            </>
+          )}
         </div>
 
-        {/* 총 평가손익 및 수익률 */}
+        {/* 총 평가손익 (종목 손익 vs 환율 변동 손익) */}
         <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800">
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 text-xs mb-1">
-            <span>총 평가손익 (수익률)</span>
+            <span>통합 손익 (종목 / 환차익)</span>
             {isProfit ? (
               <TrendingUp className="w-4 h-4 text-rose-500" />
             ) : (
               <TrendingDown className="w-4 h-4 text-blue-500" />
             )}
           </div>
-          <p className={`text-lg sm:text-xl font-black font-mono ${isProfit ? 'text-rose-500' : 'text-blue-500'}`}>
-            {isProfit ? '+' : ''}{summary.totalPnL.toLocaleString()}원
-          </p>
-          <span className={`text-[10px] font-mono font-bold ${isProfit ? 'text-rose-500' : 'text-blue-500'}`}>
-            {isProfit ? '+' : ''}{summary.roi.toFixed(2)}%
-          </span>
+          {summary.fxValid ? (
+            <>
+              <p className={`text-lg sm:text-xl font-black font-mono ${isProfit ? 'text-rose-500' : 'text-blue-500'}`}>
+                {formatMoney(summary.totalPnL, 'KRW', { showSign: true })}
+              </p>
+              <span className="text-[10px] font-mono text-slate-500 block">
+                종목 {formatMoney(summary.stockPnLKRW ?? 0, 'KRW', { showSign: true })} · 환율 {formatMoney(summary.fxPnLKRW ?? 0, 'KRW', { showSign: true })} ({isProfit ? '+' : ''}{summary.roi.toFixed(2)}%)
+              </span>
+            </>
+          ) : (
+            <p className="text-xs font-bold text-rose-500">환율 오류로 통합 손익 계산 보류</p>
+          )}
         </div>
 
-        {/* 주식 평가 총액 */}
+        {/* KRW 포트폴리오 요약 */}
         <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800">
           <span className="text-slate-500 dark:text-slate-400 text-xs block mb-1">
-            보유 종목 평가 총액
+            국내(KRW) 자산 ({summary.krw?.holdingsCount ?? 0}종목)
           </span>
           <p className="text-lg sm:text-xl font-black font-mono text-slate-900 dark:text-white">
-            {summary.evaluationAmount.toLocaleString()}원
+            {formatMoney(summary.krw?.evaluationAmount ?? 0, 'KRW')}
           </p>
-          <span className="text-[10px] text-slate-400">
-            총 투자원금 {summary.totalInvested.toLocaleString()}원
+          <span className="text-[10px] text-slate-400 font-mono block">
+            현금 {formatMoney(summary.krw?.totalCash ?? 0, 'KRW')} · 손익 {formatMoney(summary.krw?.unrealizedPnL ?? 0, 'KRW', { showSign: true })}
           </span>
         </div>
 
-        {/* 누적 실현손익 */}
+        {/* USD 포트폴리오 요약 */}
         <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800">
           <span className="text-slate-500 dark:text-slate-400 text-xs block mb-1">
-            누적 실현손익
+            해외(USD) 자산 ({summary.usd?.holdingsCount ?? 0}종목)
           </span>
-          <p className={`text-lg sm:text-xl font-black font-mono ${
-            summary.realizedPnL >= 0 ? 'text-rose-500' : 'text-blue-500'
-          }`}>
-            {summary.realizedPnL >= 0 ? '+' : ''}{summary.realizedPnL.toLocaleString()}원
+          <p className="text-lg sm:text-xl font-black font-mono text-slate-900 dark:text-white">
+            {formatMoney(summary.usd?.evaluationAmount ?? 0, 'USD')}
           </p>
-          <span className="text-[10px] text-slate-400">
-            가상 매도 실현 손익 합산
+          <span className="text-[10px] text-slate-400 font-mono block">
+            현금 {formatMoney(summary.usd?.totalCash ?? 0, 'USD')} · 손익 {formatMoney(summary.usd?.unrealizedPnL ?? 0, 'USD', { showSign: true })}
           </span>
         </div>
       </div>
@@ -224,7 +242,7 @@ export const PortfolioAnalyzer: React.FC<Props> = ({ uid, onUpdated, onSelectSto
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <span className="text-[10px] text-slate-400 font-mono">{h.symbol}</span>
                           <span className="text-[9px] px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-semibold">
-                            {h.market}
+                            {inferStockExchange(h.symbol, h.market, h.exchange)} · {h.currency}
                           </span>
                         </div>
                       </td>
@@ -234,22 +252,21 @@ export const PortfolioAnalyzer: React.FC<Props> = ({ uid, onUpdated, onSelectSto
                       </td>
 
                       <td className="py-3 px-3 text-right text-slate-700 dark:text-slate-300">
-                        {h.currency === 'USD' ? `$${h.avgBuyPrice.toFixed(2)}` : `${h.avgBuyPrice.toLocaleString()}원`}
+                        {formatMoney(h.avgBuyPrice, h.currency)}
                       </td>
 
                       <td className="py-3 px-3 text-right font-bold text-slate-900 dark:text-white">
-                        {h.currency === 'USD' ? `$${h.currentPrice.toFixed(2)}` : `${h.currentPrice.toLocaleString()}원`}
+                        {formatMoney(h.currentPrice, h.currency)}
                       </td>
 
                       <td className="py-3 px-3 text-right font-bold text-slate-900 dark:text-white">
-                        {h.currency === 'USD' ? `$${h.marketValue.toFixed(2)}` : `${h.marketValue.toLocaleString()}원`}
+                        {formatMoney(h.marketValue, h.currency)}
                       </td>
 
                       <td className="py-3 px-3 text-right">
                         <div className={isHoldingProfit ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
                           <span>
-                            {isHoldingProfit ? '+' : ''}
-                            {h.currency === 'USD' ? `$${h.unrealizedPnL.toFixed(2)}` : `${h.unrealizedPnL.toLocaleString()}원`}
+                            {formatMoney(h.unrealizedPnL, h.currency, { showSign: true })}
                           </span>
                           <span className="text-[10px] block">
                             ({isHoldingProfit ? '+' : ''}{h.unrealizedPnLRate.toFixed(2)}%)
@@ -258,7 +275,7 @@ export const PortfolioAnalyzer: React.FC<Props> = ({ uid, onUpdated, onSelectSto
                       </td>
 
                       <td className="py-3 px-3 text-right font-bold text-slate-600 dark:text-slate-300">
-                        {h.weight.toFixed(1)}%
+                        {summary.fxValid || (summary.usd?.holdingsCount ?? 0) === 0 ? `${h.weight.toFixed(1)}%` : '-'}
                       </td>
 
                       <td className="py-3 px-4 text-center">

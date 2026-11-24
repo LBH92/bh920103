@@ -43,3 +43,20 @@ export const fromProviderTicker = (symbol: string): string => {
   return symbol.toUpperCase().trim().replace(/-/g, '.');
 };
 
+/**
+ * Generates a composite unique React key across markets/exchanges/currencies
+ * Prevents duplicate key collisions when identical symbols appear in multiple markets or pairs.
+ */
+export const getStockUniqueKey = (item: {
+  symbol?: string;
+  market?: string;
+  exchange?: string;
+  currency?: string;
+  tradingPair?: string;
+}): string => {
+  const market = (item.market || 'UNK').toUpperCase();
+  const exchange = (item.exchange || market).toUpperCase();
+  const symbol = (item.symbol || '').toUpperCase();
+  const qualifier = (item.tradingPair || item.currency || '').toUpperCase();
+  return `${market}:${exchange}:${symbol}:${qualifier}`;
+};

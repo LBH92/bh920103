@@ -47,6 +47,7 @@ import { CreateChatRoomModal } from './CreateChatRoomModal';
 import { ChatToolbar } from './ChatToolbar';
 import { AdminChatControl } from './AdminChatControl';
 import { adminService } from '../../services/adminService';
+import { dedupeById } from '../../utils/dedupe';
 
 export const ChatView: React.FC = () => {
   // 6 Official Chat Rooms
@@ -147,7 +148,7 @@ export const ChatView: React.FC = () => {
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
   // Merged rooms list
-  const allRooms: ChatRoomInfo[] = [...officialRooms, ...customRooms];
+  const allRooms: ChatRoomInfo[] = dedupeById([...officialRooms, ...customRooms]);
   const activeRoom = allRooms.find(r => r.id === activeRoomId) || officialRooms[0];
 
   const isTestPlaceholder = (msg: ChatMessage) => {
@@ -163,8 +164,9 @@ export const ChatView: React.FC = () => {
     return true;
   });
 
-  // 1. Subscribe to Chat Rooms from Firestore
+  // 1. Subscribe to Chat Rooms from Firestore (only when authenticated)
   useEffect(() => {
+    if (!isAuthenticated) return;
     const unsub = firebaseRepository.subscribeChatRooms(remoteRooms => {
       if (remoteRooms && remoteRooms.length > 0) {
         setCustomRooms(prev => {
@@ -176,7 +178,7 @@ export const ChatView: React.FC = () => {
       }
     });
     return () => unsub();
-  }, []);
+  }, [isAuthenticated]);
 
   // 2. Real-time User Presence & Concurrent Visitor Count
   useEffect(() => {
@@ -210,13 +212,14 @@ export const ChatView: React.FC = () => {
     return () => clearInterval(interval);
   }, [clientId, user?.id, activeRoomId]);
 
-  // 3. Subscribe to Real-time Chat Restrictions from Firestore
+  // 3. Subscribe to Real-time Chat Restrictions from Firestore (only when authenticated)
   useEffect(() => {
+    if (!isAuthenticated) return;
     const unsub = firebaseRepository.subscribeChatRestrictions(uids => {
       setRestrictedUsers(uids);
     });
     return () => unsub();
-  }, []);
+  }, [isAuthenticated]);
 
   // 4. Subscribe to Real-time Chat Messages for active room (Firestore + Storage + Cross-window Broadcast)
   useEffect(() => {
@@ -241,7 +244,7 @@ export const ChatView: React.FC = () => {
     const handleStorage = (e: StorageEvent) => {
       if (e.key === 'bd_chat_messages') {
         const fresh = storageService.getChatMessages(activeRoomId);
-        setMessages(fresh);
+        setMessages(dedupeById(fresh));
       }
     };
     window.addEventListener('storage', handleStorage);
@@ -331,7 +334,7 @@ export const ChatView: React.FC = () => {
   };
 
   const handleRoomCreated = (newRoom: ChatRoomInfo) => {
-    setCustomRooms(prev => [newRoom, ...prev]);
+    setCustomRooms(prev => dedupeById([newRoom, ...prev]));
     setActiveRoomId(newRoom.id);
     setMobileView('chat');
   };
@@ -713,23 +716,24 @@ export const ChatView: React.FC = () => {
 
             {displayMessages.length > 0 ? (
               (() => {
-                // Group messages by KST calendar date key
-                const groupedByDate: { dateKey: string; dividerLabel: string; items: ChatMessage[] }[] = [];
-                let currentGroup: { dateKey: string; dividerLabel: string; items: ChatMessage[] } | null = null;
+                // Group deduplicated messages by KST calendar date key using a Map so each dateKey appears at most once
+                const uniqueMessages = dedupeById(displayMessages);
+                const groupMap = new Map<string, { dateKey: string; dividerLabel: string; items: ChatMessage[] }>();
 
-                displayMessages.forEach(msg => {
+                uniqueMessages.forEach(msg => {
                   const rawTime = msg.createdAt || msg.timestamp;
-                  const d = parseToDate(rawTime);
                   const dateKey = getKstDateKey(rawTime);
                   const dividerLabel = formatChatDividerDate(rawTime);
 
-                  if (!currentGroup || currentGroup.dateKey !== dateKey) {
-                    currentGroup = { dateKey, dividerLabel, items: [msg] };
-                    groupedByDate.push(currentGroup);
+                  const existingGroup = groupMap.get(dateKey);
+                  if (!existingGroup) {
+                    groupMap.set(dateKey, { dateKey, dividerLabel, items: [msg] });
                   } else {
-                    currentGroup.items.push(msg);
+                    existingGroup.items.push(msg);
                   }
                 });
+
+                const groupedByDate = Array.from(groupMap.values());
 
                 return groupedByDate.map(group => (
                   <div key={group.dateKey} className="space-y-3.5">
@@ -1054,7 +1058,7 @@ export const ChatView: React.FC = () => {
                         sentiment,
                       };
                       const sent = storageService.sendChatMessage(imageMsgPayload);
-                      setMessages(prev => [...prev, sent]);
+                      setMessages(prev => dedupeById([...prev, sent]));
                       firebaseRepository.sendChatMessage(imageMsgPayload, sent.id).catch(() => {});
                     }}
                   />
@@ -1094,7 +1098,7 @@ export const ChatView: React.FC = () => {
                                 sentiment,
                               };
                               const sent = storageService.sendChatMessage(imageMsgPayload);
-                              setMessages(prev => [...prev, sent]);
+                              setMessages(prev => dedupeById([...prev, sent]));
                               firebaseRepository.sendChatMessage(imageMsgPayload, sent.id).catch(() => {});
                             }
                           }

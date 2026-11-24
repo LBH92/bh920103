@@ -122,7 +122,7 @@ export const AdminCommentsTab: React.FC<AdminCommentsTabProps> = ({
             {filteredComments.map(({ comment, postTitle, postId }) => {
               const currentStatus = comment.status || 'published';
               return (
-                <tr key={comment.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
+                <tr key={`${postId}-${comment.id}`} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
                   {/* Author */}
                   <td className="py-3.5 px-4 whitespace-nowrap">
                     <div className="flex items-center gap-2">
@@ -221,7 +221,7 @@ export const AdminCommentsTab: React.FC<AdminCommentsTabProps> = ({
       <div className="md:hidden space-y-3">
         {filteredComments.map(({ comment, postTitle, postId }) => (
           <div
-            key={comment.id}
+            key={`${postId}-${comment.id}`}
             className="p-4 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs space-y-2.5"
           >
             <div className="flex items-center justify-between text-xs">

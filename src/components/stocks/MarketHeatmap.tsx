@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { HeatmapStockItem, HeatmapResponse } from '../../types';
+import { inferStockCurrency, formatMoney } from '../../utils/currency';
   const getMarketLabel = (filter: string) => {
     switch (filter) {
       case 'ALL': return '한미 전체 시장';
@@ -362,9 +363,7 @@ export const MarketHeatmap: React.FC = () => {
                   {/* Price & Change Rate */}
                   <div className="flex items-baseline justify-between w-full mt-auto pt-1 border-t border-white/10">
                     <span className="text-[11px] font-mono font-bold">
-                      {item.currency === 'USD'
-                        ? `$${item.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        : `${item.price.toLocaleString()}원`}
+                      {formatMoney(item.price, inferStockCurrency(item.symbol, item.exchange, item.currency))}
                     </span>
 
                     <div className="flex items-center gap-0.5 font-mono font-black text-xs">

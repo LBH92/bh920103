@@ -27,6 +27,13 @@ import { GoogleGenAI } from '@google/genai';
 import { Stock, StockIndex, ExchangeRate, StockNews, CommunityPost } from '../src/types';
 import { INITIAL_STOCKS, INITIAL_INDICES, INITIAL_EXCHANGE_RATE, INITIAL_NEWS } from '../src/services/mockData';
 import { TRACKED_STOCKS } from './stockApiService';
+import {
+  inferStockCurrency,
+  inferStockExchange,
+  formatMoney,
+  formatTradingValueByCurrency,
+  validateExchangeRate,
+} from '../src/utils/currency';
 
 // Reference to current active server stocks & indices (injected from server.ts)
 let currentServerStocks: Stock[] = [...INITIAL_STOCKS];
@@ -72,22 +79,24 @@ export function get_stock_quote(symbol: string) {
     symbol: stock.symbol,
     name: stock.name,
     market: stock.market,
+    exchange: inferStockExchange(stock.symbol, stock.market, stock.exchange),
+    currency: inferStockCurrency(stock.symbol, stock.market, stock.currency),
     sector: stock.sector,
-    price: stock.price,                   // 현재가 (원)
-    change: stock.change,                 // 전일 대비 변동폭 (원)
-    changePercent: stock.changePercent,   // 등락률 (%)
-    volume: stock.volume,                 // 거래량 (주)
-    volumeRatio: stock.volumeRatio || 100,// 20일 평균 대비 거래량 비율 (%)
-    tradingValue: stock.tradingValue,     // 거래대금 (억 원)
-    openPrice: openPrice,                 // 시가 (원)
-    highPrice: stock.highPrice,           // 고가 (원)
-    lowPrice: stock.lowPrice,             // 저가 (원)
-    prevClose: prevClose,                 // 전일 종가 (원)
-    marketCap: stock.marketCap,           // 시가총액 (조/억 원)
-    per: stock.per,                       // PER
-    pbr: stock.pbr,                       // PBR
-    dividendYield: stock.dividendYield,   // 배당수익률 (%)
-    dataTimestamp: `${kstTime} KST`,      // 데이터 기준 시간
+    price: stock.price,
+    change: stock.change,
+    changePercent: stock.changePercent,
+    volume: stock.volume,
+    volumeRatio: stock.volumeRatio || 100,
+    tradingValue: stock.tradingValue,
+    openPrice: openPrice,
+    highPrice: stock.highPrice,
+    lowPrice: stock.lowPrice,
+    prevClose: prevClose,
+    marketCap: stock.marketCap,
+    per: stock.per,
+    pbr: stock.pbr,
+    dividendYield: stock.dividendYield,
+    dataTimestamp: `${kstTime} KST`,
   };
 }
 
@@ -171,10 +180,11 @@ export function get_market_status() {
   const kospi = currentServerIndices.find(i => i.symbol === 'KOSPI') || currentServerIndices[0];
   const kosdaq = currentServerIndices.find(i => i.symbol === 'KOSDAQ') || currentServerIndices[1];
 
+  const fxCheck = validateExchangeRate(currentExchangeRate);
   return {
     kospi: {
       name: '코스피',
-      value: kospi?.value || 2684.52,
+      value: kospi?.value || 0,
       changePercent: `${kospi?.changePercent || 0}%`,
       tradingValue: `${kospi?.tradingValue || 0}조 원`,
       advanceCount: kospi?.advanceCount || 0,
@@ -182,14 +192,16 @@ export function get_market_status() {
     },
     kosdaq: {
       name: '코스닥',
-      value: kosdaq?.value || 872.10,
+      value: kosdaq?.value || 0,
       changePercent: `${kosdaq?.changePercent || 0}%`,
       tradingValue: `${kosdaq?.tradingValue || 0}조 원`,
     },
     exchangeRate: {
       currency: currentExchangeRate.name || '원/달러 환율',
-      rate: currentExchangeRate.rate,
-      changePercent: `${currentExchangeRate.changePercent}%`,
+      rate: fxCheck.valid ? fxCheck.rate : null,
+      changePercent: fxCheck.valid ? `${currentExchangeRate.changePercent ?? 0}%` : null,
+      status: fxCheck.status,
+      isStale: !fxCheck.valid,
     },
   };
 }
@@ -393,6 +405,7 @@ function generateFactualFallbackBriefing(
     return `[데이터 기준 시간: ${dataTimestamp}]\n\n데이터가 부족하여 해당 종목의 브리핑을 생성할 수 없습니다.`;
   }
 
+  const cur = inferStockCurrency(quote.symbol, quote.market, quote.currency);
   const isUp = quote.change >= 0;
   const changeWord = isUp ? '상승' : '하락';
   const sign = isUp ? '+' : '';
@@ -406,22 +419,27 @@ function generateFactualFallbackBriefing(
 
   let chartText = '';
   if (!('error' in chart) && chart.ma5) {
-    chartText = `최근 5일 이동평균선은 ${chart.ma5.toLocaleString()}원이며 현재가는 이보다 ${chart.isAboveMa5 ? '상회' : '하회'}하고 있습니다.`;
+    chartText = `최근 5일 이동평균선은 ${formatMoney(chart.ma5, cur, { krwStyle: 'unit' })}이며 현재가는 이보다 ${chart.isAboveMa5 ? '상회' : '하회'}하고 있습니다.`;
   } else {
     chartText = '차트 추세 보조지표 데이터가 제한적입니다.';
   }
+
+  const tvFormatted = formatTradingValueByCurrency(quote.tradingValue, cur);
+  const fxText = market.exchangeRate.rate !== null
+    ? `${market.exchangeRate.rate.toLocaleString()}원 (${market.exchangeRate.changePercent})`
+    : '실시간 환율 지연/조회 불가';
 
   return `
 [데이터 기준 시간: ${dataTimestamp}]
 
 ### [현재 상황]
-${quote.name}(${quote.symbol})은(는) 현재 전일 대비 **${sign}${quote.change.toLocaleString()}원(${sign}${quote.changePercent}%) ${changeWord}**한 **${quote.price.toLocaleString()}원**에 거래되고 있습니다. 시가(${quote.openPrice.toLocaleString()}원) 대비 ${quote.price >= quote.openPrice ? '견조한 매수세를 유지' : '조정 양상을 보이고'} 있습니다.
+${quote.name}(${quote.symbol}, ${cur})은(는) 현재 전일 대비 **${formatMoney(quote.change, cur, { showSign: true, krwStyle: 'unit' })}(${sign}${quote.changePercent}%) ${changeWord}**한 **${formatMoney(quote.price, cur, { krwStyle: 'unit' })}**에 거래되고 있습니다. 시가(${formatMoney(quote.openPrice, cur, { krwStyle: 'unit' })}) 대비 ${quote.price >= quote.openPrice ? '견조한 매수세를 유지' : '조정 양상을 보이고'} 있습니다.
 
 ### [주요 데이터]
-• **현재가**: ${quote.price.toLocaleString()}원 (전일 종가: ${quote.prevClose.toLocaleString()}원)
-• **당일 가격 변동폭**: 시가 ${quote.openPrice.toLocaleString()}원 / 고가 ${quote.highPrice.toLocaleString()}원 / 저가 ${quote.lowPrice.toLocaleString()}원
+• **현재가**: ${formatMoney(quote.price, cur, { krwStyle: 'unit' })} (전일 종가: ${formatMoney(quote.prevClose, cur, { krwStyle: 'unit' })})
+• **당일 가격 변동폭**: 시가 ${formatMoney(quote.openPrice, cur, { krwStyle: 'unit' })} / 고가 ${formatMoney(quote.highPrice, cur, { krwStyle: 'unit' })} / 저가 ${formatMoney(quote.lowPrice, cur, { krwStyle: 'unit' })}
 • **거래량**: ${quote.volume.toLocaleString()}주 (20일 평균 대비 **${quote.volumeRatio}%**)
-• **거래대금**: 약 **${quote.tradingValue.toLocaleString()}억 원**
+• **거래대금**: 약 **${tvFormatted}**
 • **이동평균선 추세**: ${chartText}
 
 ### [관련 뉴스]
@@ -430,13 +448,13 @@ ${newsText}
 ### [시장 상황]
 • **코스피 지수**: ${market.kospi.value.toLocaleString()} (${market.kospi.changePercent}, 거래대금 ${market.kospi.tradingValue})
 • **코스닥 지수**: ${market.kosdaq.value.toLocaleString()} (${market.kosdaq.changePercent})
-• **원/달러 환율**: ${market.exchangeRate.rate.toLocaleString()}원 (${market.exchangeRate.changePercent})
-${quote.market === 'KOSPI' ? `코스피 시장 상승 종목은 ${market.kospi.advanceCount}개, 하락 종목은 ${market.kospi.declineCount}개로 시장 전반의 수급 분위기를 확인할 수 있습니다.` : '코스닥 시장 변동성에 연동된 흐름이 감지됩니다.'}
+• **원/달러 환율**: ${fxText}
+${quote.market === 'KOSPI' ? `코스피 시장 상승 종목은 ${market.kospi.advanceCount}개, 하락 종목은 ${market.kospi.declineCount}개로 시장 전반의 수급 분위기를 확인할 수 있습니다.` : `${quote.market} 시장 변동성에 연동된 흐름이 감지됩니다.`}
 
 ### [확인할 사항]
-1. **거래대금 집중도 지속 여부**: 당일 ${quote.tradingValue.toLocaleString()}억 원 규모의 수급이 장마감 시점까지 지속적으로 유지되는지 점검할 필요가 있습니다.
-2. **저항선 및 지지선 확인**: 당일 고가(${quote.highPrice.toLocaleString()}원) 돌파 여부와 저가(${quote.lowPrice.toLocaleString()}원) 지지 여부를 분봉 차트에서 지속적으로 관찰해야 합니다.
-3. **거시 변수 모니터링**: 환율 변동(${market.exchangeRate.rate}원) 및 글로벌 반도체·IT 섹터 지수 변동에 따른 외국인·기관 순매수 동향을 함께 확인하시기 바랍니다.
+1. **거래대금 집중도 지속 여부**: 당일 ${tvFormatted} 규모의 수급이 장마감 시점까지 지속적으로 유지되는지 점검할 필요가 있습니다.
+2. **저항선 및 지지선 확인**: 당일 고가(${formatMoney(quote.highPrice, cur, { krwStyle: 'unit' })}) 돌파 여부와 저가(${formatMoney(quote.lowPrice, cur, { krwStyle: 'unit' })}) 지지 여부를 분봉 차트에서 지속적으로 관찰해야 합니다.
+3. **거시 변수 모니터링**: 환율 변동(${fxText}) 및 글로벌 섹터 지수 변동에 따른 수급 동향을 함께 확인하시기 바랍니다.
 *(※ 본 분석은 투자 권유나 단정적인 주가 예측이 아니며, 투자 판단의 최종 책임은 투자자 본인에게 있습니다.)*
 `.trim();
 }

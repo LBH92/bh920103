@@ -30,9 +30,8 @@ const lazyWithRetry = <T extends React.ComponentType<any>>(
     }
   });
 
-import { StockDetailView } from './components/stocks/StockDetailView';
-
 // Views - Lazy Loaded with retry resilience
+const StockDetailView = lazyWithRetry(() => import('./components/stocks/StockDetailView').then(m => ({ default: m.StockDetailView })));
 const HomeView = lazyWithRetry(() => import('./components/home/HomeView').then(m => ({ default: m.HomeView })));
 const StockListView = lazyWithRetry(() => import('./components/stocks/StockListView').then(m => ({ default: m.StockListView })));
 const WatchlistView = lazyWithRetry(() => import('./components/watchlist/WatchlistView').then(m => ({ default: m.WatchlistView })));
@@ -51,7 +50,8 @@ const StockComparisonView = lazyWithRetry(() => import('./components/stocks/Stoc
 const CalendarView = lazyWithRetry(() => import('./components/calendar/CalendarView').then(m => ({ default: m.CalendarView })));
 const InquiryPage = lazyWithRetry(() => import('./components/inquiry/InquiryPage').then(m => ({ default: m.InquiryPage })));
 const MiniGames = lazyWithRetry(() => import('./components/games/MiniGames').then(m => ({ default: m.MiniGames || m.default })));
-import { SideChatPanel } from './components/chat/SideChatPanel';
+const StaticPageView = lazyWithRetry(() => import('./components/static/StaticPageView').then(m => ({ default: m.StaticPageView })));
+const PublicInsightsView = lazyWithRetry(() => import('./components/insights/PublicInsightsView').then(m => ({ default: m.PublicInsightsView })));
 import { RightSidebar } from './components/layout/RightSidebar';
 
 // Loading component
@@ -61,14 +61,9 @@ const ViewLoader = () => (
   </div>
 );
 
-// Debug wrapper to identify mount issues
-const LoggedView = ({ Component, name, props }: { Component: any, name: string, props: any }) => {
-  useEffect(() => {
-    console.log(`[DEBUG] Component ${name} mounted.`);
-    return () => console.log(`[DEBUG] Component ${name} unmounted.`);
-  }, [name]);
-  return <Component {...props} />;
-};
+const LoggedView = ({ Component, props }: { Component: any; name?: string; props: any }) => (
+  <Component {...props} />
+);
 
 // ... (inside MainLayout, replace renderActiveView)
 const MainLayout: React.FC = () => {
@@ -85,7 +80,11 @@ const MainLayout: React.FC = () => {
     isAuthLoading,
     stocks,
     watchlist,
-    navigateToStock
+    navigateToStock,
+    publicRoute,
+    navigateToStaticPage,
+    navigateToInsights,
+    clearPublicRoute,
   } = useApp();
 
   // Active Watchlist Fluctuation Monitor for Browser Push Notifications
@@ -107,22 +106,34 @@ const MainLayout: React.FC = () => {
       });
     });
 
-    // Phased Strategy: Pre-fetch heavy views after initial load or on interaction
-    const preloadHeavyViews = () => {
-      console.log('[DEBUG] Pre-fetching heavy views...');
-      import('./components/stocks/StockDetailView');
-      import('./components/community/CommunityView');
-      import('./components/stocks/StockListView');
-    };
+    // Initialize AdMob and show banner on native mobile for Home & Stock Detail views
+    import('./services/adMobService').then(({ adMobService }) => {
+      adMobService.initialize().then(() => {
+        adMobService.showBanner(60);
+      }).catch(err => console.warn('[AdMob] Init warning:', err));
+    });
 
-    const timer = setTimeout(preloadHeavyViews, 3000);
-    return () => clearTimeout(timer);
+    return () => {
+      import('./services/adMobService').then(({ adMobService }) => {
+        adMobService.hideBanner();
+      });
+    };
   }, []);
+
+  // Manage banner visibility based on activeTab / selectedSymbol
+  useEffect(() => {
+    import('./services/adMobService').then(({ adMobService }) => {
+      if (activeTab === 'home' || (activeTab === 'stocks')) {
+        adMobService.showBanner(60);
+      } else {
+        adMobService.hideBanner();
+      }
+    });
+  }, [activeTab, selectedSymbol]);
 
   // Trigger on sidebar interaction
   useEffect(() => {
     if (isSideChatOpen) {
-      console.log('[DEBUG] Pre-fetching heavy views due to sidebar interaction.');
       import('./components/stocks/StockDetailView');
       import('./components/community/CommunityView');
       import('./components/stocks/StockListView');
@@ -150,6 +161,33 @@ const MainLayout: React.FC = () => {
   }
 
   const renderActiveView = () => {
+    // 0. Public Policy and Insights Views (AdSense)
+    if (publicRoute?.type === 'static') {
+      return (
+        <Suspense fallback={<ViewLoader />}>
+          <StaticPageView
+            page={publicRoute.staticPage || 'about'}
+            onNavigateHome={clearPublicRoute}
+            onNavigatePage={navigateToStaticPage}
+          />
+        </Suspense>
+      );
+    }
+
+    if (publicRoute?.type === 'insights') {
+      return (
+        <Suspense fallback={<ViewLoader />}>
+          <PublicInsightsView
+            initialCategory={publicRoute.insightCategory}
+            initialInsightId={publicRoute.insightArticleId}
+            onNavigateHome={clearPublicRoute}
+            onSelectCategory={(cat) => navigateToInsights(cat)}
+            onSelectArticle={(id) => navigateToInsights(publicRoute.insightCategory, id)}
+          />
+        </Suspense>
+      );
+    }
+
     // Determine which view to render
     let Component;
     let componentKey = 'home'; // Default
@@ -193,8 +231,6 @@ const MainLayout: React.FC = () => {
       return {};
     };
 
-    console.log(`[DEBUG] Attempting to render: ${componentKey}`);
-
     return (
       <Suspense fallback={<ViewLoader />}>
         <LoggedView Component={Component} name={componentKey} props={getProps()} />
@@ -215,10 +251,11 @@ const MainLayout: React.FC = () => {
         {/* Center Content - Flex 1, independent scroll */}
         <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
           <div className="flex-1 p-2 sm:p-4 lg:p-6 pb-24 md:pb-6">
-            <ErrorBoundary key={`${activeTab}-${selectedSymbol || ''}-${selectedIndexSymbol || ''}-${selectedPostId || ''}`} fallbackTitle="화면을 불러오는 중 문제가 발생했습니다.">
+            <ErrorBoundary key={`${publicRoute ? JSON.stringify(publicRoute) : activeTab}-${selectedSymbol || ''}-${selectedIndexSymbol || ''}-${selectedPostId || ''}`} fallbackTitle="화면을 불러오는 중 문제가 발생했습니다.">
               {renderActiveView()}
             </ErrorBoundary>
           </div>
+          <Footer />
         </main>
 
         {/* Right Panel - Watchlist on Desktop Screens */}
@@ -238,7 +275,6 @@ const MainLayout: React.FC = () => {
 };
 
 export default function App() {
-  console.log('App component rendering...');
   return (
     <ErrorBoundary fallbackTitle="서비스를 초기화하는 중 문제가 발생했습니다.">
       <AppProvider>

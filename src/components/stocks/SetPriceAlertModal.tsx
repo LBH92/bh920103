@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Bell, X, TrendingUp, TrendingDown, Check } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { inferStockCurrency, formatMoney, roundByCurrency, getCurrencySymbol } from '../../utils/currency';
 
 interface SetPriceAlertModalProps {
   isOpen: boolean;
@@ -17,7 +18,13 @@ export const SetPriceAlertModal: React.FC<SetPriceAlertModalProps> = ({
   symbolName,
   currentPrice,
 }) => {
-  const { addPriceAlert, requireAuth, firebaseUser } = useApp();
+  const { addPriceAlert, requireAuth, stocks } = useApp();
+  const targetStockObj = stocks.find(s => s.symbol === symbol);
+  const stockCur = inferStockCurrency(symbol, targetStockObj?.market, targetStockObj?.currency);
+  const currencyLabel = stockCur === 'KRW' ? '원' : getCurrencySymbol(stockCur);
+  const priceStep = stockCur === 'KRW' ? 1 : stockCur === 'BTC' ? 0.00000001 : 0.01;
+  const minPrice = stockCur === 'KRW' ? 1 : stockCur === 'BTC' ? 0.00000001 : 0.01;
+
   const [targetPrice, setTargetPrice] = useState<number>(currentPrice);
   const [condition, setCondition] = useState<'above' | 'below'>('above');
   const [note, setNote] = useState<string>('');
@@ -34,7 +41,7 @@ export const SetPriceAlertModal: React.FC<SetPriceAlertModalProps> = ({
   if (!isOpen) return null;
 
   const handleQuickPercent = (pct: number) => {
-    const calculated = Math.round(currentPrice * (1 + pct / 100));
+    const calculated = roundByCurrency(currentPrice * (1 + pct / 100), stockCur);
     setTargetPrice(calculated);
     setCondition(pct >= 0 ? 'above' : 'below');
   };
@@ -92,9 +99,9 @@ export const SetPriceAlertModal: React.FC<SetPriceAlertModalProps> = ({
                 </div>
               </div>
               <div className="text-right">
-                <span className="text-xs font-semibold text-slate-400">현재가</span>
+                <span className="text-xs font-semibold text-slate-400">현재가 ({stockCur})</span>
                 <div className="text-sm font-black font-mono text-slate-900 dark:text-white">
-                  {currentPrice.toLocaleString()}원
+                  {formatMoney(currentPrice, stockCur)}
                 </div>
               </div>
             </div>
@@ -137,7 +144,7 @@ export const SetPriceAlertModal: React.FC<SetPriceAlertModalProps> = ({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                목표 가격 (원)
+                목표 가격 ({stockCur})
               </label>
               {diffPercent !== 0 && (
                 <span className={`text-[11px] font-bold font-mono ${diffPercent > 0 ? 'text-rose-500' : 'text-blue-500'}`}>
@@ -148,16 +155,16 @@ export const SetPriceAlertModal: React.FC<SetPriceAlertModalProps> = ({
             <div className="relative">
               <input
                 type="number"
-                min={1}
-                step={1}
+                min={minPrice}
+                step={priceStep}
                 value={targetPrice || ''}
-                onChange={(e) => setTargetPrice(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-base font-bold font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+                onChange={(e) => setTargetPrice(Math.max(0, parseFloat(e.target.value) || 0))}
+                className="w-full px-3.5 py-2.5 pr-14 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-base font-bold font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500/50"
                 placeholder="목표 가격을 입력하세요"
                 required
               />
               <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 pointer-events-none">
-                원
+                {currencyLabel}
               </span>
             </div>
           </div>

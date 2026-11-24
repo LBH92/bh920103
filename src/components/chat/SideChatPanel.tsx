@@ -32,6 +32,7 @@ import { filterProfanity, checkSpamViolation } from '../../utils/chatModerator';
 import { ReportModal } from '../community/ReportModal';
 import { SideChatToolbar } from './SideChatToolbar';
 import { adminService } from '../../services/adminService';
+import { dedupeById } from '../../utils/dedupe';
 
 interface SideChatPanelProps {
   onOpenFullChat?: () => void;
@@ -41,6 +42,7 @@ interface SideChatPanelProps {
 export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, embedded = false }) => {
   const { 
     user, 
+    isAuthenticated,
     requireAuth, 
     showToast, 
     isSideChatOpen, 
@@ -53,8 +55,11 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
     activeRoomId,
     setActiveRoomId,
     chatMessages: messages,
-    setChatMessages: setMessages
+    setChatMessages: setMessages,
+    registerChatConsumer,
   } = useApp();
+
+  useEffect(() => registerChatConsumer(), [registerChatConsumer]);
 
   const [inputText, setInputText] = useState<string>('');
   const [sentiment, setSentiment] = useState<'neutral' | 'bull' | 'bear'>('neutral');
@@ -129,13 +134,14 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
     return () => clearInterval(timer);
   }, [user?.id, activeRoomId]);
 
-  // 2. Subscribe to Chat Restrictions from Firestore
+  // 2. Subscribe to Chat Restrictions from Firestore (only when authenticated)
   useEffect(() => {
+    if (!isAuthenticated) return;
     const unsub = firebaseRepository.subscribeChatRestrictions(uids => {
       setRestrictedUsers(uids);
     });
     return () => unsub();
-  }, []);
+  }, [isAuthenticated]);
 
   // Message side-effects (auto-scroll, unread count)
   useEffect(() => {
@@ -487,21 +493,23 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
                 </div>
               ) : (
                 (() => {
-                  const groupedByDate: { dateKey: string; dividerLabel: string; items: ChatMessage[] }[] = [];
-                  let currentGroup: { dateKey: string; dividerLabel: string; items: ChatMessage[] } | null = null;
+                  const uniqueMessages = dedupeById(messages);
+                  const groupMap = new Map<string, { dateKey: string; dividerLabel: string; items: ChatMessage[] }>();
 
-                  messages.forEach(msg => {
+                  uniqueMessages.forEach(msg => {
                     const rawTime = msg.createdAt || msg.timestamp;
                     const dateKey = getKstDateKey(rawTime);
                     const dividerLabel = formatChatDividerDate(rawTime);
 
-                    if (!currentGroup || currentGroup.dateKey !== dateKey) {
-                      currentGroup = { dateKey, dividerLabel, items: [msg] };
-                      groupedByDate.push(currentGroup);
+                    const existingGroup = groupMap.get(dateKey);
+                    if (!existingGroup) {
+                      groupMap.set(dateKey, { dateKey, dividerLabel, items: [msg] });
                     } else {
-                      currentGroup.items.push(msg);
+                      existingGroup.items.push(msg);
                     }
                   });
+
+                  const groupedByDate = Array.from(groupMap.values());
 
                   return groupedByDate.map(group => (
                     <div key={group.dateKey} className="space-y-2">
@@ -687,7 +695,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
                       sentiment,
                     };
                     const sent = storageService.sendChatMessage(imageMsgPayload);
-                    setMessages(prev => [...prev, sent]);
+                    setMessages(prev => dedupeById([...prev, sent]));
                     firebaseRepository.sendChatMessage(imageMsgPayload, messageId).catch(() => {});
                   }}
                 />
@@ -740,7 +748,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
                                 sentiment,
                               };
                               const sent = storageService.sendChatMessage(imageMsgPayload);
-                              setMessages(prev => [...prev, sent]);
+                              setMessages(prev => dedupeById([...prev, sent]));
                               firebaseRepository.sendChatMessage(imageMsgPayload, messageId).catch(() => {});
                             }
                           }
@@ -872,7 +880,7 @@ export const SideChatPanel: React.FC<SideChatPanelProps> = ({ onOpenFullChat, em
 
             {/* Messages Feed */}
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
-              {messages.map((msg, idx) => (
+              {dedupeById(messages).map((msg, idx) => (
                 <div key={msg.id || idx} className="space-y-1">
                   <div className="flex items-center justify-between text-[11px]">
                     <div className="flex items-center gap-1.5">

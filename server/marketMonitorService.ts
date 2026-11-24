@@ -11,6 +11,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { MarketAlertEvent, MarketMonitoringConfig, MarketEventType, EventScope } from '../src/types/marketMonitor';
 import { Stock, StockIndex } from '../src/types';
+import { inferStockCurrency, formatMoney } from '../src/utils/currency';
 
 // Default Configurable Settings (can be updated at runtime or via environment variables)
 export let monitoringConfig: MarketMonitoringConfig = {
@@ -105,13 +106,15 @@ export function evaluateMarketData(stocks: Stock[], indices: StockIndex[]): Mark
   // A. 개별 종목 감지 (EventScope: 'STOCK')
   // ==========================================
   for (const stock of stocks) {
+    const cur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
+    const formattedPrice = formatMoney(stock.price, cur, { krwStyle: 'unit' });
     // 1. 급등 (PRICE_SURGE): 등락률 >= PRICE_RISE_ALERT_PERCENT
     if (stock.changePercent >= monitoringConfig.PRICE_RISE_ALERT_PERCENT) {
       const evt = pushAlertEvent({
         type: 'PRICE_SURGE',
         scope: 'STOCK',
         title: `${stock.name} 급등 발생 (+${stock.changePercent.toFixed(2)}%)`,
-        description: `설정 기준(${monitoringConfig.PRICE_RISE_ALERT_PERCENT}% 이상)을 초과하여 현재가 ${stock.price.toLocaleString()}원에 거래 중입니다.`,
+        description: `설정 기준(${monitoringConfig.PRICE_RISE_ALERT_PERCENT}% 이상)을 초과하여 현재가 ${formattedPrice}에 거래 중입니다.`,
         symbol: stock.symbol,
         symbolName: stock.name,
         market: stock.market,
@@ -134,7 +137,7 @@ export function evaluateMarketData(stocks: Stock[], indices: StockIndex[]): Mark
         type: 'PRICE_PLUNGE',
         scope: 'STOCK',
         title: `${stock.name} 급락 경보 (${stock.changePercent.toFixed(2)}%)`,
-        description: `설정 기준(${monitoringConfig.PRICE_FALL_ALERT_PERCENT}% 이하)에 도달하여 현재가 ${stock.price.toLocaleString()}원으로 급락세입니다.`,
+        description: `설정 기준(${monitoringConfig.PRICE_FALL_ALERT_PERCENT}% 이하)에 도달하여 현재가 ${formattedPrice}으로 급락세입니다.`,
         symbol: stock.symbol,
         symbolName: stock.name,
         market: stock.market,

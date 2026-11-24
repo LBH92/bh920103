@@ -10,6 +10,7 @@
  */
 
 import { UnifiedFinancialItem } from './types.js';
+import { fetchRealExchangeRate } from '../stockApiService.js';
 
 interface CommodityConfig {
   id: string;
@@ -146,17 +147,44 @@ export class CommodityDataProvider {
   private async fetchSingleCommodity(cfg: CommodityConfig): Promise<UnifiedFinancialItem> {
     const nowStr = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }) + ' (KST)';
 
-    // Domestic Gold calculation: 1 troy ounce = 31.1034768 grams
+    // Domestic Gold calculation: 1 troy ounce = 31.1034768 grams using live USD/KRW FX
     if (cfg.isDomesticGold) {
       const goldItem = this.lastKnownCache.get('commodity_gold');
-      const goldUsdPerOunce = goldItem?.value || 2750;
-      const usdKrw = 1430; // standard benchmark rate
+      const fx = await fetchRealExchangeRate().catch(() => null);
+      const hasValidFx = fx && typeof fx.rate === 'number' && fx.rate > 0 && !fx.isStale && fx.status !== 'error';
+      const goldUsdPerOunce = goldItem?.value && goldItem.value > 0 ? goldItem.value : null;
+
+      if (!hasValidFx || !goldUsdPerOunce) {
+        return {
+          id: `commodity_${cfg.id}`,
+          category: 'commodity',
+          assetType: 'commodity',
+          name: cfg.name,
+          symbol: cfg.symbol,
+          value: 0,
+          displayValue: '환산 보류',
+          change: 0,
+          changePercent: 0,
+          currency: 'KRW',
+          unit: cfg.unit,
+          provider: '한국거래소 (KRX) 금시장 환산',
+          delayStatus: 'delayed_15m',
+          delayLabel: '환율/시세 대기',
+          isRealtime: false,
+          lastUpdated: nowStr,
+          status: 'unavailable',
+          errorMessage: !hasValidFx ? '실시간 USD/KRW 환율 미확인으로 금 환산가 산출 보류' : '국제 금 시세 미확인',
+          notes: '순금(24K) 1g 기준 환산가 (실시간 환율 연동)',
+        };
+      }
+
+      const usdKrw = fx!.rate;
       const pricePerGram = Math.round((goldUsdPerOunce * usdKrw) / 31.1034768);
-      const prevPricePerGram = goldItem?.prevClose 
-        ? Math.round((goldItem.prevClose * usdKrw) / 31.1034768) 
-        : Math.round(pricePerGram * 0.995);
+      const prevPricePerGram = goldItem?.prevClose
+        ? Math.round((goldItem.prevClose * usdKrw) / 31.1034768)
+        : pricePerGram;
       const change = pricePerGram - prevPricePerGram;
-      const changePercent = Number(((change / prevPricePerGram) * 100).toFixed(2));
+      const changePercent = prevPricePerGram > 0 ? Number(((change / prevPricePerGram) * 100).toFixed(2)) : 0;
 
       const item: UnifiedFinancialItem = {
         id: `commodity_${cfg.id}`,
@@ -165,7 +193,7 @@ export class CommodityDataProvider {
         name: cfg.name,
         symbol: cfg.symbol,
         value: pricePerGram,
-        displayValue: `${pricePerGram.toLocaleString()}원 / g`,
+        displayValue: `₩${pricePerGram.toLocaleString()} / g`,
         change,
         changePercent,
         currency: 'KRW',
@@ -174,11 +202,11 @@ export class CommodityDataProvider {
         sparkline: [prevPricePerGram, pricePerGram],
         provider: '한국거래소 (KRX) 금시장 환산',
         delayStatus: 'delayed_15m',
-        delayLabel: '국제금 환산 시세',
+        delayLabel: `환율 ₩${usdKrw.toFixed(2)} 적용`,
         isRealtime: false,
         lastUpdated: nowStr,
         status: 'ok',
-        notes: '순금(24K) 1g 기준 환산가 (1 t.oz = 31.1035g)',
+        notes: `순금(24K) 1g 기준 (국제금 $${goldUsdPerOunce.toFixed(2)} × ₩${usdKrw.toFixed(2)} ÷ 31.1035g)`,
       };
       this.lastKnownCache.set(item.id, item);
       return item;
@@ -321,7 +349,18 @@ export class CommodityDataProvider {
   }
 
   async getCommodityItems(): Promise<UnifiedFinancialItem[]> {
-    return Promise.all(COMMODITY_LIST.map(c => this.fetchSingleCommodity(c)));
+    const baseConfigs = COMMODITY_LIST.filter(c => !c.isDomesticGold && !c.isDubaiCrude);
+    const derivedConfigs = COMMODITY_LIST.filter(c => c.isDomesticGold || c.isDubaiCrude);
+
+    const baseItems = await Promise.all(baseConfigs.map(c => this.fetchSingleCommodity(c)));
+    const derivedItems = await Promise.all(derivedConfigs.map(c => this.fetchSingleCommodity(c)));
+
+    const byId = new Map<string, UnifiedFinancialItem>();
+    for (const item of [...baseItems, ...derivedItems]) {
+      byId.set(item.id, item);
+    }
+
+    return COMMODITY_LIST.map(c => byId.get(`commodity_${c.id}`)!).filter(Boolean);
   }
 }
 

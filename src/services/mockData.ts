@@ -2,13 +2,20 @@ import { Stock, StockIndex, ExchangeRate, MarketEvent, StockNews, CommunityPost,
 
 export const INITIAL_EXCHANGE_RATE: ExchangeRate = {
   currency: 'USD/KRW',
+  baseCurrency: 'USD',
+  quoteCurrency: 'KRW',
+  pair: 'USD/KRW',
   name: '원/달러 환율',
-  rate: 1348.50,
-  change: -4.20,
-  changePercent: -0.31,
-  high: 1354.20,
-  low: 1346.80,
-  sparkline: [1352.7, 1353.5, 1351.0, 1349.8, 1350.5, 1347.9, 1348.50],
+  rate: 0,
+  change: 0,
+  changePercent: 0,
+  high: 0,
+  low: 0,
+  sparkline: [],
+  status: 'unavailable',
+  isStale: true,
+  lastUpdated: '수신 대기',
+  provider: '수신 중',
 };
 
 export const INITIAL_INDICES: StockIndex[] = [
@@ -1487,7 +1494,12 @@ export const INITIAL_ADMIN_REPORTS: AdminReport[] = [];
 // Helper to generate dynamic order book
 export function generateOrderBook(stock: Stock) {
   const price = stock.price;
-  const tick = price >= 100000 ? 500 : price >= 50000 ? 100 : 50;
+  const isUSD = stock.currency === 'USD' || stock.market === 'US';
+  const tick = isUSD
+    ? (price >= 100 ? 0.1 : price >= 10 ? 0.05 : 0.01)
+    : (price >= 100000 ? 500 : price >= 50000 ? 100 : 50);
+  const roundPrice = (p: number) => (isUSD ? Number(Math.max(0.01, p).toFixed(2)) : Math.max(1, Math.round(p)));
+  const prevClose = stock.prevClose || price || 1;
   
   const asks = [];
   const bids = [];
@@ -1497,11 +1509,11 @@ export function generateOrderBook(stock: Stock) {
   
   // 10 levels of asks (매도)
   for (let i = 10; i >= 1; i--) {
-    const askPrice = price + i * tick;
+    const askPrice = roundPrice(price + i * tick);
     const vol = Math.round(1500 + Math.random() * 8000 * (11 - i));
     totalAskVolume += vol;
-    const chg = askPrice - stock.prevClose;
-    const chgPct = (chg / stock.prevClose) * 100;
+    const chg = isUSD ? Number((askPrice - prevClose).toFixed(2)) : Math.round(askPrice - prevClose);
+    const chgPct = (chg / prevClose) * 100;
     asks.push({
       price: askPrice,
       volume: vol,
@@ -1513,11 +1525,11 @@ export function generateOrderBook(stock: Stock) {
   
   // 10 levels of bids (매수)
   for (let i = 1; i <= 10; i++) {
-    const bidPrice = price - (i - 1) * tick;
+    const bidPrice = roundPrice(price - (i - 1) * tick);
     const vol = Math.round(2000 + Math.random() * 9500 * (11 - i));
     totalBidVolume += vol;
-    const chg = bidPrice - stock.prevClose;
-    const chgPct = (chg / stock.prevClose) * 100;
+    const chg = isUSD ? Number((bidPrice - prevClose).toFixed(2)) : Math.round(bidPrice - prevClose);
+    const chgPct = (chg / prevClose) * 100;
     bids.push({
       price: bidPrice,
       volume: vol,

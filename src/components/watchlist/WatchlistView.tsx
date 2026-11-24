@@ -15,7 +15,8 @@ import {
   GripVertical,
   RefreshCw,
   Zap,
-  Bell
+  Bell,
+  AlertTriangle
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Stock } from '../../types';
@@ -24,6 +25,17 @@ import { MockTradeModal } from '../portfolio/MockTradeModal';
 import { WatchlistNotificationSettingsModal } from '../alerts/WatchlistNotificationSettingsModal';
 import { useStockPurchases } from '../../hooks/useStockPurchases';
 import { WatchlistBuyEntry } from '../../types';
+import {
+  inferStockCurrency,
+  inferFiatCurrency,
+  inferStockExchange,
+  formatMoney,
+  formatTradingValueByCurrency,
+  roundByCurrency,
+  validateExchangeRate,
+  convertToKRW,
+  SupportedCurrency,
+} from '../../utils/currency';
 
 export const WatchlistView: React.FC = () => {
   const { 
@@ -39,18 +51,19 @@ export const WatchlistView: React.FC = () => {
     setIsAuthModalOpen,
     user,
     isSimulatingLiveTicks,
-    refreshWatchlistQuotes
+    refreshWatchlistQuotes,
+    exchangeRate,
   } = useApp();
 
   const { purchases } = useStockPurchases(user?.id);
 
-  // Helper for stats
-  const getPurchasesStats = (entries: WatchlistBuyEntry[], currentPrice: number) => {
+  // Helper for stats separated by stock currency
+  const getPurchasesStats = (entries: WatchlistBuyEntry[], currentPrice: number, currency: SupportedCurrency) => {
     const totalQty = entries.reduce((acc: number, cur: WatchlistBuyEntry) => acc + cur.quantity, 0);
     const totalCost = entries.reduce((acc: number, cur: WatchlistBuyEntry) => acc + cur.price * cur.quantity, 0);
-    const avgPrice = totalQty > 0 ? Math.round(totalCost / totalQty) : 0;
-    const evaluationAmount = totalQty * currentPrice;
-    const profit = evaluationAmount - totalCost;
+    const avgPrice = totalQty > 0 ? roundByCurrency(totalCost / totalQty, currency) : 0;
+    const evaluationAmount = roundByCurrency(totalQty * currentPrice, currency);
+    const profit = roundByCurrency(evaluationAmount - totalCost, currency);
     const profitRate = totalCost > 0 ? (profit / totalCost) * 100 : 0;
     return { totalQty, avgPrice, totalCost, evaluationAmount, profit, profitRate };
   };
@@ -88,10 +101,30 @@ export const WatchlistView: React.FC = () => {
   // Filter and preserve order from user's watchlist array
   const watchlistStocks = watchlistDetails;
 
-  // Compute portfolio simulation statistics
-  const totalValue = watchlistStocks.reduce((acc, cur) => acc + cur.price * 10, 0);
-  const totalChange = watchlistStocks.reduce((acc, cur) => acc + cur.change * 10, 0);
-  const totalChangePercent = totalValue > 0 ? (totalChange / (totalValue - totalChange)) * 100 : 0;
+  // Separate 10-share equal simulation by currency (NEVER mix raw KRW & USD!)
+  const fxCheck = validateExchangeRate(exchangeRate);
+  const krwWatchStocks = watchlistStocks.filter(s => inferFiatCurrency(s.symbol, s.market, s.currency) === 'KRW');
+  const usdWatchStocks = watchlistStocks.filter(s => inferFiatCurrency(s.symbol, s.market, s.currency) === 'USD');
+
+  const krwTotalValue = Math.round(krwWatchStocks.reduce((acc, cur) => acc + cur.price * 10, 0));
+  const krwTotalChange = Math.round(krwWatchStocks.reduce((acc, cur) => acc + cur.change * 10, 0));
+  const krwTotalChangePct = (krwTotalValue - krwTotalChange) > 0
+    ? (krwTotalChange / (krwTotalValue - krwTotalChange)) * 100
+    : 0;
+
+  const usdTotalValue = Number(usdWatchStocks.reduce((acc, cur) => acc + cur.price * 10, 0).toFixed(2));
+  const usdTotalChange = Number(usdWatchStocks.reduce((acc, cur) => acc + cur.change * 10, 0).toFixed(2));
+  const usdTotalChangePct = (usdTotalValue - usdTotalChange) > 0
+    ? (usdTotalChange / (usdTotalValue - usdTotalChange)) * 100
+    : 0;
+
+  const hasUsdWatchlist = usdWatchStocks.length > 0;
+  const convertedTotalValueKRW = (!hasUsdWatchlist)
+    ? krwTotalValue
+    : (fxCheck.valid && fxCheck.rate !== null ? Math.round(krwTotalValue + usdTotalValue * fxCheck.rate) : null);
+  const convertedTotalChangeKRW = (!hasUsdWatchlist)
+    ? krwTotalChange
+    : (fxCheck.valid && fxCheck.rate !== null ? Math.round(krwTotalChange + usdTotalChange * fxCheck.rate) : null);
 
   // Move item up
   const handleMoveUp = (e: React.MouseEvent, index: number) => {
@@ -157,11 +190,11 @@ export const WatchlistView: React.FC = () => {
             </span>
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 font-mono">
               <Zap className="w-3 h-3" />
-              <span>Kiwoom 실전 시세</span>
+              <span>KR · US · COIN 통합 시세</span>
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
-            {user?.name}님의 관심종목 실시간 시세, 거래대금 및 오늘의 변동 현황입니다.
+            {user?.name}님의 관심종목 실시간 시세, 거래대금 및 통화별(KRW/USD) 변동 현황입니다.
           </p>
         </div>
 
@@ -179,7 +212,7 @@ export const WatchlistView: React.FC = () => {
             onClick={handleManualRefresh}
             disabled={isRefreshing}
             className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-xs transition-all cursor-pointer disabled:opacity-50"
-            title="키움 실시간 시세 새로고침"
+            title="실시간 시세 새로고침"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-rose-500' : ''}`} />
             <span>{isRefreshing ? '조회중...' : '시세 새로고침'}</span>
@@ -195,7 +228,7 @@ export const WatchlistView: React.FC = () => {
         </div>
       </div>
 
-      {/* Summary KPI Cards */}
+      {/* Summary KPI Cards (KRW / USD Separated) */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
           <span className="text-xs text-slate-400 block mb-1">관심 종목 수</span>
@@ -203,27 +236,66 @@ export const WatchlistView: React.FC = () => {
             {watchlistStocks.length} <span className="text-sm font-sans font-medium text-slate-400">개</span>
           </div>
           <span className="text-[11px] text-slate-400 block mt-1">
-            위/아래 버튼으로 관심종목 순서 자유 변경
+            국내/원화 {krwWatchStocks.length} · 해외/달러 {usdWatchStocks.length}
           </span>
         </div>
 
         <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-          <span className="text-xs text-slate-400 block mb-1">10주 균등 매수 시뮬레이션 금액</span>
-          <div className="text-2xl font-black text-slate-900 dark:text-white font-mono">
-            {totalValue.toLocaleString()} <span className="text-sm font-sans font-medium text-slate-400">원</span>
+          <span className="text-xs text-slate-400 block mb-1">10주 균등 매수 시뮬레이션 (통화별)</span>
+          <div className="space-y-1">
+            {krwWatchStocks.length > 0 && (
+              <div className="text-lg font-black text-slate-900 dark:text-white font-mono">
+                KRW {formatMoney(krwTotalValue, 'KRW')}
+              </div>
+            )}
+            {usdWatchStocks.length > 0 && (
+              <div className="text-lg font-black text-indigo-600 dark:text-indigo-400 font-mono">
+                USD {formatMoney(usdTotalValue, 'USD')}
+              </div>
+            )}
+            {watchlistStocks.length === 0 && (
+              <div className="text-lg font-black text-slate-400 font-mono">-</div>
+            )}
           </div>
-          <span className="text-[11px] text-slate-400 block mt-1">
-            가상 균등 포트폴리오 산출
-          </span>
+          {hasUsdWatchlist && (
+            <span className="text-[11px] text-slate-400 block mt-1 font-mono">
+              {convertedTotalValueKRW !== null && fxCheck.rate
+                ? `통합 환산 ≈ ${formatMoney(convertedTotalValueKRW, 'KRW')} (₩${fxCheck.rate.toLocaleString()}/$)`
+                : '⚠️ 환율 확인 불가로 KRW 통합 환산 중단'}
+            </span>
+          )}
         </div>
 
         <div className="p-4 rounded-2xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 shadow-sm">
-          <span className="text-xs text-slate-400 block mb-1">당일 평가 손익 (시뮬레이션)</span>
-          <div className="flex items-baseline gap-2">
-            <span className={`text-2xl font-black font-mono ${totalChange >= 0 ? 'text-rose-500' : 'text-blue-500'}`}>
-              {totalChange >= 0 ? '+' : ''}{totalChange.toLocaleString()}원
-            </span>
-            <PriceBadge change={totalChange} changePercent={totalChangePercent} size="sm" showIcon={false} />
+          <span className="text-xs text-slate-400 block mb-1">당일 평가 손익 (통화별 분리)</span>
+          <div className="space-y-1">
+            {krwWatchStocks.length > 0 && (
+              <div className="flex items-baseline gap-2">
+                <span className={`text-lg font-black font-mono ${krwTotalChange >= 0 ? 'text-rose-500' : 'text-blue-500'}`}>
+                  {formatMoney(krwTotalChange, 'KRW', { showSign: true })}
+                </span>
+                <PriceBadge change={krwTotalChange} changePercent={krwTotalChangePct} currency="KRW" size="sm" showIcon={false} />
+              </div>
+            )}
+            {usdWatchStocks.length > 0 && (
+              <div className="flex items-baseline gap-2">
+                <span className={`text-lg font-black font-mono ${usdTotalChange >= 0 ? 'text-rose-500' : 'text-blue-500'}`}>
+                  {formatMoney(usdTotalChange, 'USD', { showSign: true })}
+                </span>
+                <PriceBadge change={usdTotalChange} changePercent={usdTotalChangePct} currency="USD" size="sm" showIcon={false} />
+              </div>
+            )}
+            {convertedTotalChangeKRW !== null && hasUsdWatchlist && (
+              <div className="text-[11px] font-mono text-slate-400">
+                통합 환산 ≈ {formatMoney(convertedTotalChangeKRW, 'KRW', { showSign: true })}
+              </div>
+            )}
+            {hasUsdWatchlist && convertedTotalChangeKRW === null && (
+              <div className="text-[11px] text-amber-500 flex items-center gap-1">
+                <AlertTriangle className="w-3 h-3" />
+                <span>환율 오류/지연으로 KRW 통합 손익 미산출</span>
+              </div>
+            )}
           </div>
           <span className="text-[11px] text-slate-400 block mt-1 flex items-center gap-1 font-mono">
             <Clock className="w-3 h-3 text-slate-400" />
@@ -264,7 +336,11 @@ export const WatchlistView: React.FC = () => {
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-sans">
                 {watchlistStocks.map((stock: Stock, idx: number) => {
                   const isUp = stock.change >= 0;
-                  const stats = getPurchasesStats(purchases[stock.symbol] || [], stock.price);
+                  const cur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
+                  const exchangeLabel = inferStockExchange(stock.symbol, stock.market, stock.exchange);
+                  const stats = getPurchasesStats(purchases[stock.symbol] || [], stock.price, cur);
+                  const krwConv = cur !== 'KRW' ? convertToKRW(stock.price, cur, exchangeRate) : null;
+
                   return (
                     <tr
                       key={stock.symbol}
@@ -295,15 +371,22 @@ export const WatchlistView: React.FC = () => {
 
                       {/* 1. 종목명 & 종목코드 */}
                       <td className="py-4 px-4">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-bold text-slate-900 dark:text-white group-hover:text-rose-500 transition-colors">
                             {stock.name}
                           </span>
                           <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 font-bold">
                             {stock.symbol}
                           </span>
-                          <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
-                            {stock.market}
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
+                            {exchangeLabel}
+                          </span>
+                          <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                            cur === 'USD' || cur === 'USDT'
+                              ? 'bg-indigo-500/10 text-indigo-500'
+                              : 'bg-emerald-500/10 text-emerald-500'
+                          }`}>
+                            {cur}
                           </span>
                         </div>
                         <span className="text-xs text-slate-400 mt-0.5 block">{stock.sector}</span>
@@ -311,24 +394,27 @@ export const WatchlistView: React.FC = () => {
 
                       {/* 2. 현재가 */}
                       <td className="py-4 px-4 text-right font-mono font-bold text-slate-900 dark:text-white">
-                        {stock.price.toLocaleString()}원
+                        <div>{formatMoney(stock.price, cur)}</div>
+                        {krwConv?.valid && krwConv.valueKRW !== null && (
+                          <div className="text-[10px] font-normal text-slate-400">
+                            ≈ {formatMoney(krwConv.valueKRW, 'KRW')}
+                          </div>
+                        )}
                       </td>
 
                       {/* 3. 등락률 */}
                       <td className="py-4 px-4 text-right">
-                        <PriceBadge change={stock.change} changePercent={stock.changePercent} size="sm" />
+                        <PriceBadge change={stock.change} changePercent={stock.changePercent} currency={cur} size="sm" />
                       </td>
 
                       {/* 4. 거래량 */}
                       <td className="py-4 px-4 text-right font-mono text-xs text-slate-700 dark:text-slate-300">
-                        {stock.volume.toLocaleString()}주
+                        {stock.volume.toLocaleString()}{stock.market === 'COIN' ? '' : '주'}
                       </td>
 
                       {/* 5. 거래대금 */}
                       <td className="py-4 px-4 text-right font-mono text-xs font-bold text-slate-900 dark:text-white">
-                        {stock.tradingValue >= 10000 
-                          ? `${(stock.tradingValue / 10000).toFixed(1)}조 원`
-                          : `${stock.tradingValue.toLocaleString()}억 원`}
+                        {formatTradingValueByCurrency(stock.tradingValue, cur)}
                       </td>
                       
                       {/* NEW: 평가손익 / 수익률 */}
@@ -336,7 +422,7 @@ export const WatchlistView: React.FC = () => {
                         {stats.totalQty > 0 ? (
                           <>
                             <div className={stats.profit >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
-                              {stats.profit >= 0 ? '+' : ''}{stats.profit.toLocaleString()}원
+                              {formatMoney(stats.profit, cur, { showSign: true })}
                             </div>
                             <div className={stats.profitRate >= 0 ? 'text-rose-500' : 'text-blue-500'}>
                               {stats.profitRate >= 0 ? '+' : ''}{stats.profitRate.toFixed(2)}%
@@ -350,10 +436,10 @@ export const WatchlistView: React.FC = () => {
                       {/* 6. 오늘의 변동 */}
                       <td className="py-4 px-4 text-right font-mono text-xs">
                         <span className={isUp ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
-                          {isUp ? '+' : ''}{stock.change.toLocaleString()}원
+                          {formatMoney(stock.change, cur, { showSign: true })}
                         </span>
                         <div className="text-[10px] text-slate-400 mt-0.5">
-                          {stock.highPrice.toLocaleString()} / {stock.lowPrice.toLocaleString()}
+                          {formatMoney(stock.highPrice, cur)} / {formatMoney(stock.lowPrice, cur)}
                         </div>
                       </td>
 
@@ -392,7 +478,9 @@ export const WatchlistView: React.FC = () => {
           {/* Mobile Card List View */}
           <div className="divide-y divide-slate-100 dark:divide-slate-800 md:hidden font-sans">
             {watchlistStocks.map((stock: Stock, idx: number) => {
-              const isUp = stock.change >= 0;
+              const cur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
+              const exchangeLabel = inferStockExchange(stock.symbol, stock.market, stock.exchange);
+              const krwConv = cur !== 'KRW' ? convertToKRW(stock.price, cur, exchangeRate) : null;
               return (
                 <div
                   key={stock.symbol}
@@ -400,12 +488,15 @@ export const WatchlistView: React.FC = () => {
                   className="p-4 space-y-3 hover:bg-slate-50 dark:hover:bg-slate-800/40 cursor-pointer transition-colors"
                 >
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex items-center gap-1.5 min-w-0">
                       <span className="font-bold text-sm text-slate-900 dark:text-white truncate">
                         {stock.name}
                       </span>
                       <span className="text-xs font-mono text-slate-400">
                         {stock.symbol}
+                      </span>
+                      <span className="text-[10px] font-mono px-1 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
+                        {exchangeLabel} · {cur}
                       </span>
                     </div>
 
@@ -445,13 +536,16 @@ export const WatchlistView: React.FC = () => {
                   <div className="flex items-baseline justify-between">
                     <div>
                       <div className="font-bold font-mono text-base text-slate-900 dark:text-white">
-                        {stock.price.toLocaleString()}원
+                        {formatMoney(stock.price, cur)}
                       </div>
                       <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                        변동: {isUp ? '+' : ''}{stock.change.toLocaleString()}원
+                        변동: {formatMoney(stock.change, cur, { showSign: true })}
+                        {krwConv?.valid && krwConv.valueKRW !== null && (
+                          <span className="ml-2">· ≈ {formatMoney(krwConv.valueKRW, 'KRW')}</span>
+                        )}
                       </div>
                     </div>
-                    <PriceBadge change={stock.change} changePercent={stock.changePercent} size="sm" />
+                    <PriceBadge change={stock.change} changePercent={stock.changePercent} currency={cur} size="sm" />
                   </div>
 
                   <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-[11px] font-mono text-slate-500">
@@ -461,7 +555,7 @@ export const WatchlistView: React.FC = () => {
                     </div>
                     <div>
                       <span className="text-slate-400 block text-[10px]">거래대금</span>
-                      <span>{stock.tradingValue.toLocaleString()}억</span>
+                      <span>{formatTradingValueByCurrency(stock.tradingValue, cur)}</span>
                     </div>
                     <div className="text-right">
                       <span className="text-slate-400 block text-[10px]">갱신시간</span>

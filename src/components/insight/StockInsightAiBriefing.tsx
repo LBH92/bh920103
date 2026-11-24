@@ -21,6 +21,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { aiBriefingClient, AiBriefingResponse } from '../../services/aiBriefingClient';
 import { UserAiSettingsModal } from '../profile/UserAiSettingsModal';
+import { inferStockCurrency, formatMoney, formatTradingValueByCurrency } from '../../utils/currency';
 
 export const StockInsightAiBriefing: React.FC = () => {
   const { stocks, navigateToStock, showToast, user, requireAuth } = useApp();
@@ -218,12 +219,15 @@ export const StockInsightAiBriefing: React.FC = () => {
           </div>
 
           {/* Real Quote Facts Bar */}
-          {briefing.quote && (
+          {briefing.quote && (() => {
+            const matchedStock = stocks.find(s => s.symbol === briefing.symbol);
+            const qCur = inferStockCurrency(briefing.symbol, matchedStock?.market || (briefing.quote as any).market, (briefing.quote as any).currency || matchedStock?.currency);
+            return (
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2 text-xs">
               <div className="p-2.5 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800">
-                <span className="text-slate-400 text-[10px] block">현재가</span>
+                <span className="text-slate-400 text-[10px] block">현재가 ({qCur})</span>
                 <span className="font-mono font-bold text-sm text-slate-900 dark:text-white">
-                  {briefing.quote.price.toLocaleString()}원
+                  {formatMoney(briefing.quote.price, qCur)}
                 </span>
               </div>
 
@@ -246,25 +250,26 @@ export const StockInsightAiBriefing: React.FC = () => {
               <div className="p-2.5 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800">
                 <span className="text-slate-400 text-[10px] block">거래대금</span>
                 <span className="font-mono font-bold text-sm text-slate-900 dark:text-white">
-                  {briefing.quote.tradingValue.toLocaleString()}억
+                  {formatTradingValueByCurrency(briefing.quote.tradingValue, qCur)}
                 </span>
               </div>
 
               <div className="p-2.5 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800">
                 <span className="text-slate-400 text-[10px] block">시가 / 전일종가</span>
                 <span className="font-mono font-bold text-xs text-slate-700 dark:text-slate-300">
-                  {briefing.quote.openPrice.toLocaleString()} / {briefing.quote.prevClose.toLocaleString()}
+                  {formatMoney(briefing.quote.openPrice, qCur)} / {formatMoney(briefing.quote.prevClose, qCur)}
                 </span>
               </div>
 
               <div className="p-2.5 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800">
                 <span className="text-slate-400 text-[10px] block">고가 / 저가</span>
                 <span className="font-mono font-bold text-xs text-slate-700 dark:text-slate-300">
-                  {briefing.quote.highPrice.toLocaleString()} / {briefing.quote.lowPrice.toLocaleString()}
+                  {formatMoney(briefing.quote.highPrice, qCur)} / {formatMoney(briefing.quote.lowPrice, qCur)}
                 </span>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* 5-Section Markdown Content */}
           <div className="prose dark:prose-invert max-w-none text-xs sm:text-sm text-slate-800 dark:text-slate-200 space-y-4 leading-relaxed whitespace-pre-line bg-white dark:bg-[#131722] p-5 rounded-2xl border border-slate-200 dark:border-slate-800">

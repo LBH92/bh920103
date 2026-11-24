@@ -271,17 +271,6 @@ class MarketHeatmapService {
 
     const isKrOpen = this.isKrMarketOpen();
     const isUsOpen = this.isUsMarketOpen();
-    
-    let exchangeRate = 1380; // Default
-    try {
-      const summary = await getGlobalMarketSummary();
-      const usdkrw = summary.groups.forex.find(item => item.id === 'usdkrw');
-      if (usdkrw && usdkrw.value > 1000) {
-        exchangeRate = usdkrw.value;
-      }
-    } catch (e) {
-      console.warn('[Heatmap] Failed to fetch exchange rate, using fallback.');
-    }
 
     const items: HeatmapStockItem[] = [];
 
@@ -364,12 +353,31 @@ class MarketHeatmapService {
       });
 
       const exchangeRateData = await getExchangeRate();
+      const isFxValid = Boolean(
+        exchangeRateData &&
+        exchangeRateData.rate > 0 &&
+        !exchangeRateData.isStale &&
+        exchangeRateData.status !== 'error' &&
+        exchangeRateData.status !== 'unavailable'
+      );
+      const isUsOnlyMarket = targetMarket === 'US' || targetMarket === 'NASDAQ' || targetMarket === 'NYSE';
+
       const usPromises = filteredUS.map(async item => {
         const returns = await this.fetchStockReturns(item.symbol);
-        const marketCapKRW = item.approxCapUSDBillion * 1000 * exchangeRateData.rate;
-        const formattedCap = marketCapKRW >= 1000000
-          ? `${(marketCapKRW / 1000000).toFixed(1)}조 원`
-          : `${(marketCapKRW / 1000).toFixed(0)}억 원`;
+        const formattedCapUSD = item.approxCapUSDBillion >= 1000
+          ? `$${(item.approxCapUSDBillion / 1000).toFixed(2)}T`
+          : `$${item.approxCapUSDBillion.toFixed(0)}B`;
+        // For ALL market sorting/tile sizing, convert to KRW-equivalent ONLY when live FX is valid; never invent a fallback FX rate.
+        const marketCapWeight = isUsOnlyMarket
+          ? item.approxCapUSDBillion
+          : isFxValid
+          ? item.approxCapUSDBillion * 1000 * exchangeRateData.rate
+          : 0;
+        const formattedCap = isUsOnlyMarket || !isFxValid
+          ? formattedCapUSD
+          : (marketCapWeight >= 1000000
+              ? `${formattedCapUSD} (${(marketCapWeight / 1000000).toFixed(1)}조 원)`
+              : `${formattedCapUSD} (${(marketCapWeight / 1000).toFixed(0)}억 원)`);
 
         if (returns) {
           return {
@@ -381,13 +389,15 @@ class MarketHeatmapService {
             sector: item.sector,
             price: returns.price,
             currency: 'USD' as const,
-            marketCap: marketCapKRW,
+            marketCap: marketCapWeight,
             formattedMarketCap: formattedCap,
             changePercent1D: returns.change1D,
             changePercent1M: returns.change1M,
             changePercent1Y: returns.change1Y,
-            delayStatus: returns.status === 'closed' ? 'delayed_15m' : returns.status, // mapped from fetchStockReturns
-            lastUpdated: new Date(exchangeRateData.lastUpdated).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+            delayStatus: returns.status === 'closed' ? 'delayed_15m' : returns.status,
+            lastUpdated: isFxValid
+              ? new Date(exchangeRateData.lastUpdated).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+              : (isUsOnlyMarket ? '미국장 기준' : '환율 지연(달러 기준)'),
             baseline: {
               price1DPrev: returns.prev1D,
               price1MPrev: returns.prev1M,
@@ -405,7 +415,7 @@ class MarketHeatmapService {
             sector: item.sector,
             price: 0,
             currency: 'USD' as const,
-            marketCap: marketCapKRW,
+            marketCap: marketCapWeight,
             formattedMarketCap: formattedCap,
             changePercent1D: 0,
             changePercent1M: 0,

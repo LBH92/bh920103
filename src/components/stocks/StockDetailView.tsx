@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   ArrowLeft, 
   Bookmark, 
@@ -39,6 +39,14 @@ import { HistoricalTradingSimulatorModal } from './HistoricalTradingSimulatorMod
 import { SetPriceAlertModal } from './SetPriceAlertModal';
 import { useStockPurchases } from '../../hooks/useStockPurchases';
 import { WatchlistBuyEntry } from '../../types';
+import {
+  inferStockCurrency,
+  formatMoney,
+  formatMarketCapByCurrency,
+  formatTradingValueByCurrency,
+  validateExchangeRate,
+  convertToKRW,
+} from '../../utils/currency';
 
 interface StockDetailViewProps {
   symbol: string;
@@ -79,10 +87,15 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
     return () => clearInterval(timer);
   }, [isUS, isCoin]);
 
+  const stockDetailRef = useRef<Stock | null>(stockDetail);
+  stockDetailRef.current = stockDetail;
+  const stocksRef = useRef<Stock[]>(stocks);
+  stocksRef.current = stocks;
+
   // Fetch full live stock data from Kiwoom REST API
   useEffect(() => {
     let isSubscribed = true;
-    const existing = stocks.find(s => s.symbol === symbol);
+    const existing = stocksRef.current.find(s => s.symbol === symbol);
     if (existing) {
       setStockDetail(existing);
     } else {
@@ -107,15 +120,16 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
     return () => {
       isSubscribed = false;
     };
-  }, [symbol, stocks]);
+  }, [symbol]);
 
   // Subscribe to live tick updates (with validation against real stock base price)
   useEffect(() => {
     setLiveTick(null);
     const unsub = stockRepository.subscribeExecutionTick?.(symbol, (tick) => {
+      const currentDetail = stockDetailRef.current;
       // 키움 실데이터 대비 10% 이상 왜곡된 mock 틱은 화면 오염 방지를 위해 전면 폐기
-      if (stockDetail && stockDetail.price > 0 && tick.price > 0) {
-        const diffRate = Math.abs(tick.price - stockDetail.price) / stockDetail.price;
+      if (currentDetail && currentDetail.price > 0 && tick.price > 0) {
+        const diffRate = Math.abs(tick.price - currentDetail.price) / currentDetail.price;
         if (diffRate > 0.10) {
           return;
         }
@@ -132,7 +146,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
     return () => {
       unsub?.();
     };
-  }, [symbol, stockDetail]);
+  }, [symbol]);
 
   const baseStock: Stock = stockDetail || initialStock || {
     symbol: safeSymbol || 'UNKNOWN',
@@ -156,8 +170,9 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
     pbr: 0,
     eps: 0,
     dividendYield: 0,
-    foreignNetBuy: 0,
-    instNetBuy: 0,
+    foreignNetBuy: null,
+    instNetBuy: null,
+    investorDataAvailable: false,
     candles: [],
     sparkline: [],
   };
@@ -222,6 +237,11 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
   };
 
   const isUp = stock.change >= 0;
+  const stockCur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
+  const fxCheck = validateExchangeRate(exchangeRate);
+  const krwApprox = (stockCur === 'USD' || stockCur === 'USDT')
+    ? convertToKRW(stock.price, stockCur === 'USDT' ? 'USD' : stockCur, exchangeRate)
+    : null;
 
   return (
     <div className="space-y-6 pb-24 animate-in fade-in duration-200">
@@ -371,28 +391,27 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
             {/* 4. 현재가 & 5. 전일 대비 & 6. 등락률 */}
             <div className="flex items-baseline gap-3.5 mt-3 flex-wrap">
               <span className="text-3xl sm:text-4xl tablet:text-[22px] font-black font-mono tabular-nums whitespace-nowrap tracking-tight text-slate-900 dark:text-white">
-                {stock.currency === 'USD'
-                  ? `$${stock.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                  : stock.currency === 'USDT'
-                  ? `${stock.price.toLocaleString(undefined, { minimumFractionDigits: stock.price < 1 ? 4 : 2 })} USDT`
-                  : stock.currency === 'BTC'
-                  ? `${stock.price.toFixed(8)} BTC`
-                  : `${stock.price.toLocaleString()}원`}
+                {formatMoney(stock.price, stockCur)}
+              </span>
+              <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                {stockCur}
               </span>
               <div className="flex items-center gap-2">
                 <span className={`text-base sm:text-lg tablet:text-[15px] font-bold font-mono tabular-nums whitespace-nowrap ${isUp ? 'text-rose-500' : 'text-blue-500'}`}>
-                  {isUp ? '▲' : '▼'} {stock.currency === 'USD'
-                    ? `$${Math.abs(stock.change).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                    : stock.currency === 'USDT'
-                    ? `${Math.abs(stock.change).toLocaleString(undefined, { minimumFractionDigits: stock.price < 1 ? 4 : 2 })} USDT`
-                    : `${Math.abs(stock.change).toLocaleString()}원`}
+                  {isUp ? '▲' : '▼'} {formatMoney(Math.abs(stock.change), stockCur)}
                 </span>
-                <PriceBadge change={stock.change} changePercent={stock.changePercent} size="lg" />
+                <PriceBadge change={stock.change} changePercent={stock.changePercent} currency={stockCur} size="lg" />
               </div>
-              {(stock.currency === 'USD' || stock.currency === 'USDT') && exchangeRate?.rate && (
-                <span className="text-xs tablet:text-[11.5px] text-slate-500 dark:text-slate-400 font-mono font-medium tabular-nums whitespace-nowrap">
-                  ≈ {Math.round(stock.price * exchangeRate.rate).toLocaleString()}원 (ECB 기준환율 환산 추정)
-                </span>
+              {(stockCur === 'USD' || stockCur === 'USDT') && (
+                krwApprox?.valid && krwApprox.valueKRW !== null ? (
+                  <span className="text-xs tablet:text-[11.5px] text-slate-500 dark:text-slate-400 font-mono font-medium tabular-nums whitespace-nowrap">
+                    ≈ {formatMoney(krwApprox.valueKRW, 'KRW')} (환율 ₩{fxCheck.rate?.toLocaleString(undefined, { maximumFractionDigits: 2 })} · {fxCheck.lastUpdated})
+                  </span>
+                ) : (
+                  <span className="text-xs tablet:text-[11.5px] text-amber-600 dark:text-amber-400 font-medium whitespace-nowrap">
+                    원화 환산 중단 (실시간 환율 {fxCheck.status === 'stale' ? '지연/만료' : '미수신'})
+                  </span>
+                )
               )}
             </div>
           </div>
@@ -442,10 +461,30 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
                 ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
                 : stock.market === 'US' 
                 ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20'
-                : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
+                : stock.dataSource === 'kiwoom'
+                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'
+                : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
             }`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${isCoin ? 'bg-amber-500' : (stock.market === 'US' ? 'bg-purple-500' : 'bg-blue-500')}`}></span>
-              <span>{isCoin ? `${stock.exchange === 'UPBIT' ? '업비트 공식 실시간 호가' : '바이낸스 공식 Spot API'}` : (stock.market === 'US' ? '글로벌 공식 시세 (USD)' : '키움 실전 API')}</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                isCoin
+                  ? 'bg-amber-500'
+                  : stock.market === 'US'
+                  ? 'bg-purple-500'
+                  : stock.dataSource === 'kiwoom'
+                  ? 'bg-blue-500'
+                  : 'bg-amber-500'
+              }`}></span>
+              <span>
+                {isCoin
+                  ? `${stock.exchange === 'UPBIT' ? '업비트 공식 실시간 호가' : '바이낸스 공식 Spot API'}`
+                  : stock.market === 'US'
+                  ? '글로벌 공식 시세 (USD · 15분 지연)'
+                  : stock.dataSource === 'kiwoom'
+                  ? '키움 실전 API'
+                  : stock.isStale
+                  ? '캐시 시세 (수신 지연)'
+                  : 'Yahoo 대체 시세 (지연)'}
+              </span>
             </div>
             {stock.lastUpdated && (
               <span className="text-[11px] text-slate-400 font-sans">
@@ -469,11 +508,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">시가</span>
             <span className="font-bold text-slate-900 dark:text-white text-sm">
-              {stock.currency === 'USD'
-                ? `$${stock.openPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                : stock.currency === 'USDT'
-                ? `${stock.openPrice.toLocaleString(undefined, { minimumFractionDigits: stock.openPrice < 1 ? 4 : 2 })}`
-                : `${stock.openPrice.toLocaleString()}원`}
+              {stock.openPrice > 0 ? formatMoney(stock.openPrice, stockCur) : '-'}
             </span>
           </div>
 
@@ -481,11 +516,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">고가</span>
             <span className="font-bold text-rose-500 text-sm">
-              {stock.currency === 'USD'
-                ? `$${stock.highPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                : stock.currency === 'USDT'
-                ? `${stock.highPrice.toLocaleString(undefined, { minimumFractionDigits: stock.highPrice < 1 ? 4 : 2 })}`
-                : `${stock.highPrice.toLocaleString()}원`}
+              {stock.highPrice > 0 ? formatMoney(stock.highPrice, stockCur) : '-'}
             </span>
           </div>
 
@@ -493,11 +524,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">저가</span>
             <span className="font-bold text-blue-500 text-sm">
-              {stock.currency === 'USD'
-                ? `$${stock.lowPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                : stock.currency === 'USDT'
-                ? `${stock.lowPrice.toLocaleString(undefined, { minimumFractionDigits: stock.lowPrice < 1 ? 4 : 2 })}`
-                : `${stock.lowPrice.toLocaleString()}원`}
+              {stock.lowPrice > 0 ? formatMoney(stock.lowPrice, stockCur) : '-'}
             </span>
           </div>
 
@@ -513,13 +540,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">거래대금</span>
             <span className="font-bold text-slate-900 dark:text-white text-sm">
-              {stock.currency === 'USD'
-                ? `$${stock.tradingValue.toLocaleString()}M`
-                : stock.currency === 'USDT'
-                ? `${stock.tradingValue.toLocaleString()} USDT`
-                : (stock.tradingValue >= 10000
-                  ? `${(stock.tradingValue / 10000).toFixed(1)}조`
-                  : `${stock.tradingValue.toLocaleString()}억`)}
+              {formatTradingValueByCurrency(stock.tradingValue, stockCur)}
             </span>
           </div>
 
@@ -527,13 +548,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">52주 최고</span>
             <span className="font-bold text-rose-500 text-sm">
-              {stock.high52w > 0 ? (
-                stock.currency === 'USD'
-                  ? `$${stock.high52w.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                  : stock.currency === 'USDT'
-                  ? `${stock.high52w.toLocaleString(undefined, { minimumFractionDigits: stock.high52w < 1 ? 4 : 2 })}`
-                  : `${stock.high52w.toLocaleString()}원`
-              ) : '-'}
+              {stock.high52w > 0 ? formatMoney(stock.high52w, stockCur) : '-'}
             </span>
           </div>
 
@@ -541,13 +556,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/80">
             <span className="text-slate-400 font-sans text-[11px] block mb-1">52주 최저</span>
             <span className="font-bold text-blue-500 text-sm">
-              {stock.low52w > 0 ? (
-                stock.currency === 'USD'
-                  ? `$${stock.low52w.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                  : stock.currency === 'USDT'
-                  ? `${stock.low52w.toLocaleString(undefined, { minimumFractionDigits: stock.low52w < 1 ? 4 : 2 })}`
-                  : `${stock.low52w.toLocaleString()}원`
-              ) : '-'}
+              {stock.low52w > 0 ? formatMoney(stock.low52w, stockCur) : '-'}
             </span>
           </div>
         </div>
@@ -685,13 +694,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
             <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
               <span className="text-slate-400 font-sans text-[11px] block">전일 종가</span>
               <span className="font-bold text-slate-900 dark:text-white text-sm">
-                {stock.prevClose > 0
-                  ? (stock.currency === 'USD'
-                    ? `$${stock.prevClose.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                    : stock.currency === 'USDT'
-                    ? `${stock.prevClose.toLocaleString(undefined, { minimumFractionDigits: stock.prevClose < 1 ? 4 : 2 })}`
-                    : `${stock.prevClose.toLocaleString()}원`)
-                  : '-'}
+                {stock.prevClose > 0 ? formatMoney(stock.prevClose, stockCur) : '-'}
               </span>
             </div>
           </div>
@@ -700,9 +703,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
             <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
               <span className="text-slate-400 font-sans text-[11px] block">시가총액</span>
               <span className="font-bold text-slate-900 dark:text-white text-sm">
-                {stock.marketCap >= 10000
-                  ? `${(stock.marketCap / 10000).toFixed(1)}조 원`
-                  : `${stock.marketCap.toLocaleString()}억 원`}
+                {formatMarketCapByCurrency(stock.marketCap, stockCur)}
               </span>
             </div>
             <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
@@ -716,7 +717,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
             <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
               <span className="text-slate-400 font-sans text-[11px] block">EPS</span>
               <span className="font-bold text-slate-900 dark:text-white text-sm">
-                {stock.eps ? (stock.currency === 'USD' ? `$${stock.eps}` : `${stock.eps.toLocaleString()}원`) : '-'}
+                {stock.eps ? formatMoney(stock.eps, stockCur) : '-'}
               </span>
             </div>
             <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
@@ -726,7 +727,7 @@ export const StockDetailView: React.FC<StockDetailViewProps> = ({ symbol }) => {
             <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
               <span className="text-slate-400 font-sans text-[11px] block">전일 종가</span>
               <span className="font-bold text-slate-900 dark:text-white text-sm">
-                {stock.currency === 'USD' ? `$${stock.prevClose.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${stock.prevClose.toLocaleString()}원`}
+                {stock.prevClose > 0 ? formatMoney(stock.prevClose, stockCur) : '-'}
               </span>
             </div>
           </div>

@@ -8,6 +8,7 @@
  */
 
 import { Stock } from '../types';
+import { inferStockCurrency, roundByCurrency, formatMoney, formatTradingValueByCurrency } from '../utils/currency';
 
 export interface AiStockBriefingResult {
   summary: string;
@@ -62,29 +63,37 @@ export async function generateStockAiBriefing(stock: Stock): Promise<AiStockBrie
     sentimentLabel = '비중 축소 (쌍끌이 매도)';
   }
 
+  const stockCur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
   const currentPrice = stock.price;
-  const targetLow = Math.round(currentPrice * (sentiment === 'sell' ? 0.92 : 1.05) / 100) * 100;
-  const targetHigh = Math.round(currentPrice * (sentiment === 'strong_buy' ? 1.25 : sentiment === 'buy' ? 1.15 : 1.08) / 100) * 100;
+  const rawLow = currentPrice * (sentiment === 'sell' ? 0.92 : 1.05);
+  const rawHigh = currentPrice * (sentiment === 'strong_buy' ? 1.25 : sentiment === 'buy' ? 1.15 : 1.08);
+  const targetLow = stockCur === 'KRW' ? Math.round(rawLow / 100) * 100 : roundByCurrency(rawLow, stockCur);
+  const targetHigh = stockCur === 'KRW' ? Math.round(rawHigh / 100) * 100 : roundByCurrency(rawHigh, stockCur);
 
   const catalysts: string[] = [];
   if (isVolSpike) catalysts.push(`평균 대비 ${stock.volumeRatio}%의 대량 거래량 폭증 포착`);
-  if (isForeignBuying) catalysts.push(`외국인 투자자 순매수세(+${stock.foreignNetBuy}억 원) 지속`);
-  if (isInstBuying) catalysts.push(`국내 기관 투자자 순매수 유입(+${stock.instNetBuy}억 원)`);
+  if (isForeignBuying && stockCur === 'KRW') catalysts.push(`외국인 투자자 순매수세(+${stock.foreignNetBuy}억 원) 지속`);
+  if (isInstBuying && stockCur === 'KRW') catalysts.push(`국내 기관 투자자 순매수 유입(+${stock.instNetBuy}억 원)`);
+  if (stock.tradingValue > 0) catalysts.push(`거래대금 ${formatTradingValueByCurrency(stock.tradingValue, stockCur)} 유입`);
   if (stock.per && stock.per < 15) catalysts.push(`동종업계 대비 저평가 PER (${stock.per}배) 밸류에이션 매력`);
   if (catalysts.length === 0) catalysts.push(`${stock.sector} 섹터 내 견조한 펀더멘털 유지`);
 
   const risks: string[] = [];
-  if (!isForeignBuying) risks.push(`외국인 차익실현 매물 출회(${stock.foreignNetBuy}억 원) 단기 부담`);
+  if (!isForeignBuying && stockCur === 'KRW' && (stock.foreignNetBuy || 0) < 0) risks.push(`외국인 차익실현 매물 출회(${stock.foreignNetBuy}억 원) 단기 부담`);
   if (stock.changePercent < -3) risks.push(`단기 지지선 이탈에 따른 변동성 확대 주의`);
   if (risks.length === 0) risks.push(`대외 거시경제(환율 및 금리) 불확실성에 따른 차익 실현 경계`);
 
-  const technicalView = isUp
-    ? `현재가(${currentPrice.toLocaleString()}원)는 5일 및 20일 이동평균선 상단에 위치하여 단기 상승 추세를 지지하고 있으며, 1차 목표가 ${targetHigh.toLocaleString()}원 안착 여부가 관건입니다.`
-    : `단기 조정 국면으로 20일 이동평균선 지지 여부(${targetLow.toLocaleString()}원)를 확인하며 분할 접근이 권장됩니다.`;
+  const formattedCurrent = formatMoney(currentPrice, stockCur);
+  const formattedLow = formatMoney(targetLow, stockCur);
+  const formattedHigh = formatMoney(targetHigh, stockCur);
 
-  const summary = `${stock.name}은(는) 현재 전일대비 ${stock.change >= 0 ? '+' : ''}${stock.changePercent}% 변동한 ${currentPrice.toLocaleString()}원에 거래 중입니다. ` +
+  const technicalView = isUp
+    ? `현재가(${formattedCurrent})는 5일 및 20일 이동평균선 상단에 위치하여 단기 상승 추세를 지지하고 있으며, 1차 목표가 ${formattedHigh} 안착 여부가 관건입니다.`
+    : `단기 조정 국면으로 20일 이동평균선 지지 여부(${formattedLow})를 확인하며 분할 접근이 권장됩니다.`;
+
+  const summary = `${stock.name}은(는) 현재 전일대비 ${stock.change >= 0 ? '+' : ''}${stock.changePercent}% 변동한 ${formattedCurrent}에 거래 중입니다. ` +
     `${isVolSpike ? '거래량이 급증하며 시장 관심이 집중되고 있으며, ' : ''}` +
-    `${isForeignBuying || isInstBuying ? '메이저 수급 유입이 확인됩니다.' : '수급 관망세가 이어지고 있습니다.'}`;
+    `${stockCur === 'KRW' && (isForeignBuying || isInstBuying) ? '메이저 수급 유입이 확인됩니다.' : '거래 추이를 주시할 필요가 있습니다.'}`;
 
   return {
     summary,

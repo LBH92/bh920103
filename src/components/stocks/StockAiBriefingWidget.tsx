@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Sparkles, Loader2, Target, ShieldAlert, TrendingUp, RefreshCw, CheckCircle2 } from 'lucide-react';
 import { Stock } from '../../types';
 import { generateStockAiBriefing, AiStockBriefingResult } from '../../services/geminiService';
+import { inferStockCurrency, formatMoney } from '../../utils/currency';
 
 interface StockAiBriefingWidgetProps {
   stock: Stock;
@@ -90,9 +91,9 @@ export const StockAiBriefingWidget: React.FC<StockAiBriefingWidgetProps> = ({ st
               <span className="text-xs text-slate-400 block mb-1">예상 적정 주가 밴드</span>
               <div className="font-mono font-bold text-sm text-slate-900 dark:text-white flex items-center gap-1.5">
                 <Target className="w-4 h-4 text-rose-500" />
-                <span>{briefing.targetPriceRange.low.toLocaleString()}원</span>
+                <span>{formatMoney(briefing.targetPriceRange.low, inferStockCurrency(stock.symbol, stock.market, stock.currency))}</span>
                 <span className="text-slate-400">~</span>
-                <span className="text-rose-500">{briefing.targetPriceRange.high.toLocaleString()}원</span>
+                <span className="text-rose-500">{formatMoney(briefing.targetPriceRange.high, inferStockCurrency(stock.symbol, stock.market, stock.currency))}</span>
               </div>
             </div>
           </div>

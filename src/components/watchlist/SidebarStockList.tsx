@@ -1,15 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Search, X, Plus, Check, Trash2, ChevronUp, ChevronDown, Loader2 } from 'lucide-react';
+import { Search, X, Plus, Check, Trash2, ChevronUp, ChevronDown, Loader2, RefreshCw } from 'lucide-react';
 import { Stock } from '../../types';
+import { inferStockCurrency, inferStockExchange, formatMoney } from '../../utils/currency';
+import { getStockUniqueKey } from '../../utils/stocks/ticker';
+import { stockRepository } from '../../services/stockRepository';
 
-type MarketTab = 'OVERALL' | 'KR' | 'US' | 'CRYPTO';
+type MarketTab = 'OVERALL' | 'KOSPI' | 'KOSDAQ' | 'US' | 'CRYPTO';
 
 interface SearchItem {
   symbol: string;
   name: string;
   market: string;
   exchange?: string;
+  currency?: string;
   productType?: string;
   price?: number;
   change?: number;
@@ -33,13 +37,16 @@ export const SidebarStockList: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
   const [showSearchResults, setShowSearchResults] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
   // Map activeTab to search API market parameter
   const getSearchMarketParam = (tab: MarketTab): string => {
     switch (tab) {
-      case 'KR': return 'KR';
+      case 'KOSPI': return 'KOSPI';
+      case 'KOSDAQ': return 'KOSDAQ';
       case 'US': return 'US';
       case 'CRYPTO': return 'COIN';
       default: return 'ALL';
@@ -49,11 +56,10 @@ export const SidebarStockList: React.FC = () => {
   // Filter watchlist items for the current tab
   const getFilteredWatchlist = (): Stock[] => {
     switch (activeTab) {
-      case 'KR':
-        return watchlistDetails.filter(s => {
-          const m = s.market as string;
-          return m === 'KOSPI' || m === 'KOSDAQ' || m === 'KR';
-        });
+      case 'KOSPI':
+        return watchlistDetails.filter(s => (s.market as string) === 'KOSPI' || (s.exchange as string) === 'KOSPI');
+      case 'KOSDAQ':
+        return watchlistDetails.filter(s => (s.market as string) === 'KOSDAQ' || (s.exchange as string) === 'KOSDAQ');
       case 'US':
         return watchlistDetails.filter(s => {
           const m = s.market as string;
@@ -71,34 +77,55 @@ export const SidebarStockList: React.FC = () => {
 
   const displayStocks = getFilteredWatchlist();
 
-  // Perform debounced search for active tab
+  // Perform debounced search for active tab with AbortController
   useEffect(() => {
     const query = searchQuery.trim();
     if (!query) {
       setSearchResults([]);
+      setSearchError(null);
       setIsSearching(false);
       return;
     }
 
+    const controller = new AbortController();
+    let mounted = true;
     setIsSearching(true);
+    setSearchError(null);
+
     const timer = setTimeout(async () => {
       try {
         const marketParam = getSearchMarketParam(activeTab);
-        const res = await fetch(`/api/stocks/search?q=${encodeURIComponent(query)}&market=${marketParam}&limit=10`);
-        if (res.ok) {
-          const data = await res.json();
-          setSearchResults(Array.isArray(data) ? data : []);
+        const data = await stockRepository.searchStocks({
+          query,
+          market: marketParam,
+          limit: 12,
+          signal: controller.signal,
+        });
+        if (mounted && !controller.signal.aborted) {
+          setSearchResults(data as unknown as SearchItem[]);
           setShowSearchResults(true);
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.name === 'AbortError' || controller.signal.aborted) return;
         console.warn('[SidebarSearch] Search error:', err);
+        if (mounted) {
+          setSearchError(err?.message || '종목 검색에 실패했습니다.');
+          setSearchResults([]);
+          setShowSearchResults(true);
+        }
       } finally {
-        setIsSearching(false);
+        if (mounted && !controller.signal.aborted) {
+          setIsSearching(false);
+        }
       }
-    }, 250);
+    }, 180);
 
-    return () => clearTimeout(timer);
-  }, [searchQuery, activeTab]);
+    return () => {
+      mounted = false;
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [searchQuery, activeTab, retryNonce]);
 
   // Close search results when clicking outside
   useEffect(() => {
@@ -117,7 +144,8 @@ export const SidebarStockList: React.FC = () => {
     await addToWatchlist(item.symbol, {
       name: item.name,
       market: item.market as any,
-      exchange: item.exchange,
+      exchange: inferStockExchange(item.symbol, item.market, item.exchange),
+      currency: inferStockCurrency(item.symbol, item.market, item.currency),
       productType: item.productType as any,
       price: item.price || 0,
       change: item.change || 0,
@@ -156,15 +184,16 @@ export const SidebarStockList: React.FC = () => {
   };
 
   const tabs: { id: MarketTab; label: string }[] = [
-    { id: 'OVERALL', label: '종합' },
-    { id: 'KR', label: '한국' },
-    { id: 'US', label: '미장' },
+    { id: 'OVERALL', label: '전체' },
+    { id: 'KOSPI', label: '코스피' },
+    { id: 'KOSDAQ', label: '코스닥' },
+    { id: 'US', label: '미국' },
     { id: 'CRYPTO', label: '코인' },
   ];
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-[#131722] select-none">
-      {/* 4 Market Tabs */}
+      {/* 5 Market Tabs */}
       <div className="flex border-b border-slate-200 dark:border-slate-800 shrink-0">
         {tabs.map(tab => (
           <button
@@ -214,7 +243,19 @@ export const SidebarStockList: React.FC = () => {
         {/* Search Results Popover */}
         {showSearchResults && searchQuery.trim() && (
           <div className="absolute left-2 right-2 top-full mt-1 bg-white dark:bg-[#1c2130] border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-72 overflow-y-auto">
-            {isSearching ? (
+            {searchError ? (
+              <div className="p-4 text-center space-y-2">
+                <p className="text-xs text-rose-500 font-medium">{searchError}</p>
+                <button
+                  type="button"
+                  onClick={() => setRetryNonce(n => n + 1)}
+                  className="px-2.5 py-1 rounded bg-rose-500 text-white text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>다시 시도</span>
+                </button>
+              </div>
+            ) : isSearching ? (
               <div className="p-4 text-center text-xs text-slate-400 flex items-center justify-center gap-1.5">
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-500" />
                 <span>검색 중...</span>
@@ -225,7 +266,7 @@ export const SidebarStockList: React.FC = () => {
                   const registered = isWatchlisted(item.symbol);
                   return (
                     <div
-                      key={`${item.market}_${item.symbol}`}
+                      key={getStockUniqueKey(item)}
                       className="px-3 py-2 flex items-center justify-between gap-2 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors"
                     >
                       <div 
@@ -249,7 +290,7 @@ export const SidebarStockList: React.FC = () => {
                           </span>
                           {item.price !== undefined && item.price > 0 && (
                             <span className="text-[10px] font-mono font-medium text-slate-600 dark:text-slate-300">
-                              {item.price.toLocaleString()}
+                              {formatMoney(item.price, inferStockCurrency(item.symbol, item.market, item.currency))}
                             </span>
                           )}
                         </div>
@@ -304,7 +345,7 @@ export const SidebarStockList: React.FC = () => {
           const isUp = stock.change >= 0;
           return (
             <div
-              key={stock.symbol}
+              key={getStockUniqueKey(stock)}
               onClick={() => handleItemClick(stock)}
               className="group grid grid-cols-12 px-3 py-2 text-xs hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer border-b border-slate-100 dark:border-slate-800/50 transition-colors items-center"
             >
@@ -314,13 +355,13 @@ export const SidebarStockList: React.FC = () => {
                   {stock.name}
                 </div>
                 <div className="text-[10px] text-slate-400 font-mono truncate leading-tight">
-                  {stock.symbol}
+                  {stock.symbol} · {inferStockCurrency(stock.symbol, stock.market, stock.currency)}
                 </div>
               </div>
 
               {/* Price */}
               <div className="col-span-3 text-right font-mono font-medium text-slate-700 dark:text-slate-300 text-[11px]">
-                {stock.price ? stock.price.toLocaleString() : '-'}
+                {stock.price ? formatMoney(stock.price, inferStockCurrency(stock.symbol, stock.market, stock.currency)) : '-'}
               </div>
 
               {/* Change % */}

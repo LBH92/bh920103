@@ -166,7 +166,8 @@ export const usStockSearchService = {
    * Search US Stocks by Query (Ticker, English Name, Korean Name, Hangul Chosung, Aliases)
    */
   async search(query: string, limit: number = 20): Promise<USStockMasterItem[]> {
-    const q = query.trim();
+    const rawQuery = query.trim();
+    const q = rawQuery.toLowerCase();
     if (!q) return [];
 
     // 1. Search local curated master
@@ -174,10 +175,10 @@ export const usStockSearchService = {
     const seenSymbols = new Set<string>();
 
     for (const item of US_STOCK_MASTER) {
-      const match = matchHangulSearch(item.symbol, q) ||
-                    matchHangulSearch(item.nameEn, q) ||
-                    matchHangulSearch(item.name, q) ||
-                    item.aliases.some(a => matchHangulSearch(a, q));
+      const match = matchHangulSearch(item.symbol, rawQuery) ||
+                    matchHangulSearch(item.nameEn, rawQuery) ||
+                    matchHangulSearch(item.name, rawQuery) ||
+                    item.aliases.some(a => matchHangulSearch(a, rawQuery));
 
       if (match) {
         const standardized = standardizeTicker(item.symbol);
@@ -188,11 +189,11 @@ export const usStockSearchService = {
       }
     }
 
-    // 2. If query looks like an exact ticker or English search (and NOT a 6-digit Korean stock code)
-    const isKoreanCode = /^\d{6}$/.test(query.trim());
-    if (!isKoreanCode && results.length < limit && /^[a-zA-Z0-9\.\-\^]{1,10}$/.test(query.trim())) {
+    // 2. If query looks like a ticker or English company name (and NOT a 6-digit Korean stock code)
+    const isKoreanCode = /^\d{6}$/.test(rawQuery);
+    if (!isKoreanCode && results.length < limit && /^[a-zA-Z0-9.\-\^\s]{1,40}$/.test(rawQuery)) {
       try {
-        const yahooResults = await this.queryYahooFinanceSearch(query.trim(), limit - results.length);
+        const yahooResults = await this.queryYahooFinanceSearch(rawQuery, limit - results.length);
         for (const y of yahooResults) {
           if (!seenSymbols.has(y.symbol)) {
             results.push(y);
@@ -205,7 +206,7 @@ export const usStockSearchService = {
       }
     }
 
-    // 3. Score and prioritize matches
+    // 3. Score and prioritize matches (q is lowercased)
     results.sort((a, b) => {
       // 1. Exact ticker match
       if (a.symbol.toLowerCase() === q) return -1;
@@ -213,12 +214,14 @@ export const usStockSearchService = {
       // 2. Starts with ticker
       if (a.symbol.toLowerCase().startsWith(q) && !b.symbol.toLowerCase().startsWith(q)) return -1;
       if (!a.symbol.toLowerCase().startsWith(q) && b.symbol.toLowerCase().startsWith(q)) return 1;
-      // 3. Exact Korean name match
-      if (a.name.toLowerCase() === q) return -1;
-      if (b.name.toLowerCase() === q) return 1;
-      // 4. Starts with Korean name
-      if (a.name.toLowerCase().startsWith(q) && !b.name.toLowerCase().startsWith(q)) return -1;
-      if (!a.name.toLowerCase().startsWith(q) && b.name.toLowerCase().startsWith(q)) return 1;
+      // 3. Exact Korean or English name match
+      if (a.name.toLowerCase() === q || a.nameEn.toLowerCase() === q) return -1;
+      if (b.name.toLowerCase() === q || b.nameEn.toLowerCase() === q) return 1;
+      // 4. Starts with Korean or English name
+      const aStarts = a.name.toLowerCase().startsWith(q) || a.nameEn.toLowerCase().startsWith(q);
+      const bStarts = b.name.toLowerCase().startsWith(q) || b.nameEn.toLowerCase().startsWith(q);
+      if (aStarts && !bStarts) return -1;
+      if (!aStarts && bStarts) return 1;
       return 0;
     });
 

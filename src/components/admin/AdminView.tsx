@@ -19,8 +19,10 @@ import { AdminSettingsTab } from './tabs/AdminSettingsTab';
 import { AdminAdsTab } from './tabs/AdminAdsTab';
 import { AdminAdsStatsTab } from './tabs/AdminAdsStatsTab';
 import { AdminInquiriesTab } from './tabs/AdminInquiriesTab';
+import { AdminInsightsTab } from './tabs/AdminInsightsTab';
 import { ShieldAlert, ArrowLeft, LogIn } from 'lucide-react';
 import { formatKST } from '../../utils/dateUtils';
+import { dedupeById } from '../../utils/dedupe';
 
 export const AdminView: React.FC = () => {
   const { user, isAuthenticated, setActiveTab: setPublicTab, showToast, setIsAuthModalOpen } = useApp();
@@ -33,7 +35,7 @@ export const AdminView: React.FC = () => {
 
     const validTabs: AdminSubTab[] = [
       'dashboard', 'users', 'posts', 'comments', 'reports', 
-      'chat', 'notices', 'filters', 'alerts', 'market', 'logs', 'settings', 'ads', 'ads_stats'
+      'chat', 'notices', 'filters', 'alerts', 'market', 'logs', 'settings', 'ads', 'ads_stats', 'inquiries', 'insights'
     ];
 
     return validTabs.includes(target) ? target : 'dashboard';
@@ -116,8 +118,9 @@ export const AdminView: React.FC = () => {
     const unsubUsers = firebaseRepository.subscribeUsers(
       liveUsers => {
         if (!isMounted) return;
-        setUsers(liveUsers);
-        adminService.saveUsers(liveUsers);
+        const uniqueUsers = dedupeById(liveUsers);
+        setUsers(uniqueUsers);
+        adminService.saveUsers(uniqueUsers);
         setLastSyncTime(formatKST(new Date()));
         setConnectionStatus('CONNECTED');
       },
@@ -132,8 +135,9 @@ export const AdminView: React.FC = () => {
     const unsubPosts = firebaseRepository.subscribePosts(
       livePosts => {
         if (!isMounted) return;
-        setPosts(livePosts);
-        setComments(adminService.getAllComments(livePosts));
+        const uniquePosts = dedupeById(livePosts);
+        setPosts(uniquePosts);
+        setComments(adminService.getAllComments(uniquePosts));
         setLastSyncTime(formatKST(new Date()));
         setConnectionStatus('CONNECTED');
       },
@@ -148,8 +152,9 @@ export const AdminView: React.FC = () => {
     const unsubReports = firebaseRepository.subscribeReports(
       liveReports => {
         if (!isMounted) return;
-        setReports(liveReports);
-        adminService.saveReports(liveReports);
+        const uniqueReports = dedupeById(liveReports);
+        setReports(uniqueReports);
+        adminService.saveReports(uniqueReports);
         setLastSyncTime(formatKST(new Date()));
         setConnectionStatus('CONNECTED');
       },
@@ -164,7 +169,7 @@ export const AdminView: React.FC = () => {
     const unsubChat = firebaseRepository.subscribeAllChat(
       liveChat => {
         if (!isMounted) return;
-        setChatMessages(liveChat);
+        setChatMessages(dedupeById(liveChat));
         setLastSyncTime(formatKST(new Date()));
         setConnectionStatus('CONNECTED');
       },
@@ -527,6 +532,8 @@ export const AdminView: React.FC = () => {
         return <AdminAdsStatsTab />;
       case 'inquiries':
         return <AdminInquiriesTab />;
+      case 'insights':
+        return <AdminInsightsTab callerRole={user.role} showToast={showToast} />;
 
       default:
         return (

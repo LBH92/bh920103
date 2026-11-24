@@ -1,8 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { auth } from '../services/firebase';
 import { firebaseRepository } from '../services/firebaseRepository';
-import { Stock, StockIndex, ExchangeRate, MarketEvent, UserProfile, ViewTab, PriceAlert, ChatMessage } from '../types';
+import { Stock, StockIndex, ExchangeRate, MarketEvent, UserProfile, ViewTab, PriceAlert, ChatMessage, InsightCategory } from '../types';
 import { INITIAL_STOCKS, INITIAL_INDICES, INITIAL_EXCHANGE_RATE } from '../services/mockData';
 import { storageService } from '../services/storageService';
 import { stockRepository, StockDataSourceType } from '../services/stockRepository';
@@ -11,6 +11,17 @@ import { notificationService } from '../services/notificationService';
 import { fcmPushService } from '../services/fcmPushService';
 import { isPreviewEnvironment } from '../utils/environment';
 import { crashlyticsService } from '../services/crashlyticsService';
+import { formatMoney, inferStockCurrency, inferStockExchange } from '../utils/currency';
+import { dedupeById } from '../utils/dedupe';
+
+export type StaticPageName = 'about' | 'privacy' | 'terms' | 'disclaimer' | 'contact';
+
+export interface PublicRouteState {
+  type: 'static' | 'insights';
+  staticPage?: StaticPageName;
+  insightCategory?: InsightCategory;
+  insightArticleId?: string;
+}
 
 export interface ToastMessage {
   id: string;
@@ -38,6 +49,12 @@ interface AppContextType {
   communityAuthorFilter: string | null;
   setCommunityAuthorFilter: (authorId: string | null) => void;
   navigateToMyPosts: () => void;
+  
+  // Public Editorial & Policy Routes (AdSense)
+  publicRoute: PublicRouteState | null;
+  navigateToStaticPage: (page: StaticPageName) => void;
+  navigateToInsights: (category?: InsightCategory, articleId?: string) => void;
+  clearPublicRoute: () => void;
 
   // Stocks & Indices
   stocks: Stock[];
@@ -82,6 +99,10 @@ interface AppContextType {
   isSearchOpen: boolean;
   setIsSearchOpen: (open: boolean) => void;
 
+  // Mobile Menu Drawer State
+  mobileMenuOpen: boolean;
+  setMobileMenuOpen: (open: boolean) => void;
+
   // Side Chat Panel State
   isSideChatOpen: boolean;
   setIsSideChatOpen: (open: boolean) => void;
@@ -96,6 +117,7 @@ interface AppContextType {
   setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   loadMoreChatMessages: () => void;
   chatMessageLimit: number;
+  registerChatConsumer: () => () => void;
 
   // Price Alerts (Firestore Real-time Target Price Monitoring)
   priceAlerts: PriceAlert[];
@@ -149,7 +171,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => mediaQuery.removeEventListener('change', handleMediaChange);
   }, []);
 
-  const toggleTheme = () => setIsDark(prev => !prev);
+  const toggleTheme = useCallback(() => setIsDark(prev => !prev), []);
 
   // Navigation
   const [activeTab, setActiveTabState] = useState<ViewTab>('home');
@@ -157,8 +179,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [selectedIndexSymbol, setSelectedIndexSymbol] = useState<'KOSPI' | 'KOSDAQ' | null>(null);
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
   const [communityAuthorFilter, setCommunityAuthorFilter] = useState<string | null>(null);
+  const [publicRoute, setPublicRoute] = useState<PublicRouteState | null>(null);
+
+  const navigateToStaticPage = useCallback((page: StaticPageName) => {
+    setPublicRoute({ type: 'static', staticPage: page });
+    setSelectedSymbol(null);
+    setSelectedIndexSymbol(null);
+    setSelectedPostId(null);
+    window.history.pushState({ staticPage: page }, '', `/${page}`);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    crashlyticsService.logBreadcrumb(`User navigated to static policy: ${page}`);
+  }, []);
+
+  const navigateToInsights = useCallback((category?: InsightCategory, articleId?: string) => {
+    setPublicRoute({
+      type: 'insights',
+      insightCategory: category,
+      insightArticleId: articleId,
+    });
+    setSelectedSymbol(null);
+    setSelectedIndexSymbol(null);
+    setSelectedPostId(null);
+    const path = articleId
+      ? `/insights/${articleId}`
+      : category
+      ? `/insights/${category}`
+      : '/insights';
+    window.history.pushState({ category, articleId }, '', path);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    crashlyticsService.logBreadcrumb(`User navigated to insights: ${path}`);
+  }, []);
+
+  const clearPublicRoute = useCallback(() => {
+    setPublicRoute(null);
+    setActiveTabState('home');
+    window.history.pushState(null, '', '/');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
 
   const setActiveTab = useCallback((tab: ViewTab) => {
+    setPublicRoute(null);
     setActiveTabState(tab);
     setSelectedIndexSymbol(null);
     setSelectedSymbol(null);
@@ -173,6 +233,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeRoomId, setActiveRoomId] = useState<string>('domestic');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatMessageLimit, setChatMessageLimit] = useState<number>(50);
+  const [activeChatConsumers, setActiveChatConsumers] = useState<number>(0);
+
+  const registerChatConsumer = useCallback(() => {
+    setActiveChatConsumers(c => c + 1);
+    return () => setActiveChatConsumers(c => Math.max(0, c - 1));
+  }, []);
 
   const handleSetActiveRoomId = useCallback((roomId: string) => {
     setActiveRoomId(roomId);
@@ -183,58 +249,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setChatMessageLimit(prev => prev + 30);
   }, []);
 
-  // Centralized Chat Subscription
-  useEffect(() => {
-    const unsubscribe = firebaseRepository.subscribeChat(
-      activeRoomId,
-      (messages) => {
-        setChatMessages(messages);
-      },
-      chatMessageLimit
-    );
-    return () => unsubscribe();
-  }, [activeRoomId, chatMessageLimit]);
-
-  const navigateToStock = (symbol: string) => {
+  const navigateToStock = useCallback((symbol: string) => {
+    setPublicRoute(null);
     setSelectedSymbol(symbol);
     setSelectedIndexSymbol(null);
     setActiveTabState('stocks');
     window.history.pushState({ symbol }, '', `/stocks/${symbol}`);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, []);
 
-  const navigateToIndex = (symbol: 'KOSPI' | 'KOSDAQ') => {
+  const navigateToIndex = useCallback((symbol: 'KOSPI' | 'KOSDAQ') => {
+    setPublicRoute(null);
     setSelectedIndexSymbol(symbol);
     setSelectedSymbol(null);
     setSelectedPostId(null);
     window.history.pushState({ indexSymbol: symbol }, '', `/indices/${symbol}`);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, []);
 
-  const clearSelectedIndex = () => {
+  const clearSelectedIndex = useCallback(() => {
     setSelectedIndexSymbol(null);
     if (window.history.length > 1) {
       window.history.back();
     } else {
       setActiveTab('home');
     }
-  };
+  }, [setActiveTab]);
 
-  const navigateToPostList = () => {
+  const navigateToPostList = useCallback(() => {
+    setPublicRoute(null);
     setSelectedPostId(null);
     setSelectedIndexSymbol(null);
     setActiveTabState('community');
     window.history.pushState(null, '', '/community');
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, []);
 
-  const navigateToPost = (postId: string) => {
+  const navigateToPost = useCallback((postId: string) => {
+    setPublicRoute(null);
     setSelectedPostId(postId);
     setSelectedIndexSymbol(null);
     setActiveTabState('community');
     window.history.pushState({ postId }, '', `/community?post=${postId}`);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, []);
 
   // Sync /stocks/:symbol, /indices/:symbol, /community?post=:id, and tabs from URL on initial load and browser back/forward
   useEffect(() => {
@@ -243,7 +301,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const search = window.location.search;
       const params = new URLSearchParams(search);
 
-      // 0. Index detail: /indices/:symbol (KOSPI or KOSDAQ)
+      // 0. Static Policy Pages (/about, /privacy, /terms, /disclaimer, /contact)
+      const cleanPath = pathname.replace(/^\//, '').split('/')[0];
+      if (['about', 'privacy', 'terms', 'disclaimer', 'contact'].includes(cleanPath)) {
+        setPublicRoute({ type: 'static', staticPage: cleanPath as StaticPageName });
+        setSelectedSymbol(null);
+        setSelectedIndexSymbol(null);
+        setSelectedPostId(null);
+        return;
+      }
+
+      // 0-B. Editorial Insights (/insights, /insights/:category, /insights/:id)
+      if (cleanPath === 'insights') {
+        const parts = pathname.split('/').filter(Boolean);
+        const sub = parts[1];
+        const validCategories: InsightCategory[] = ['domestic-market', 'us-market', 'economy'];
+        if (sub && validCategories.includes(sub as InsightCategory)) {
+          setPublicRoute({ type: 'insights', insightCategory: sub as InsightCategory });
+        } else if (sub) {
+          setPublicRoute({ type: 'insights', insightArticleId: sub });
+        } else {
+          setPublicRoute({ type: 'insights' });
+        }
+        setSelectedSymbol(null);
+        setSelectedIndexSymbol(null);
+        setSelectedPostId(null);
+        return;
+      }
+
+      // Not a public page: clear publicRoute
+      setPublicRoute(null);
+
+      // 1. Index detail: /indices/:symbol (KOSPI or KOSDAQ)
       const indexMatch = pathname.match(/\/indices\/([A-Za-z]+)/i);
       if (indexMatch && (indexMatch[1].toUpperCase() === 'KOSPI' || indexMatch[1].toUpperCase() === 'KOSDAQ')) {
         setSelectedIndexSymbol(indexMatch[1].toUpperCase() as 'KOSPI' | 'KOSDAQ');
@@ -254,7 +343,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSelectedIndexSymbol(null);
       }
 
-      // 1. Stock detail: /stocks/:symbol (supports Korean codes, US tickers like BRK.B, and crypto like KRW-BTC)
+      // 2. Stock detail: /stocks/:symbol (supports Korean codes, US tickers like BRK.B, and crypto like KRW-BTC)
       const stockMatch = pathname.match(/\/stocks\/([0-9A-Za-z.\-_:]+)/);
       if (stockMatch && stockMatch[1]) {
         setSelectedSymbol(stockMatch[1]);
@@ -264,7 +353,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSelectedSymbol(null);
       }
 
-      // 2. Community: /community?post=:id
+      // 3. Community: /community?post=:id
       const postParam = params.get('post');
       if (pathname.startsWith('/community')) {
         setActiveTabState('community');
@@ -276,8 +365,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
 
-      // 3. Other views
-      const cleanPath = pathname.replace(/^\//, '').split('/')[0];
+      // 4. Other views
       const validTabs: ViewTab[] = ['home', 'stocks', 'ranking', 'watchlist', 'community', 'chat', 'alerts', 'insight', 'profile', 'news', 'admin'];
       if (validTabs.includes(cleanPath as ViewTab)) {
         setActiveTabState(cleanPath as ViewTab);
@@ -377,6 +465,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
 
+  // Centralized Chat Subscription (only active when authenticated and chat view or side panel is mounted)
+  useEffect(() => {
+    if (!firebaseUser) {
+      setChatMessages([]);
+      return;
+    }
+    if (activeTab !== 'chat' && activeChatConsumers === 0) {
+      return;
+    }
+    const unsubscribe = firebaseRepository.subscribeChat(
+      activeRoomId,
+      (messages) => {
+        setChatMessages(dedupeById(messages));
+      },
+      chatMessageLimit
+    );
+    return () => unsubscribe();
+  }, [firebaseUser, activeRoomId, chatMessageLimit, activeTab, activeChatConsumers]);
+
   // Sync authenticated user context with Firebase Crashlytics
   useEffect(() => {
     if (user?.id) {
@@ -393,10 +500,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Watchlist (Per-User Isolation, Default empty, No mock data)
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [watchlistDetails, setWatchlistDetails] = useState<Stock[]>([]);
+  const watchlistRef = useRef<string[]>(watchlist);
+  watchlistRef.current = watchlist;
+  const stocksRef = useRef<Stock[]>(stocks);
+  stocksRef.current = stocks;
+  const initializedWatchlistCheckedRef = useRef<Set<string>>(new Set());
 
   // Fetch live quotes for watchlist symbols and merge into stocks & watchlist state
-  const fetchWatchlistQuotes = async (symbolsToFetch?: string[]) => {
-    const targetSymbols = symbolsToFetch || watchlist;
+  const fetchWatchlistQuotes = useCallback(async (symbolsToFetch?: string[]) => {
+    const targetSymbols = symbolsToFetch || watchlistRef.current;
     if (!targetSymbols || targetSymbols.length === 0) return;
 
     try {
@@ -408,8 +520,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const existing = map.get(q.symbol);
             map.set(q.symbol, { ...(existing || {}), ...q });
           }
-          // Determine symbols to keep in order: full watchlist + any newly fetched symbols
-          const fullList = Array.from(new Set([...watchlist, ...(symbolsToFetch || [])]));
+          const fullList = Array.from(new Set([...watchlistRef.current, ...(symbolsToFetch || [])]));
           const ordered: Stock[] = [];
           for (const sym of fullList) {
             const item = map.get(sym);
@@ -430,21 +541,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.warn('Failed to fetch watchlist quotes:', err);
     }
-  };
+  }, []);
 
-  const refreshWatchlistQuotes = async () => {
+  const refreshWatchlistQuotes = useCallback(async () => {
     await fetchWatchlistQuotes();
-  };
+  }, [fetchWatchlistQuotes]);
 
-  // Periodic Watchlist Price Refresh (every 5 seconds)
+  // Periodic Watchlist Price Refresh (every 30s when visible)
   useEffect(() => {
     if (watchlist.length === 0) return;
     fetchWatchlistQuotes();
     const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       fetchWatchlistQuotes();
-    }, 30000); // Increased to 30s
+    }, 30000);
     return () => clearInterval(interval);
-  }, [watchlist.join(',')]);
+  }, [watchlist.join(','), fetchWatchlistQuotes]);
 
   // Listen to Firebase Auth state
   useEffect(() => {
@@ -462,28 +574,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             fbUser.photoURL || undefined
           );
           setUser(profile);
-
-          // 5 & 6. Sync user's own watchlists from Firestore
-          const remoteWatchlist = await firebaseRepository.getUserWatchlists(fbUser.uid);
-          setWatchlist(remoteWatchlist || []);
-          storageService.saveUserWatchlist(fbUser.uid, remoteWatchlist || []);
-          if (remoteWatchlist && remoteWatchlist.length > 0) {
-            fetchWatchlistQuotes(remoteWatchlist);
-          } else {
-            // Check if this is the first login and register default watchlists
-            const hasInitialized = await firebaseRepository.hasInitializedWatchlist(fbUser.uid);
-            if (!hasInitialized) {
-              const defaultSymbols = ['KOSPI', 'KOSDAQ', 'NDAQ', 'SPX', 'USDKRW', 'US10Y', 'BTC', 'ETH'];
-              for (let i = 0; i < defaultSymbols.length; i++) {
-                await firebaseRepository.addWatchlist(fbUser.uid, defaultSymbols[i], i);
-              }
-              await firebaseRepository.markInitializedWatchlist(fbUser.uid);
-              setWatchlist(defaultSymbols);
-              fetchWatchlistQuotes(defaultSymbols);
-            }
-          }
         } catch (err) {
-          console.warn('Failed to load user profile or watchlist from Firestore:', err);
+          console.warn('Failed to load user profile from Firestore:', err);
         }
       } else {
         // 10. Clear user watchlist on logout to prevent data leaking
@@ -548,22 +640,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('프로필 정보가 수정되었습니다.', 'success');
   };
 
-  // Real-time Firestore sync for user's own watchlists
+  // Real-time Firestore sync for user's own watchlists (single source of truth, avoids duplicate initial fetch)
   useEffect(() => {
     if (!user?.id) {
       setWatchlist([]);
       return;
     }
-    const unsub = firebaseRepository.subscribeUserWatchlists(user.id, (symbols) => {
-      setWatchlist(symbols || []);
-      storageService.saveUserWatchlist(user.id, symbols || []);
-      if (symbols && symbols.length > 0) {
-        fetchWatchlistQuotes(symbols);
-        notificationService.syncWatchlistForMonitoring(user.id, symbols);
+    const uid = user.id;
+    const unsub = firebaseRepository.subscribeUserWatchlists(uid, async (symbols) => {
+      const uniqueSymbols = Array.from(new Set(symbols || []));
+      if (uniqueSymbols.length > 0) {
+        setWatchlist(uniqueSymbols);
+        storageService.saveUserWatchlist(uid, uniqueSymbols);
+        fetchWatchlistQuotes(uniqueSymbols);
+        notificationService.syncWatchlistForMonitoring(uid, uniqueSymbols);
+      } else {
+        setWatchlist([]);
+        storageService.saveUserWatchlist(uid, []);
+        if (!initializedWatchlistCheckedRef.current.has(uid)) {
+          initializedWatchlistCheckedRef.current.add(uid);
+          try {
+            const hasInitialized = await firebaseRepository.hasInitializedWatchlist(uid);
+            if (!hasInitialized) {
+              const defaultSymbols = ['KOSPI', 'KOSDAQ', 'NDAQ', 'SPX', 'USDKRW', 'US10Y', 'BTC', 'ETH'];
+              for (let i = 0; i < defaultSymbols.length; i++) {
+                await firebaseRepository.addWatchlist(uid, defaultSymbols[i], i);
+              }
+              await firebaseRepository.markInitializedWatchlist(uid);
+              setWatchlist(defaultSymbols);
+              fetchWatchlistQuotes(defaultSymbols);
+            }
+          } catch (err) {
+            console.warn('Failed to initialize default watchlist:', err);
+          }
+        }
       }
     });
     return () => unsub();
-  }, [user?.id]);
+  }, [user?.id, fetchWatchlistQuotes]);
 
   // 1 & 2. Add to Watchlist (Duplicate prevention & Firestore sync)
   const addToWatchlist = async (symbol: string, itemData?: Partial<Stock>) => {
@@ -580,6 +694,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const stock = stocks.find(s => s.symbol === symbol) || (itemData ? (itemData as Stock) : undefined);
     const market = stock?.market || itemData?.market || 'UNKNOWN';
+    const resolvedCurrency = inferStockCurrency(symbol, market, itemData?.currency || stock?.currency);
+    const resolvedExchange = inferStockExchange(symbol, market, itemData?.exchange || stock?.exchange);
+    const isUSD = resolvedCurrency === 'USD';
 
     // Immediate optimistic local update for instant UI feedback
     if (itemData && !watchlistDetails.some(w => w.symbol === symbol)) {
@@ -594,8 +711,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         volume: itemData.volume || 0,
         volumeRatio: itemData.volumeRatio || 100,
         tradingValue: itemData.tradingValue || 0,
-        high52w: itemData.high52w || (itemData.price ? Math.round(itemData.price * 1.3) : 0),
-        low52w: itemData.low52w || (itemData.price ? Math.round(itemData.price * 0.7) : 0),
+        high52w: itemData.high52w || (itemData.price ? (isUSD ? Number((itemData.price * 1.3).toFixed(2)) : Math.round(itemData.price * 1.3)) : 0),
+        low52w: itemData.low52w || (itemData.price ? (isUSD ? Number((itemData.price * 0.7).toFixed(2)) : Math.round(itemData.price * 0.7)) : 0),
         marketCap: itemData.marketCap || 0,
         per: itemData.per || 15,
         pbr: itemData.pbr || 1.2,
@@ -605,12 +722,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         highPrice: itemData.highPrice || itemData.price || 0,
         lowPrice: itemData.lowPrice || itemData.price || 0,
         prevClose: itemData.prevClose || itemData.price || 0,
-        foreignNetBuy: itemData.foreignNetBuy || 0,
-        instNetBuy: itemData.instNetBuy || 0,
+        foreignNetBuy: itemData.foreignNetBuy ?? null,
+        instNetBuy: itemData.instNetBuy ?? null,
+        individualNetBuy: itemData.individualNetBuy ?? null,
+        investorDataAvailable: itemData.investorDataAvailable ?? false,
+        investorDataSource: itemData.investorDataSource,
+        investorBaseDate: itemData.investorBaseDate,
         candles: itemData.candles || [],
         sparkline: itemData.sparkline || [],
-        currency: itemData.currency || (market === 'US' ? 'USD' : 'KRW'),
-        exchange: itemData.exchange,
+        currency: resolvedCurrency,
+        exchange: resolvedExchange,
         productType: itemData.productType,
       };
       setWatchlistDetails(prev => [...prev.filter(p => p.symbol !== symbol), fullStock]);
@@ -686,8 +807,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('관심종목 정렬 순서가 저장되었습니다.', 'info');
   };
 
-  const isWatchlisted = (symbol: string) => watchlist.includes(symbol);
-  const getStock = (symbol: string) => stocks.find(s => s.symbol === symbol);
+  const isWatchlisted = useCallback((symbol: string) => watchlistRef.current.includes(symbol), []);
+  const getStock = useCallback((symbol: string) => stocksRef.current.find(s => s.symbol === symbol), []);
 
   // Market Events
   const [marketEvents, setMarketEvents] = useState<MarketEvent[]>(() => storageService.getMarketEvents());
@@ -700,6 +821,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Search Modal
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -770,9 +892,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const unsubscribe = firebaseRepository.subscribeUserPriceAlerts(currentUid, (alerts) => {
-      setPriceAlerts(alerts);
+      const uniqueAlerts = dedupeById(alerts);
+      setPriceAlerts(uniqueAlerts);
       // Synchronize already triggered alerts into the in-memory cache to prevent re-firing
-      alerts.forEach(a => {
+      uniqueAlerts.forEach(a => {
         if (a.isTriggered) {
           triggeredAlertIdsRef.current.add(a.id);
         }
@@ -804,10 +927,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const condLabel = alert.condition === 'above' ? '목표가 돌파(이상)' : '목표가 하락(이하)';
         const toastType = alert.condition === 'above' ? 'success' : 'warning';
+        const alertCurrency = inferStockCurrency(alert.symbol, currentStock.market, currentStock.currency);
         
         // Trigger Toast Notification
         showToast(
-          `🔔 [${alert.symbolName}] ${condLabel} 도달! 설정가: ${alert.targetPrice.toLocaleString()}원 / 현재가: ${currentStock.price.toLocaleString()}원`,
+          `🔔 [${alert.symbolName}] ${condLabel} 도달! 설정가: ${formatMoney(alert.targetPrice, alertCurrency)} / 현재가: ${formatMoney(currentStock.price, alertCurrency)}`,
           toastType
         );
 
@@ -821,7 +945,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (currentUid) {
           notificationService.createNotification(
             `[${alert.symbolName}] 목표가 도달 알림`,
-            `설정하신 목표 가격 ${alert.targetPrice.toLocaleString()}원에 도달했습니다. (현재 체결가: ${currentStock.price.toLocaleString()}원)`,
+            `설정하신 목표 가격 ${formatMoney(alert.targetPrice, alertCurrency)}에 도달했습니다. (현재 체결가: ${formatMoney(currentStock.price, alertCurrency)})`,
             'price_target',
             alert.symbol,
             currentUid,
@@ -842,8 +966,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       await firebaseRepository.createAlert(currentUid, alert);
+      const stockObj = stocks.find(s => s.symbol === alert.symbol);
+      const alertCurrency = inferStockCurrency(alert.symbol, stockObj?.market, stockObj?.currency);
       showToast(
-        `[${alert.symbolName}] 목표가 ${alert.targetPrice.toLocaleString()}원 ${alert.condition === 'above' ? '이상' : '이하'} 알림이 등록되었습니다.`,
+        `[${alert.symbolName}] 목표가 ${formatMoney(alert.targetPrice, alertCurrency)} ${alert.condition === 'above' ? '이상' : '이하'} 알림이 등록되었습니다.`,
         'success'
       );
     } catch (err: any) {
@@ -895,98 +1021,163 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setStocks(freshStocks);
     });
 
-    const indexInterval = setInterval(async () => {
+    const syncMarketHeaders = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
       try {
-        const freshIndices = await stockRepository.getIndices();
-        if (freshIndices && freshIndices.length > 0) setIndices(freshIndices);
-        const freshExchange = await stockRepository.getExchangeRate();
-        if (freshExchange) setExchangeRate(freshExchange);
+        const [freshIndices, freshExchange] = await Promise.all([
+          stockRepository.getIndices(),
+          stockRepository.getExchangeRate(),
+        ]);
+        if (freshIndices && freshIndices.length > 0) {
+          setIndices(prev => {
+            if (
+              prev.length === freshIndices.length &&
+              prev.every((p, idx) => {
+                const n = freshIndices[idx];
+                return p.symbol === n.symbol && p.value === n.value && p.change === n.change && p.changePercent === n.changePercent;
+              })
+            ) {
+              return prev;
+            }
+            return freshIndices;
+          });
+        }
+        if (freshExchange) {
+          setExchangeRate(prev => {
+            if (
+              prev.rate === freshExchange.rate &&
+              prev.change === freshExchange.change &&
+              prev.changePercent === freshExchange.changePercent &&
+              prev.timestamp === freshExchange.timestamp
+            ) {
+              return prev;
+            }
+            return freshExchange;
+          });
+        }
       } catch {}
-    }, 2000);
+    };
+
+    const indexInterval = setInterval(syncMarketHeaders, 15000);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        syncMarketHeaders();
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibility);
+    }
 
     return () => {
       unsubTicks();
       clearInterval(indexInterval);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility);
+      }
     };
   }, [isSimulatingLiveTicks]);
 
-  const toggleLiveSimulation = () => {
-    setIsSimulatingLiveTicks(prev => !prev);
-    showToast(isSimulatingLiveTicks ? '실시간 시세 틱 정지' : '실시간 시세 틱 재개', 'info');
-  };
+  const toggleLiveSimulation = useCallback(() => {
+    setIsSimulatingLiveTicks(prev => {
+      const next = !prev;
+      showToast(prev ? '실시간 시세 틱 정지' : '실시간 시세 틱 재개', 'info');
+      return next;
+    });
+  }, [showToast]);
+
+  const contextValue = useMemo<AppContextType>(() => ({
+    isDark,
+    toggleTheme,
+    activeTab,
+    setActiveTab,
+    selectedSymbol,
+    navigateToStock,
+    selectedIndexSymbol,
+    navigateToIndex,
+    clearSelectedIndex,
+    selectedPostId,
+    setSelectedPostId,
+    navigateToPost,
+    navigateToPostList,
+    communityAuthorFilter,
+    setCommunityAuthorFilter,
+    navigateToMyPosts,
+    publicRoute,
+    navigateToStaticPage,
+    navigateToInsights,
+    clearPublicRoute,
+    stocks,
+    indices,
+    exchangeRate,
+    getStock,
+    isSimulatingLiveTicks,
+    toggleLiveSimulation,
+    stockDataSource,
+    toggleStockDataSource,
+    isStockLoading,
+    realtimeStatus,
+    checkRealtimeConnection,
+    watchlist,
+    watchlistDetails,
+    addToWatchlist,
+    removeFromWatchlist,
+    toggleWatchlist,
+    reorderWatchlist,
+    isWatchlisted,
+    refreshWatchlistQuotes,
+    marketEvents,
+    addMarketEvent,
+    firebaseUser,
+    isAuthenticated: !!firebaseUser,
+    isAuthLoading,
+    user,
+    isAdmin: !!(user && ['admin', 'superadmin', 'moderator'].includes(user.role || '')),
+    updateUser,
+    logout,
+    requireAuth,
+    isAuthModalOpen,
+    setIsAuthModalOpen,
+    isSearchOpen,
+    setIsSearchOpen,
+    mobileMenuOpen,
+    setMobileMenuOpen,
+    isSideChatOpen,
+    setIsSideChatOpen,
+    toggleSideChat,
+    unreadChatCount,
+    setUnreadChatCount,
+    activeRoomId,
+    setActiveRoomId: handleSetActiveRoomId,
+    chatMessages,
+    setChatMessages,
+    loadMoreChatMessages,
+    chatMessageLimit,
+    registerChatConsumer,
+    priceAlerts,
+    addPriceAlert,
+    removePriceAlert,
+    togglePriceAlert,
+    toasts,
+    showToast,
+    removeToast,
+  }), [
+    isDark, toggleTheme, activeTab, setActiveTab, selectedSymbol, navigateToStock,
+    selectedIndexSymbol, navigateToIndex, clearSelectedIndex, selectedPostId,
+    navigateToPost, navigateToPostList, communityAuthorFilter, navigateToMyPosts,
+    publicRoute, navigateToStaticPage, navigateToInsights, clearPublicRoute,
+    stocks, indices, exchangeRate, getStock, isSimulatingLiveTicks, toggleLiveSimulation,
+    stockDataSource, toggleStockDataSource, isStockLoading, realtimeStatus, checkRealtimeConnection,
+    watchlist, watchlistDetails, addToWatchlist, removeFromWatchlist, toggleWatchlist,
+    reorderWatchlist, isWatchlisted, refreshWatchlistQuotes, marketEvents, addMarketEvent,
+    firebaseUser, isAuthLoading, user, updateUser, logout, requireAuth,
+    isAuthModalOpen, isSearchOpen, mobileMenuOpen, isSideChatOpen, toggleSideChat, unreadChatCount,
+    activeRoomId, handleSetActiveRoomId, chatMessages, loadMoreChatMessages, chatMessageLimit,
+    registerChatConsumer, priceAlerts, addPriceAlert, removePriceAlert, togglePriceAlert,
+    toasts, showToast, removeToast,
+  ]);
 
   return (
-    <AppContext.Provider
-      value={{
-        isDark,
-        toggleTheme,
-        activeTab,
-        setActiveTab,
-        selectedSymbol,
-        navigateToStock,
-        selectedIndexSymbol,
-        navigateToIndex,
-        clearSelectedIndex,
-        selectedPostId,
-        setSelectedPostId,
-        navigateToPost,
-        navigateToPostList,
-        communityAuthorFilter,
-        setCommunityAuthorFilter,
-        navigateToMyPosts,
-        stocks,
-        indices,
-        exchangeRate,
-        getStock,
-        isSimulatingLiveTicks,
-        toggleLiveSimulation,
-        stockDataSource,
-        toggleStockDataSource,
-        isStockLoading,
-        realtimeStatus,
-        checkRealtimeConnection,
-        watchlist,
-        watchlistDetails,
-        addToWatchlist,
-        removeFromWatchlist,
-        toggleWatchlist,
-        reorderWatchlist,
-        isWatchlisted,
-        refreshWatchlistQuotes,
-        marketEvents,
-        addMarketEvent,
-        firebaseUser,
-        isAuthenticated: !!firebaseUser,
-        isAuthLoading,
-        user,
-        isAdmin: !!(user && ['admin', 'superadmin', 'moderator'].includes(user.role || '')),
-        updateUser,
-        logout,
-        requireAuth,
-        isAuthModalOpen,
-        setIsAuthModalOpen,
-        isSearchOpen,
-        setIsSearchOpen,
-        isSideChatOpen,
-        setIsSideChatOpen,
-        toggleSideChat,
-        unreadChatCount,
-        setUnreadChatCount,
-        activeRoomId,
-        setActiveRoomId: handleSetActiveRoomId,
-        chatMessages,
-        setChatMessages,
-        loadMoreChatMessages,
-        chatMessageLimit,
-        priceAlerts,
-        addPriceAlert,
-        removePriceAlert,
-        togglePriceAlert,
-        toasts,
-        showToast,
-        removeToast,
-      }}
-    >
+    <AppContext.Provider value={contextValue}>
       {children}
     </AppContext.Provider>
   );

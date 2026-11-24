@@ -17,6 +17,7 @@
 
 import { Stock, StockIndex, UserAlertRule, AppNotification, AlertRuleType } from '../src/types';
 import { fcmServerService } from './fcmServerService';
+import { inferStockCurrency, formatMoney } from '../src/utils/currency';
 
 function dispatchFcmForNotification(notif: AppNotification): void {
   try {
@@ -209,6 +210,8 @@ export function evaluateUserAlertRules(
       // 1~5: 개별 종목 관련 조건
       targetStock = stocks.find(s => s.symbol === rule.symbol);
       if (!targetStock) continue;
+      const targetCur = inferStockCurrency(targetStock.symbol, targetStock.market, targetStock.currency);
+      const isKrxEquity = targetStock.market === 'KOSPI' || targetStock.market === 'KOSDAQ';
 
       // 11. 장 마감, API 오류, 데이터 지연 시 잘못된 알림 방지
       if (
@@ -216,20 +219,22 @@ export function evaluateUserAlertRules(
         targetStock.price <= 0 || 
         isNaN(targetStock.price) || 
         targetStock.volume < 0 ||
-        Math.abs(targetStock.changePercent) > 30 || // 한국 증시 상·하한가 ±30% 범위 초과 이상치 차단
-        (targetStock.volume === 0 && targetStock.change === 0) // 무거래 정지/장 미개장 상태 오류 방지
+        (isKrxEquity && Math.abs(targetStock.changePercent) > 30) ||
+        (targetStock.volume === 0 && targetStock.change === 0)
       ) {
         continue;
       }
 
+      const priceStr = formatMoney(targetStock.price, targetCur, { krwStyle: 'unit' });
+      const ruleValStr = formatMoney(rule.value, targetCur, { krwStyle: 'unit' });
+
       switch (rule.type) {
         case 'price_rise': {
-          // 1. 가격 상승 (예: 삼성전자 +5% 상승 시)
           const targetPercent = Math.abs(rule.value);
           if (targetStock.changePercent >= targetPercent) {
             isTriggered = true;
             title = `🚀 [급등 감지] ${targetStock.name} +${targetStock.changePercent.toFixed(2)}% 돌파`;
-            message = `설정하신 상승 목표(+${targetPercent}% 이상)를 돌파하였습니다. 현재가 ${targetStock.price.toLocaleString()}원입니다.`;
+            message = `설정하신 상승 목표(+${targetPercent}% 이상)를 돌파하였습니다. 현재가 ${priceStr}입니다.`;
             reason = `전일 대비 +${targetStock.changePercent.toFixed(2)}% 급등 (설정치: +${targetPercent}%)`;
             metrics = {
               currentValue: targetStock.changePercent,
@@ -243,12 +248,11 @@ export function evaluateUserAlertRules(
         }
 
         case 'price_fall': {
-          // 2. 가격 하락 (예: SK하이닉스 -3% 하락 시)
           const targetFall = -Math.abs(rule.value);
           if (targetStock.changePercent <= targetFall) {
             isTriggered = true;
             title = `📉 [급락 주의] ${targetStock.name} ${targetStock.changePercent.toFixed(2)}% 도달`;
-            message = `설정하신 리스크 관리 기준(-${Math.abs(rule.value)}% 이하)에 도달하였습니다. 현재가 ${targetStock.price.toLocaleString()}원입니다.`;
+            message = `설정하신 리스크 관리 기준(-${Math.abs(rule.value)}% 이하)에 도달하였습니다. 현재가 ${priceStr}입니다.`;
             reason = `전일 대비 ${targetStock.changePercent.toFixed(2)}% 급락 (설정치: -${Math.abs(rule.value)}%)`;
             metrics = {
               currentValue: targetStock.changePercent,
@@ -261,35 +265,35 @@ export function evaluateUserAlertRules(
           break;
         }
         case 'price_target': {
-          // 목표가 도달
           if (rule.condition === 'above' && targetStock.price >= rule.value) {
             isTriggered = true;
-            title = `🎯 [목표가 도달] ${targetStock.name} ${rule.value.toLocaleString()}원`;
-            message = `설정하신 목표가(${rule.value.toLocaleString()}원)에 도달하였습니다.`;
-            reason = `현재가 ${targetStock.price.toLocaleString()}원 (목표가: ${rule.value.toLocaleString()}원)`;
+            title = `🎯 [목표가 도달] ${targetStock.name} ${ruleValStr}`;
+            message = `설정하신 목표가(${ruleValStr})에 도달하였습니다.`;
+            reason = `현재가 ${priceStr} (목표가: ${ruleValStr})`;
             metrics = { currentValue: targetStock.price, threshold: rule.value };
           } else if (rule.condition === 'below' && targetStock.price <= rule.value) {
             isTriggered = true;
-            title = `🎯 [목표가 도달] ${targetStock.name} ${rule.value.toLocaleString()}원`;
-            message = `설정하신 목표가(${rule.value.toLocaleString()}원)에 도달하였습니다.`;
-            reason = `현재가 ${targetStock.price.toLocaleString()}원 (목표가: ${rule.value.toLocaleString()}원)`;
+            title = `🎯 [목표가 도달] ${targetStock.name} ${ruleValStr}`;
+            message = `설정하신 목표가(${ruleValStr})에 도달하였습니다.`;
+            reason = `현재가 ${priceStr} (목표가: ${ruleValStr})`;
             metrics = { currentValue: targetStock.price, threshold: rule.value };
           }
           break;
         }
         case 'high_low': {
-          // 신고가/신저가
           if (targetStock.price >= targetStock.highPrice && targetStock.highPrice > 0) {
+            const highStr = formatMoney(targetStock.highPrice, targetCur, { krwStyle: 'unit' });
             isTriggered = true;
             title = `📈 [신고가 경신] ${targetStock.name}`;
-            message = `당일 신고가(${targetStock.highPrice.toLocaleString()}원)를 경신하였습니다.`;
-            reason = `현재가 ${targetStock.price.toLocaleString()}원 (신고가: ${targetStock.highPrice.toLocaleString()}원)`;
+            message = `당일 신고가(${highStr})를 경신하였습니다.`;
+            reason = `현재가 ${priceStr} (신고가: ${highStr})`;
             metrics = { currentValue: targetStock.price, highPrice: targetStock.highPrice };
           } else if (targetStock.price <= targetStock.lowPrice && targetStock.lowPrice > 0) {
+            const lowStr = formatMoney(targetStock.lowPrice, targetCur, { krwStyle: 'unit' });
             isTriggered = true;
             title = `📉 [신저가 경신] ${targetStock.name}`;
-            message = `당일 신저가(${targetStock.lowPrice.toLocaleString()}원)를 경신하였습니다.`;
-            reason = `현재가 ${targetStock.price.toLocaleString()}원 (신저가: ${targetStock.lowPrice.toLocaleString()}원)`;
+            message = `당일 신저가(${lowStr})를 경신하였습니다.`;
+            reason = `현재가 ${priceStr} (신저가: ${lowStr})`;
             metrics = { currentValue: targetStock.price, lowPrice: targetStock.lowPrice };
           }
           break;
@@ -403,16 +407,21 @@ export function evaluateUserAlertRules(
   for (const ctx of watchlistTargets) {
     for (const symbol of ctx.symbols) {
       const stock = stocks.find(s => s.symbol === symbol);
+      const stockCur = stock ? inferStockCurrency(stock.symbol, stock.market, stock.currency) : 'KRW';
+      const isKrxWl = stock ? (stock.market === 'KOSPI' || stock.market === 'KOSDAQ') : false;
       if (
         !stock || 
         stock.price <= 0 || 
         isNaN(stock.price) || 
         stock.volume < 0 || 
-        Math.abs(stock.changePercent) > 30 || 
+        (isKrxWl && Math.abs(stock.changePercent) > 30) || 
         (stock.volume === 0 && stock.change === 0)
       ) {
         continue;
       }
+
+      const wlPriceStr = formatMoney(stock.price, stockCur, { krwStyle: 'unit' });
+      const wlChangeStr = formatMoney(stock.change, stockCur, { showSign: true, krwStyle: 'unit' });
 
       // Anomaly 1: Watchlist Surge (+5%)
       if (stock.changePercent >= 5.0) {
@@ -426,10 +435,10 @@ export function evaluateUserAlertRules(
             uid: ctx.uid,
             type: 'price_rise',
             title: `🚀 [관심종목 급등] ${stock.name} +${stock.changePercent.toFixed(2)}% 포착`,
-            message: `관심종목으로 등록하신 ${stock.name}이(가) +${stock.changePercent.toFixed(2)}% 급등 중입니다. 현재가 ${stock.price.toLocaleString()}원입니다.`,
+            message: `관심종목으로 등록하신 ${stock.name}이(가) +${stock.changePercent.toFixed(2)}% 급등 중입니다. 현재가 ${wlPriceStr}입니다.`,
             stockSymbol: stock.symbol,
             stockName: stock.name,
-            reason: `관심종목 +${stock.changePercent.toFixed(2)}% 급등 포착 (현재가 ${stock.price.toLocaleString()}원, 전일대비 +${stock.change.toLocaleString()}원)`,
+            reason: `관심종목 +${stock.changePercent.toFixed(2)}% 급등 포착 (현재가 ${wlPriceStr}, 전일대비 ${wlChangeStr})`,
             metrics: {
               currentValue: stock.changePercent,
               threshold: 5.0,
@@ -460,10 +469,10 @@ export function evaluateUserAlertRules(
             uid: ctx.uid,
             type: 'price_fall',
             title: `📉 [관심종목 급락] ${stock.name} ${stock.changePercent.toFixed(2)}% 주의`,
-            message: `관심종목으로 등록하신 ${stock.name}이(가) ${stock.changePercent.toFixed(2)}% 급락세입니다. 현재가 ${stock.price.toLocaleString()}원입니다.`,
+            message: `관심종목으로 등록하신 ${stock.name}이(가) ${stock.changePercent.toFixed(2)}% 급락세입니다. 현재가 ${wlPriceStr}입니다.`,
             stockSymbol: stock.symbol,
             stockName: stock.name,
-            reason: `관심종목 ${stock.changePercent.toFixed(2)}% 급락 포착 (현재가 ${stock.price.toLocaleString()}원, 전일대비 ${stock.change.toLocaleString()}원)`,
+            reason: `관심종목 ${stock.changePercent.toFixed(2)}% 급락 포착 (현재가 ${wlPriceStr}, 전일대비 ${wlChangeStr})`,
             metrics: {
               currentValue: stock.changePercent,
               threshold: -5.0,

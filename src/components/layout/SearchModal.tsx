@@ -17,9 +17,13 @@ import { PriceBadge } from '../common/PriceBadge';
 import { MarketBadge } from '../common/MarketBadge';
 import { stockRepository } from '../../services/stockRepository';
 import { extractChosung, isChosungQuery } from '../../utils/hangul';
+import { getStockUniqueKey } from '../../utils/stocks/ticker';
 import { MockTradeModal } from '../portfolio/MockTradeModal';
+import { formatMoney, inferStockCurrency, validateExchangeRate } from '../../utils/currency';
 
 const RECENT_SEARCHES_KEY = 'bd_recent_stock_searches';
+
+type SearchMarketTab = 'ALL' | 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN';
 
 export const SearchModal: React.FC = () => {
   const { 
@@ -33,10 +37,11 @@ export const SearchModal: React.FC = () => {
     exchangeRate 
   } = useApp();
   const [query, setQuery] = useState('');
-  const [marketFilter, setMarketFilter] = useState<'ALL' | 'KR' | 'US' | 'COIN'>('ALL');
+  const [marketFilter, setMarketFilter] = useState<SearchMarketTab>('ALL');
   const [searchResults, setSearchResults] = useState<Stock[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState<number>(0);
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [selectedTradeStock, setSelectedTradeStock] = useState<Stock | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
@@ -63,9 +68,10 @@ export const SearchModal: React.FC = () => {
     }
   }, [isSearchOpen]);
 
-  // Execute fast unified search via stockRepository with debounce
+  // Execute fast unified search via stockRepository with debounce + AbortController
   useEffect(() => {
-    if (!query.trim()) {
+    const trimmed = query.trim();
+    if (!trimmed) {
       setSearchResults([]);
       setIsSearching(false);
       setSearchError(null);
@@ -73,33 +79,42 @@ export const SearchModal: React.FC = () => {
       return;
     }
 
+    const controller = new AbortController();
     let isSubscribed = true;
     setIsSearching(true);
     setSearchError(null);
 
     const handler = setTimeout(async () => {
       try {
-        const results = await stockRepository.searchStocks({ query, market: marketFilter, limit: 16 });
-        if (isSubscribed) {
+        const results = await stockRepository.searchStocks({
+          query: trimmed,
+          market: marketFilter,
+          limit: 16,
+          signal: controller.signal,
+        });
+        if (isSubscribed && !controller.signal.aborted) {
           setSearchResults(results);
           setSelectedIndex(0);
         }
       } catch (err: any) {
+        if (err?.name === 'AbortError' || controller.signal.aborted) return;
         if (isSubscribed) {
-          setSearchError('데이터 공급자 연결 오류가 발생했습니다.');
+          setSearchResults([]);
+          setSearchError(err?.message || '시세 공급자 연결 오류가 발생했습니다.');
         }
       } finally {
-        if (isSubscribed) {
+        if (isSubscribed && !controller.signal.aborted) {
           setIsSearching(false);
         }
       }
-    }, 250);
+    }, 200);
 
     return () => {
       isSubscribed = false;
+      controller.abort();
       clearTimeout(handler);
     };
-  }, [query, marketFilter]);
+  }, [query, marketFilter, retryNonce]);
 
   // Save to recent searches
   const saveRecentSearch = (term: string) => {
@@ -205,52 +220,28 @@ export const SearchModal: React.FC = () => {
           </kbd>
         </div>
 
-        {/* Market Filter Bar (전체 / 한국 / 미국 / 가상자산) */}
+        {/* Market Filter Bar (전체 / 코스피 / 코스닥 / 미국 / 코인) */}
         <div className="flex items-center gap-1.5 px-4 py-2 border-b border-slate-200/80 dark:border-slate-800/80 bg-slate-100/60 dark:bg-slate-900/40 text-xs font-medium overflow-x-auto no-scrollbar">
-          <button
-            type="button"
-            onClick={() => setMarketFilter('ALL')}
-            className={`px-3 py-1 rounded-lg transition-colors font-bold cursor-pointer shrink-0 ${
-              marketFilter === 'ALL'
-                ? 'bg-rose-500 text-white shadow-xs'
-                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-800'
-            }`}
-          >
-            전체 통합
-          </button>
-          <button
-            type="button"
-            onClick={() => setMarketFilter('KR')}
-            className={`px-3 py-1 rounded-lg transition-colors font-bold cursor-pointer shrink-0 ${
-              marketFilter === 'KR'
-                ? 'bg-indigo-600 text-white shadow-xs'
-                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-800'
-            }`}
-          >
-            🇰🇷 한국 (KOSPI · KOSDAQ)
-          </button>
-          <button
-            type="button"
-            onClick={() => setMarketFilter('US')}
-            className={`px-3 py-1 rounded-lg transition-colors font-bold cursor-pointer shrink-0 ${
-              marketFilter === 'US'
-                ? 'bg-purple-600 text-white shadow-xs'
-                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-800'
-            }`}
-          >
-            🇺🇸 미국 (NASDAQ · NYSE)
-          </button>
-          <button
-            type="button"
-            onClick={() => setMarketFilter('COIN')}
-            className={`px-3 py-1 rounded-lg transition-colors font-bold cursor-pointer shrink-0 ${
-              marketFilter === 'COIN'
-                ? 'bg-amber-600 text-white shadow-xs'
-                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-800'
-            }`}
-          >
-            🪙 가상자산 (Upbit · Binance)
-          </button>
+          {([
+            { id: 'ALL', label: '전체', activeClass: 'bg-rose-500 text-white shadow-xs' },
+            { id: 'KOSPI', label: '코스피', activeClass: 'bg-indigo-600 text-white shadow-xs' },
+            { id: 'KOSDAQ', label: '코스닥', activeClass: 'bg-emerald-600 text-white shadow-xs' },
+            { id: 'US', label: '미국', activeClass: 'bg-purple-600 text-white shadow-xs' },
+            { id: 'COIN', label: '코인', activeClass: 'bg-amber-600 text-white shadow-xs' },
+          ] as const).map(tab => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setMarketFilter(tab.id)}
+              className={`px-3 py-1 rounded-lg transition-colors font-bold cursor-pointer shrink-0 ${
+                marketFilter === tab.id
+                  ? tab.activeClass
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-800'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
         {/* Content Body */}
@@ -263,7 +254,7 @@ export const SearchModal: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <span>검색 결과 ({searchResults.length}건)</span>
                     <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-rose-500/10 text-rose-500 font-bold border border-rose-500/20">
-                      통합 데이터 (국내 2,073+ · 미국 8,000+ · 코인 1,300+)
+                      KOSPI · KOSDAQ · US · COIN
                     </span>
                   </div>
                   <span className="hidden sm:inline text-[11px] text-slate-400">
@@ -275,10 +266,11 @@ export const SearchModal: React.FC = () => {
                   const isSelected = idx === selectedIndex;
                   const chosung = extractChosung(stock.name);
                   const isChosungSearch = isChosungQuery(query);
+                  const stockCur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
 
                   return (
                     <button
-                      key={stock.symbol}
+                      key={getStockUniqueKey(stock)}
                       onClick={() => handleSelectStock(stock)}
                       onMouseEnter={() => setSelectedIndex(idx)}
                       className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition-colors text-left group cursor-pointer ${
@@ -355,32 +347,30 @@ export const SearchModal: React.FC = () => {
                       </div>
 
                       {/* Right: Price & Change Rate, Watchlist toggle button, Selection prompt */}
-                      <div className="flex items-center gap-2.5 shrink-0">
-                        <div className="text-right">
-                          {stock.price > 0 ? (
-                            <>
-                              <div className="text-sm font-bold font-mono text-slate-900 dark:text-white">
-                                {stock.currency === 'USD'
-                                  ? `$${stock.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                                  : stock.currency === 'USDT'
-                                  ? `${stock.price.toLocaleString(undefined, { minimumFractionDigits: stock.price < 1 ? 4 : 2 })} USDT`
-                                  : stock.currency === 'BTC'
-                                  ? `${stock.price.toFixed(8)} BTC`
-                                  : `${stock.price.toLocaleString()}원`}
-                              </div>
-                              {(stock.currency === 'USD' || stock.currency === 'USDT') && exchangeRate?.rate && (
-                                <div className="text-[10px] text-slate-400 font-mono">
-                                  ≈ {Math.round(stock.price * exchangeRate.rate).toLocaleString()}원
+                      {(() => {
+                        const stockCur = inferStockCurrency(stock.symbol, stock.market, stock.currency);
+                        const fxCheck = validateExchangeRate(exchangeRate);
+                        return (
+                          <div className="flex items-center gap-2.5 shrink-0">
+                            <div className="text-right">
+                              {stock.price > 0 ? (
+                                <>
+                                  <div className="text-sm font-bold font-mono text-slate-900 dark:text-white">
+                                    {formatMoney(stock.price, stockCur)}
+                                  </div>
+                                  {(stockCur === 'USD' || stockCur === 'USDT') && fxCheck.valid && fxCheck.rate !== null && (
+                                    <div className="text-[10px] text-slate-400 font-mono">
+                                      ≈ {formatMoney(stock.price * fxCheck.rate, 'KRW')}
+                                    </div>
+                                  )}
+                                  <PriceBadge change={stock.change} changePercent={stock.changePercent} currency={stockCur} size="sm" />
+                                </>
+                              ) : (
+                                <div className="text-[11px] font-semibold text-rose-500 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">
+                                  {stock.market === 'COIN' ? '가상자산 시세 조회' : (stock.market === 'US' ? '미국 주식 조회' : '키움 실시간 조회')}
                                 </div>
                               )}
-                              <PriceBadge change={stock.change} changePercent={stock.changePercent} size="sm" />
-                            </>
-                          ) : (
-                            <div className="text-[11px] font-semibold text-rose-500 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">
-                              {stock.market === 'COIN' ? '가상자산 시세 조회' : (stock.market === 'US' ? '미국 주식 조회' : '키움 실시간 조회')}
                             </div>
-                          )}
-                        </div>
 
                         {/* 모의매매 퀵 버튼 */}
                         <div
@@ -432,6 +422,8 @@ export const SearchModal: React.FC = () => {
                           <CornerDownLeft className="w-4 h-4" />
                         </div>
                       </div>
+                        );
+                      })()}
                     </button>
                   );
                 })}
@@ -462,9 +454,16 @@ export const SearchModal: React.FC = () => {
                     시세 공급자 연결 실패
                   </h4>
                   <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
-                    {searchError} 잠시 후 다시 시도해 주세요.
+                    {searchError}
                   </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setRetryNonce(prev => prev + 1)}
+                  className="px-4 py-1.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold transition-colors cursor-pointer"
+                >
+                  다시 시도
+                </button>
               </div>
             ) : (
               /* Empty Search Results View */
@@ -475,8 +474,9 @@ export const SearchModal: React.FC = () => {
                 <div>
                   <h4 className="font-bold text-base text-slate-800 dark:text-slate-200">
                     {marketFilter === 'US' ? '미국 주식 검색 결과 없음' : 
-                     marketFilter === 'COIN' ? '가상자산 검색 결과 없음' :
-                     marketFilter === 'KR' ? '국내 주식 검색 결과 없음' : '일치하는 종목을 찾을 수 없습니다'}
+                     marketFilter === 'COIN' ? '코인 검색 결과 없음' :
+                     marketFilter === 'KOSPI' ? '코스피 검색 결과 없음' :
+                     marketFilter === 'KOSDAQ' ? '코스닥 검색 결과 없음' : '일치하는 종목을 찾을 수 없습니다'}
                   </h4>
                   <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
                     '<span className="text-rose-500 font-semibold">{query}</span>'에 해당하는 {marketFilter !== 'ALL' ? marketFilter + ' 시장 ' : ''}검색 결과가 없습니다.
@@ -485,13 +485,12 @@ export const SearchModal: React.FC = () => {
 
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 max-w-md mx-auto text-left text-xs space-y-1.5 text-slate-500 dark:text-slate-400">
                   <span className="font-bold text-slate-700 dark:text-slate-300 block">
-                    💡 통합 종목 검색 팁
+                    통합 종목 검색 팁
                   </span>
-                  <p>• <strong>한국 주식:</strong> 삼성전자, 005930, SK하이닉스, 초성(ㅅㅅ, ㅅㅋㅎㅇㄴㅅ)</p>
+                  <p>• <strong>코스피/코스닥:</strong> 삼성전자, Samsung Electronics, 005930, 에코프로, 초성(ㅅㅅ)</p>
                   <p>• <strong>미국 주식:</strong> NVDA, AAPL, TSLA, MSFT, 엔비디아, 테슬라, 애플</p>
-                  <p>• <strong>가상자산:</strong> 비트코인, 이더리움, KRW-BTC, BTCUSDT, XRP, 초성(ㅂㅌㅋㅇ)</p>
-                  <p>• <strong>레버리지 / 지수 ETF:</strong> SOXL, SOXS, QQQ, SPY</p>
-                  <p>• <strong>시장 필터:</strong> 상단 [전체 / 한국 / 미국 / 가상자산] 탭으로 원하는 시장만 필터링 가능</p>
+                  <p>• <strong>코인:</strong> 비트코인, 이더리움, KRW-BTC, BTCUSDT, XRP, 초성(ㅂㅌㅋㅇ)</p>
+                  <p>• <strong>시장 필터:</strong> 상단 [전체 / 코스피 / 코스닥 / 미국 / 코인] 탭으로 시장 필터링</p>
                 </div>
               </div>
             )

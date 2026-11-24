@@ -21,6 +21,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { aiStockQueryClient, StockQueryExecutionResult } from '../../services/aiStockQueryClient';
 import { UserAiSettingsModal } from '../profile/UserAiSettingsModal';
+import { inferStockCurrency, formatMoney, formatTradingValueByCurrency } from '../../utils/currency';
 
 export const StockInsightAiDataQuery: React.FC = () => {
   const { watchlist, navigateToStock, showToast, user, requireAuth } = useApp();
@@ -244,35 +245,42 @@ export const StockInsightAiDataQuery: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                  <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
-                    <span className="text-slate-400 text-[10px] block">현재가</span>
-                    <span className="font-mono font-bold text-slate-900 dark:text-white text-sm">
-                      {result.rawData.price?.toLocaleString()}원
-                    </span>
-                  </div>
+                  {(() => {
+                    const qCur = inferStockCurrency(result.rawData.symbol, result.rawData.market, result.rawData.currency);
+                    return (
+                      <>
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
+                          <span className="text-slate-400 text-[10px] block">현재가 ({qCur})</span>
+                          <span className="font-mono font-bold text-slate-900 dark:text-white text-sm">
+                            {formatMoney(result.rawData.price || 0, qCur)}
+                          </span>
+                        </div>
 
-                  <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
-                    <span className="text-slate-400 text-[10px] block">전일 대비 등락률</span>
-                    <span className={`font-mono font-bold text-sm ${
-                      (result.rawData.change || 0) >= 0 ? 'text-rose-500' : 'text-blue-500'
-                    }`}>
-                      {(result.rawData.change || 0) >= 0 ? '+' : ''}{result.rawData.change?.toLocaleString()}원 ({(result.rawData.changePercent || 0) >= 0 ? '+' : ''}{result.rawData.changePercent}%)
-                    </span>
-                  </div>
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
+                          <span className="text-slate-400 text-[10px] block">전일 대비 등락률</span>
+                          <span className={`font-mono font-bold text-sm ${
+                            (result.rawData.change || 0) >= 0 ? 'text-rose-500' : 'text-blue-500'
+                          }`}>
+                            {formatMoney(result.rawData.change || 0, qCur, { showSign: true })} ({(result.rawData.changePercent || 0) >= 0 ? '+' : ''}{result.rawData.changePercent}%)
+                          </span>
+                        </div>
 
-                  <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
-                    <span className="text-slate-400 text-[10px] block">시가 / 전일종가</span>
-                    <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
-                      {result.rawData.openPrice?.toLocaleString()} / {result.rawData.prevClose?.toLocaleString()}
-                    </span>
-                  </div>
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
+                          <span className="text-slate-400 text-[10px] block">시가 / 전일종가</span>
+                          <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
+                            {formatMoney(result.rawData.openPrice || 0, qCur)} / {formatMoney(result.rawData.prevClose || 0, qCur)}
+                          </span>
+                        </div>
 
-                  <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
-                    <span className="text-slate-400 text-[10px] block">장중 고가 / 저가</span>
-                    <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
-                      {result.rawData.highPrice?.toLocaleString()} / {result.rawData.lowPrice?.toLocaleString()}
-                    </span>
-                  </div>
+                        <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
+                          <span className="text-slate-400 text-[10px] block">장중 고가 / 저가</span>
+                          <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
+                            {formatMoney(result.rawData.highPrice || 0, qCur)} / {formatMoney(result.rawData.lowPrice || 0, qCur)}
+                          </span>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             )}
@@ -301,7 +309,10 @@ export const StockInsightAiDataQuery: React.FC = () => {
                   <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
                     <span className="text-slate-400 text-[10px] block">누적 거래대금</span>
                     <span className="font-mono font-bold text-slate-900 dark:text-white text-sm">
-                      {result.rawData.tradingValue?.toLocaleString()}억 원
+                      {formatTradingValueByCurrency(
+                        result.rawData.tradingValue || 0,
+                        inferStockCurrency(result.rawData.symbol, result.rawData.market, result.rawData.currency)
+                      )}
                     </span>
                   </div>
                   <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800/60">
@@ -342,7 +353,7 @@ export const StockInsightAiDataQuery: React.FC = () => {
                         </span>
                       </div>
                       <div className="text-[11px] font-mono text-slate-400 mt-1">
-                        {item.price?.toLocaleString()}원
+                        {formatMoney(item.price || 0, inferStockCurrency(item.symbol, item.market, item.currency))}
                       </div>
                     </div>
                   ))}
@@ -360,7 +371,9 @@ export const StockInsightAiDataQuery: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
-                  {result.rawData.spikes?.map((st: any) => (
+                  {result.rawData.spikes?.map((st: any) => {
+                    const stCur = inferStockCurrency(st.symbol, st.market, st.currency);
+                    return (
                     <div
                       key={st.symbol}
                       onClick={() => navigateToStock(st.symbol)}
@@ -373,11 +386,12 @@ export const StockInsightAiDataQuery: React.FC = () => {
                         </span>
                       </div>
                       <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mt-1">
-                        <span>{st.price?.toLocaleString()}원 ({st.changePercent > 0 ? '+' : ''}{st.changePercent}%)</span>
-                        <span>{st.tradingValue?.toLocaleString()}억</span>
+                        <span>{formatMoney(st.price || 0, stCur)} ({st.changePercent > 0 ? '+' : ''}{st.changePercent}%)</span>
+                        <span>{formatTradingValueByCurrency(st.tradingValue || 0, stCur)}</span>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -404,7 +418,7 @@ export const StockInsightAiDataQuery: React.FC = () => {
                         </span>
                       </div>
                       <div className="text-[11px] font-mono text-slate-400 mt-1">
-                        {st.price?.toLocaleString()}원
+                        {formatMoney(st.price || 0, inferStockCurrency(st.symbol, st.market, st.currency))}
                       </div>
                     </div>
                   ))}

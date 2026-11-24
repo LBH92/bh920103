@@ -31,6 +31,7 @@ import { PostEditorModal } from './PostEditorModal';
 import { PostDetailView } from './PostDetailView';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { INITIAL_POSTS } from '../../services/mockData';
+import { dedupeById } from '../../utils/dedupe';
 
 const DEFAULT_AVATAR = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80';
 
@@ -50,9 +51,9 @@ export const CommunityView: React.FC = () => {
   const [posts, setPosts] = useState<CommunityPost[]>(() => {
     try {
       const stored = storageService.getPosts();
-      return (stored && stored.length > 0) ? stored : INITIAL_POSTS;
+      return dedupeById((stored && stored.length > 0) ? stored : INITIAL_POSTS);
     } catch {
-      return INITIAL_POSTS;
+      return dedupeById(INITIAL_POSTS);
     }
   });
   const [activeCategory, setActiveCategory] = useState<string>('all');
@@ -74,23 +75,33 @@ export const CommunityView: React.FC = () => {
 
   // Subscribe to real-time posts from Firebase Firestore with complete error & lifecycle handling
   useEffect(() => {
+    if (!isAuthenticated) {
+      setIsLoading(false);
+      return;
+    }
     let isMounted = true;
+
+    const mergePosts = (prev: CommunityPost[], remotePosts: CommunityPost[]): CommunityPost[] => {
+      const map = new Map<string, CommunityPost>();
+      for (const p of prev) {
+        if (p && p.id && (p.category === 'notice' || p.isNotice)) {
+          map.set(p.id, p);
+        }
+      }
+      for (const rp of remotePosts) {
+        if (rp && rp.id) {
+          map.set(rp.id, rp);
+        }
+      }
+      return Array.from(map.values());
+    };
 
     // 1. Initial Load from Firestore
     firebaseRepository.getPosts()
       .then(remotePosts => {
         if (!isMounted) return;
         if (remotePosts && Array.isArray(remotePosts) && remotePosts.length > 0) {
-          setPosts(prev => {
-            const notices = prev.filter(p => p.category === 'notice' || p.isNotice);
-            const combined = [...notices];
-            remotePosts.forEach(rp => {
-              if (!combined.some(c => c.id === rp.id)) {
-                combined.push(rp);
-              }
-            });
-            return combined;
-          });
+          setPosts(prev => mergePosts(prev, remotePosts));
         }
         setIsLoading(false);
         setErrorType(null);
@@ -113,16 +124,7 @@ export const CommunityView: React.FC = () => {
       remotePosts => {
         if (!isMounted) return;
         if (remotePosts && Array.isArray(remotePosts) && remotePosts.length > 0) {
-          setPosts(prev => {
-            const notices = prev.filter(p => p.category === 'notice' || p.isNotice);
-            const combined = [...notices];
-            remotePosts.forEach(rp => {
-              if (!combined.some(c => c.id === rp.id)) {
-                combined.push(rp);
-              }
-            });
-            return combined;
-          });
+          setPosts(prev => mergePosts(prev, remotePosts));
         }
         setIsLoading(false);
         setErrorType(null);
@@ -146,7 +148,7 @@ export const CommunityView: React.FC = () => {
         console.warn('[Community] unsubscribe error:', e);
       }
     };
-  }, []);
+  }, [isAuthenticated]);
 
   // If a post is selected, render PostDetailView ONLY AFTER ALL HOOKS HAVE BEEN CALLED
   if (selectedPostId) {
@@ -544,9 +546,9 @@ export const CommunityView: React.FC = () => {
                     {/* Tags & Statistics: 조회수, 댓글수, 좋아요 */}
                     <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        {post.tags?.map(t => (
+                        {post.tags?.map((t, tagIdx) => (
                           <span
-                            key={t}
+                            key={`${t}-${tagIdx}`}
                             className="text-[11px] text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md font-medium"
                           >
                             #{t}
@@ -615,7 +617,7 @@ export const CommunityView: React.FC = () => {
             isOpen={isEditorOpen}
             onClose={() => setIsEditorOpen(false)}
             onSuccess={newPost => {
-              setPosts(prev => [newPost, ...prev]);
+              setPosts(prev => dedupeById([newPost, ...prev]));
               setIsEditorOpen(false);
             }}
             defaultCategory={activeCategory !== 'all' ? (activeCategory as PostCategory) : undefined}

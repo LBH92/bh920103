@@ -49,6 +49,9 @@ import { db } from '../../services/firebase';
 import { firebaseRepository } from '../../services/firebaseRepository';
 import { HomeMobileDashboard } from './HomeMobileDashboard';
 import { formatCommunityTime } from '../../utils/dateUtils';
+import { inferStockCurrency, formatMoney, formatTradingValueByCurrency, validateExchangeRate } from '../../utils/currency';
+import { dedupeById, dedupeByKey } from '../../utils/dedupe';
+import { getStockUniqueKey } from '../../utils/stocks/ticker';
 
 export const HomeView: React.FC = () => {
 
@@ -71,9 +74,11 @@ export const HomeView: React.FC = () => {
   const [activeMoverTab, setActiveMoverTab] = useState<'surge_gain' | 'surge_loss' | 'volume_surge' | 'popular'>('surge_gain');
   const [liveMonitorEvents, setLiveMonitorEvents] = useState<MarketAlertEvent[]>([]);
   const [homeSearchQuery, setHomeSearchQuery] = useState('');
-  const [homeSearchMarketFilter, setHomeSearchMarketFilter] = useState<'ALL' | 'KR' | 'US' | 'COIN'>('ALL');
+  const [homeSearchMarketFilter, setHomeSearchMarketFilter] = useState<'ALL' | 'KOSPI' | 'KOSDAQ' | 'US' | 'COIN'>('ALL');
   const [homeSearchResults, setHomeSearchResults] = useState<Stock[]>([]);
   const [isSearchingHome, setIsSearchingHome] = useState<boolean>(false);
+  const [homeSearchError, setHomeSearchError] = useState<string | null>(null);
+  const [retryHomeSearchNonce, setRetryHomeSearchNonce] = useState<number>(0);
   const [selectedMarketEvent, setSelectedMarketEvent] = useState<MarketEvent | null>(null);
   const [isMarketEventModalOpen, setIsMarketEventModalOpen] = useState(false);
 
@@ -137,32 +142,46 @@ export const HomeView: React.FC = () => {
     const q = homeSearchQuery.trim();
     if (!q) {
       setHomeSearchResults([]);
+      setHomeSearchError(null);
       setIsSearchingHome(false);
       return;
     }
 
+    const controller = new AbortController();
     let isSubscribed = true;
     setIsSearchingHome(true);
+    setHomeSearchError(null);
 
     const timer = setTimeout(() => {
-      stockRepository.searchStocks({ query: q, market: homeSearchMarketFilter, limit: 12 })
+      stockRepository.searchStocks({
+        query: q,
+        market: homeSearchMarketFilter,
+        limit: 15,
+        signal: controller.signal,
+      })
         .then(results => {
-          if (isSubscribed) {
+          if (isSubscribed && !controller.signal.aborted) {
             setHomeSearchResults(results);
             setIsSearchingHome(false);
           }
         })
         .catch(err => {
+          if (err?.name === 'AbortError' || controller.signal.aborted) return;
           console.warn('[HomeView] search error:', err);
-          if (isSubscribed) setIsSearchingHome(false);
+          if (isSubscribed) {
+            setHomeSearchError(err?.message || '종목 검색에 실패했습니다.');
+            setHomeSearchResults([]);
+            setIsSearchingHome(false);
+          }
         });
-    }, 120);
+    }, 150);
 
     return () => {
       isSubscribed = false;
       clearTimeout(timer);
+      controller.abort();
     };
-  }, [homeSearchQuery, homeSearchMarketFilter]);
+  }, [homeSearchQuery, homeSearchMarketFilter, retryHomeSearchNonce]);
 
   useEffect(() => {
     marketMonitorClient.getEvents().then(res => setLiveMonitorEvents(res)).catch(() => {});
@@ -208,15 +227,15 @@ export const HomeView: React.FC = () => {
   }, [stocks]);
 
   // 10. 사용자의 관심종목
-  const watchlistStocks = stocks.filter(s => watchlist.includes(s.symbol));
+  const watchlistStocks = dedupeByKey(stocks.filter(s => watchlist.includes(s.symbol)), s => s.symbol);
 
   // Active Market Events (실시간 긴급 발동 중인 경우만 표시)
-  const activeEvents = marketEvents.filter(e => e.active);
+  const activeEvents = dedupeById(marketEvents.filter(e => e.active));
 
   // 한국거래소(KRX) 공식 사이드카 주요 이벤트 기록 (중복·미래일자 방지 및 최신 발동순 정렬)
   const sidecarEvents = useMemo(() => {
     const nowMs = Date.now();
-    return marketEvents
+    return dedupeById(marketEvents)
       .filter(e => {
         if (e.type !== 'sidecar') return false;
         const triggerTime = new Date(e.triggerDateTime?.replace(' KST', '') || e.timestamp).getTime();
@@ -232,7 +251,7 @@ export const HomeView: React.FC = () => {
   }, [marketEvents]);
 
   // Latest Community Posts
-  const communityPosts = storageService.getPosts().slice(0, 5);
+  const communityPosts = dedupeById(storageService.getPosts()).slice(0, 5);
 
   return (
     <div className="space-y-6 pb-24 animate-in fade-in duration-150">
@@ -247,75 +266,55 @@ export const HomeView: React.FC = () => {
           <div>
             <h1 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
               <span>
-                {homeSearchMarketFilter === 'KR'
-                  ? '한국 주식 실시간 검색'
+                {homeSearchMarketFilter === 'KOSPI'
+                  ? '코스피(KOSPI) 실시간 검색'
+                  : homeSearchMarketFilter === 'KOSDAQ'
+                  ? '코스닥(KOSDAQ) 실시간 검색'
                   : homeSearchMarketFilter === 'US'
                   ? '미국 주식 실시간 검색'
                   : homeSearchMarketFilter === 'COIN'
                   ? '가상자산 실시간 검색'
-                  : '한국 · 미국 · 가상자산 통합 검색'}
+                  : '코스피 · 코스닥 · 미국 · 가상자산 통합 검색'}
               </span>
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-500 border border-rose-500/20 font-mono">
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-rose-500/10 text-rose-500 border border-rose-500/20 font-mono">
                 LIVE
               </span>
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              {homeSearchMarketFilter === 'KR'
-                ? 'KOSPI · KOSDAQ 전체 상장 보통주, 우선주, ETF, 초성을 실시간 탐색하세요.'
+              {homeSearchMarketFilter === 'KOSPI'
+                ? '코스피(KOSPI) 상장 보통주, 우선주, ETF, 종목코드, 초성을 실시간 탐색하세요.'
+                : homeSearchMarketFilter === 'KOSDAQ'
+                ? '코스닥(KOSDAQ) 성장주, 보통주, ETF, 종목코드, 초성을 실시간 탐색하세요.'
                 : homeSearchMarketFilter === 'US'
                 ? 'NASDAQ · NYSE · AMEX 대표 보통주, 레버리지 ETF, ADR을 실시간 탐색하세요.'
                 : homeSearchMarketFilter === 'COIN'
                 ? '업비트(Upbit) · 바이낸스(Binance) 공식 거래소 전체 현물 마켓을 탐색하세요.'
-                : '국내 주식 2,070+, 미국 8,000+, 가상자산 1,300+ 현물 마켓을 통합 탐색하세요.'}
+                : '코스피 · 코스닥 · 미국 주식 · 가상자산 현물 마켓을 한 번에 통합 탐색하세요.'}
             </p>
           </div>
 
-          {/* Market Filter Pills (한국 주식, 미국 주식, 가상자산, 전체) */}
+          {/* Market Filter Tabs: 전체 / 코스피 / 코스닥 / 미국 / 코인 */}
           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl text-xs font-semibold self-start sm:self-auto overflow-x-auto">
-            <button
-              type="button"
-              onClick={() => setHomeSearchMarketFilter('ALL')}
-              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
-                homeSearchMarketFilter === 'ALL'
-                  ? 'bg-rose-500 text-white font-bold shadow-xs'
-                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              전체 통합
-            </button>
-            <button
-              type="button"
-              onClick={() => setHomeSearchMarketFilter('KR')}
-              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
-                homeSearchMarketFilter === 'KR'
-                  ? 'bg-indigo-600 text-white font-bold shadow-xs'
-                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              🇰🇷 한국 주식
-            </button>
-            <button
-              type="button"
-              onClick={() => setHomeSearchMarketFilter('US')}
-              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
-                homeSearchMarketFilter === 'US'
-                  ? 'bg-purple-600 text-white font-bold shadow-xs'
-                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              🇺🇸 미국 주식
-            </button>
-            <button
-              type="button"
-              onClick={() => setHomeSearchMarketFilter('COIN')}
-              className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
-                homeSearchMarketFilter === 'COIN'
-                  ? 'bg-amber-600 text-white font-bold shadow-xs'
-                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              🪙 가상자산
-            </button>
+            {[
+              { id: 'ALL' as const, label: '전체', activeClass: 'bg-rose-500 text-white font-bold shadow-xs' },
+              { id: 'KOSPI' as const, label: '코스피', activeClass: 'bg-indigo-600 text-white font-bold shadow-xs' },
+              { id: 'KOSDAQ' as const, label: '코스닥', activeClass: 'bg-emerald-600 text-white font-bold shadow-xs' },
+              { id: 'US' as const, label: '미국', activeClass: 'bg-purple-600 text-white font-bold shadow-xs' },
+              { id: 'COIN' as const, label: '코인', activeClass: 'bg-amber-600 text-white font-bold shadow-xs' },
+            ].map(tab => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setHomeSearchMarketFilter(tab.id)}
+                className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
+                  homeSearchMarketFilter === tab.id
+                    ? tab.activeClass
+                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -328,18 +327,20 @@ export const HomeView: React.FC = () => {
               value={homeSearchQuery}
               onChange={e => setHomeSearchQuery(e.target.value)}
               placeholder={
-                homeSearchMarketFilter === 'KR'
-                  ? '국내 종목명, 종목코드, 초성 검색 (예: 삼성전자, 005930, SK하이닉스, 알테오젠, ㅅㅅ)'
+                homeSearchMarketFilter === 'KOSPI'
+                  ? '코스피 종목명, 영문명, 코드, 초성 검색 (예: 삼성전자, Samsung, 005930, ㅅㅅ)'
+                  : homeSearchMarketFilter === 'KOSDAQ'
+                  ? '코스닥 종목명, 영문명, 코드, 초성 검색 (예: 에코프로, 알테오젠, 086520)'
                   : homeSearchMarketFilter === 'US'
-                  ? '미국 티커, 기업명, 한글명 검색 (예: NVDA, AAPL, TSLA, SOXL, QQQ, 엔비디아)'
+                  ? '미국 티커, 기업명, 한글명 검색 (예: NVDA, Apple, BRK.B, 엔비디아)'
                   : homeSearchMarketFilter === 'COIN'
-                  ? '코인명, 심볼, 마켓 검색 (예: 비트코인, KRW-BTC, 이더리움, 왁스, SOLUSDT, XRP)'
-                  : '종목명, 티커, 코드, 코인명, 초성 검색 (예: 삼성전자, NVDA, SOXL, 비트코인, 왁스, ㅅㅅ)'
+                  ? '코인명, 심볼, 마켓페어 검색 (예: 비트코인, KRW-BTC, BTCUSDT, ETH)'
+                  : '종목명, 영문명, 티커, 코드, 코인, 초성 검색 (예: 삼성전자, NVDA, 비트코인, ㅅㅅ)'
               }
               className="w-full pl-11 pr-14 py-3 sm:py-3.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl text-sm sm:text-base text-slate-900 dark:text-white placeholder-slate-400 font-medium focus:outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 transition-all"
             />
             <div className="absolute right-3.5 flex items-center gap-1.5">
-              {isSearchingHome && <span className="animate-spin text-xs">⏳</span>}
+              {isSearchingHome && <RefreshCw className="w-4 h-4 text-rose-500 animate-spin" />}
               {homeSearchQuery && (
                 <button
                   onClick={() => setHomeSearchQuery('')}
@@ -357,12 +358,30 @@ export const HomeView: React.FC = () => {
           {/* Auto-complete Dropdown */}
           {homeSearchQuery.trim() && (
             <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-700/80 rounded-2xl shadow-2xl z-30 overflow-hidden divide-y divide-slate-100 dark:divide-slate-800 animate-in fade-in zoom-in-95 duration-100 max-h-80 overflow-y-auto">
-              {homeSearchResults.length > 0 ? (
+              {homeSearchError ? (
+                <div className="p-5 text-center space-y-2.5">
+                  <div className="text-xs font-semibold text-rose-500">{homeSearchError}</div>
+                  <button
+                    type="button"
+                    onClick={() => setRetryHomeSearchNonce(n => n + 1)}
+                    className="px-3 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>다시 시도</span>
+                  </button>
+                </div>
+              ) : isSearchingHome && homeSearchResults.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                  <RefreshCw className="w-4 h-4 text-rose-500 animate-spin" />
+                  <span>종목을 검색하고 있습니다...</span>
+                </div>
+              ) : homeSearchResults.length > 0 ? (
                 homeSearchResults.map(s => {
                   const registered = isWatchlisted(s.symbol);
+                  const rowCurrency = inferStockCurrency(s.symbol, s.market, s.currency);
                   return (
                     <div
-                      key={`${s.market}-${s.symbol}`}
+                      key={getStockUniqueKey(s)}
                       onClick={() => {
                         navigateToStock(s.symbol);
                         setHomeSearchQuery('');
@@ -393,7 +412,7 @@ export const HomeView: React.FC = () => {
                                 ? 'bg-indigo-500/10 text-indigo-500 border border-indigo-500/20'
                                 : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
                             }`}>
-                              {s.market === 'US' ? (s.exchange || 'US') : s.market === 'COIN' ? (s.exchange || 'COIN') : s.market}
+                              {s.market === 'US' ? (s.exchange || 'US') : s.market === 'COIN' ? (s.exchange || 'COIN') : s.market} · {rowCurrency}
                             </span>
                             {s.productType === 'ETF' && (
                               <span className="text-[9px] font-bold px-1 py-0.2 rounded border bg-amber-500/10 text-amber-500 border-amber-500/20">
@@ -419,20 +438,19 @@ export const HomeView: React.FC = () => {
 
                       <div className="text-right flex items-center gap-3 shrink-0">
                         <div>
-                          <div className="font-mono font-bold text-sm text-slate-900 dark:text-white">
+                          <div className="font-mono font-bold text-sm text-slate-900 dark:text-white tabular-nums">
                             {s.price > 0 ? (
-                              s.currency === 'USD'
-                                ? `$${s.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                                : s.currency === 'USDT'
-                                ? `${s.price.toLocaleString(undefined, { minimumFractionDigits: s.price < 1 ? 4 : 2 })} USDT`
-                                : s.currency === 'BTC'
-                                ? `${s.price.toFixed(8)} BTC`
-                                : `${s.price.toLocaleString()}원`
+                              formatMoney(s.price, rowCurrency)
                             ) : (
-                              <span className="text-xs text-slate-400 font-normal">시세 조회</span>
+                              <span className="text-xs text-slate-400 font-normal">시세 확인</span>
                             )}
                           </div>
-                          <PriceBadge change={s.change} changePercent={s.changePercent} size="sm" />
+                          <PriceBadge
+                            change={s.change}
+                            changePercent={s.changePercent}
+                            currency={rowCurrency}
+                            size="sm"
+                          />
                         </div>
 
                         {/* Direct Watchlist Registration Button */}
@@ -466,7 +484,7 @@ export const HomeView: React.FC = () => {
                 <div className="p-6 text-center text-xs text-slate-400 space-y-1">
                   <div>일치하는 검색 결과가 없습니다: '<span className="text-rose-500 font-bold">{homeSearchQuery}</span>'</div>
                   <div className="text-[11px] text-slate-400">
-                    검색 팁: 삼성전자, NVDA, AAPL, 005930, SOXL, 왁스, 비트코인, 초성(ㅅㅅ, ㅂㅌㅋㅇ)
+                    검색 팁: 삼성전자, NVDA, Apple, 005930, 에코프로, KRW-BTC, 초성(ㅅㅅ, ㅂㅌㅋㅇ)
                   </div>
                 </div>
               )}
@@ -860,25 +878,44 @@ export const HomeView: React.FC = () => {
               </div>
 
               {/* 3. 원/달러 환율 */}
-              <div className="p-4 sm:p-5 tablet:p-4.5 flex flex-col justify-between">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs tablet:text-[14px] font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">원/달러 환율</span>
-                  <span className="text-[10px] tablet:text-[11px] font-mono px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">USD/KRW</span>
-                </div>
-                <div className="mt-2 tablet:mt-2.5">
-                  <div className="text-2xl sm:text-[26px] tablet:text-[21px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight tabular-nums whitespace-nowrap">
-                    {exchangeRate.rate.toFixed(2)}
-                    <span className="text-xs tablet:text-[12px] font-normal text-slate-400 ml-1">원</span>
+              {(() => {
+                const fxCheck = validateExchangeRate(exchangeRate);
+                return (
+                  <div className="p-4 sm:p-5 tablet:p-4.5 flex flex-col justify-between">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-xs tablet:text-[14px] font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">원/달러 환율</span>
+                      <span className={`text-[10px] tablet:text-[11px] font-mono px-1.5 py-0.2 rounded ${
+                        fxCheck.valid
+                          ? 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                          : 'bg-amber-500/15 text-amber-600 dark:text-amber-400 font-bold'
+                      }`}>
+                        {fxCheck.valid ? 'USD/KRW' : fxCheck.status === 'stale' ? '지연/만료' : '조회 오류'}
+                      </span>
+                    </div>
+                    <div className="mt-2 tablet:mt-2.5">
+                      {fxCheck.valid && fxCheck.rate ? (
+                        <>
+                          <div className="text-2xl sm:text-[26px] tablet:text-[21px] font-black font-mono tracking-tight text-slate-900 dark:text-white leading-tight tabular-nums whitespace-nowrap">
+                            {fxCheck.rate.toFixed(2)}
+                            <span className="text-xs tablet:text-[12px] font-normal text-slate-400 ml-1">원</span>
+                          </div>
+                          <div className="mt-1 tablet:mt-1.5">
+                            <PriceBadge change={exchangeRate.change} changePercent={exchangeRate.changePercent} size="sm" />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-xs font-semibold text-amber-600 dark:text-amber-400 py-2">
+                          {fxCheck.reason || '실시간 환율 수신 실패'}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] tablet:text-[11.5px] text-slate-400 font-mono tabular-nums whitespace-nowrap">
+                      <span>고 {exchangeRate?.high || '-'} / 저 {exchangeRate?.low || '-'}</span>
+                      <span className="text-[10px]">{fxCheck.lastUpdated}</span>
+                    </div>
                   </div>
-                  <div className="mt-1 tablet:mt-1.5">
-                    <PriceBadge change={exchangeRate.change} changePercent={exchangeRate.changePercent} size="sm" />
-                  </div>
-                </div>
-                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] tablet:text-[11.5px] text-slate-400 font-mono tabular-nums whitespace-nowrap">
-                  <span>고 {exchangeRate.high}</span>
-                  <span>저 {exchangeRate.low}</span>
-                </div>
-              </div>
+                );
+              })()}
 
               {/* 4. 총 거래대금 */}
               <div className="p-4 sm:p-5 tablet:p-4.5 flex flex-col justify-between">
@@ -1170,7 +1207,7 @@ export const HomeView: React.FC = () => {
                       {stock.name}
                     </span>
                     <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-200">
-                      {stock.price.toLocaleString()}원
+                      {formatMoney(stock.price, inferStockCurrency(stock.symbol, stock.market, stock.currency))}
                     </span>
                     <span className={`text-[11px] font-mono font-bold ${isUp ? 'text-rose-500' : 'text-blue-500'}`}>
                       {isUp ? '+' : ''}{stock.changePercent}%
@@ -1283,7 +1320,7 @@ export const HomeView: React.FC = () => {
                   </div>
                   <div className="text-right shrink-0">
                     <div className="font-bold font-mono text-xs text-slate-900 dark:text-white">
-                      {stock.price.toLocaleString()}원
+                      {formatMoney(stock.price, inferStockCurrency(stock.symbol, stock.market, stock.currency))}
                     </div>
                     <span className="font-mono text-xs font-bold text-rose-500">
                       +{stock.changePercent.toFixed(2)}%
@@ -1326,7 +1363,7 @@ export const HomeView: React.FC = () => {
                   </div>
                   <div className="text-right shrink-0">
                     <div className="font-bold font-mono text-xs text-slate-900 dark:text-white">
-                      {stock.price.toLocaleString()}원
+                      {formatMoney(stock.price, inferStockCurrency(stock.symbol, stock.market, stock.currency))}
                     </div>
                     <span className="font-mono text-xs font-bold text-blue-500">
                       {stock.changePercent.toFixed(2)}%
@@ -1408,13 +1445,13 @@ export const HomeView: React.FC = () => {
                         {stock.name}
                       </span>
                       <span className="text-[10px] font-mono text-slate-400">
-                        {stock.tradingValue.toLocaleString()}억 원
+                        {formatTradingValueByCurrency(stock.tradingValue, inferStockCurrency(stock.symbol, stock.market, stock.currency))}
                       </span>
                     </div>
                   </div>
                   <div className="text-right shrink-0">
                     <div className="font-bold font-mono text-xs text-slate-900 dark:text-white">
-                      {stock.price.toLocaleString()}원
+                      {formatMoney(stock.price, inferStockCurrency(stock.symbol, stock.market, stock.currency))}
                     </div>
                     <span className={`font-mono text-[11px] font-bold ${stock.change >= 0 ? 'text-rose-500' : 'text-blue-500'}`}>
                       {stock.change >= 0 ? '+' : ''}{stock.changePercent}%
